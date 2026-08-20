@@ -39,6 +39,7 @@
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
+    "README_EN.md",
     "CHANGELOG.md"
   ],
   "dsh": {

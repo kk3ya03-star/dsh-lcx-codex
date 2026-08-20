@@ -10,6 +10,7 @@
 
 - 删除未被 DSH 官方识别、且错误写死旧域名与 `LCX_API_KEY` 的 `dshhub` 权限块；README 改为声明网络目标和凭据由当前 `openai-responses` provider 动态决定。
 - 添加 npm 与 DSH 社区检索使用的标准关键词，其中包括 `dsh-plugin` GitHub topic 对应关键词。
+- 新增独立英文用户文档 `README_EN.md`，并与中文 README 互相链接。
 
 ## 0.3.0 - 2026-08-21
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+const englishReadme = readFileSync(new URL('../README_EN.md', import.meta.url), 'utf8')
 const clientSource = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
 
@@ -17,6 +18,7 @@ test('installation package contains only runtime and user-facing files', () => {
     'cordis.patch.yml',
     'LICENSE',
     'README.md',
+    'README_EN.md',
     'CHANGELOG.md',
   ])
   assert.deepEqual(packageJson.engines, { node: '>=20' })
@@ -39,6 +41,17 @@ test('installation package contains only runtime and user-facing files', () => {
   })
   assert.equal(packageJson.homepage, 'https://github.com/kk3ya03-star/dsh-lcx-codex#readme')
   assert.deepEqual(packageJson.bugs, { url: 'https://github.com/kk3ya03-star/dsh-lcx-codex/issues' })
+})
+
+test('Chinese and English README files link to each other and keep the same safety boundary', () => {
+  assert.match(readme, /\[English\]\(README_EN\.md\)/u)
+  assert.match(englishReadme, /\[Chinese\]\(README\.md\)/u)
+  assert.match(englishReadme, /five supported deployment paths/iu)
+  assert.match(englishReadme, /regular `OpenAI` channel does not support/iu)
+  assert.match(englishReadme, /not affiliated with OpenAI/iu)
+  assert.match(englishReadme, /active DSH `openai-responses` provider's `baseURL`/iu)
+  assert.match(englishReadme, /credential name comes from the same provider's `apiKeyEnv`/iu)
+  assert.match(englishReadme, /dsh plugin --profile web add dsh-lcx-codex/iu)
 })
 
 test('public wording identifies the compatibility boundary without official affiliation claims', () => {
@@ -116,6 +129,7 @@ test('public Git tree excludes internal records and includes an MIT license', ()
     'CHANGELOG.md',
     'LICENSE',
     'README.md',
+    'README_EN.md',
     'cordis.patch.yml',
     'package.json',
     'pnpm-lock.yaml',

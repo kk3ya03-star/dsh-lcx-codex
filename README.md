@@ -1,5 +1,7 @@
 # dsh-lcx-codex
 
+**简体中文** | [English](README_EN.md)
+
 [![npm version](https://img.shields.io/npm/v/dsh-lcx-codex.svg)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![license](https://img.shields.io/npm/l/dsh-lcx-codex.svg)](LICENSE)
 
