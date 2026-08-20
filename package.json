@@ -1,0 +1,85 @@
+{
+  "name": "dsh-lcx-codex",
+  "version": "0.3.1",
+  "description": "DSH web search and Responses native V2 compaction for Sub2API-proxied or NewAPI-relayed GPT models",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin",
+    "web-search",
+    "openai-responses",
+    "sub2api",
+    "newapi",
+    "compaction"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kk3ya03-star/dsh-lcx-codex.git"
+  },
+  "homepage": "https://github.com/kk3ya03-star/dsh-lcx-codex#readme",
+  "bugs": {
+    "url": "https://github.com/kk3ya03-star/dsh-lcx-codex/issues"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "scripts/probe-alpha.mjs",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.82.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-compaction-basic": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "react": "^18.2.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:schema": "node scripts/validate-dsh-schema.mjs",
+    "test:e2e": "node --test tests/sub2api.e2e.test.mjs",
+    "probe:alpha": "node scripts/probe-alpha.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
