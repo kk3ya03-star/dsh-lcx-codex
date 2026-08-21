@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+## 0.3.3 - 2026-08-21
+
+### Fixed
+
+- Native V2 checkpoint 现在由客户端按 64K token 预算保留最近真实 user messages，再追加 exactly-one compaction item；不再错误假设上游 `response.output` 会返回 retained messages。旧的 compaction-only v3 checkpoint 会从 portable history 安全补全，运行时上下文注入不会进入 replacement history。
+
+### Documentation
+
+- 记录 installed `0.3.2` 的 compact + 三次 replay 缓存实测，并说明 Sub2API Codex OAuth 路径会删除上游不支持的 `prompt_cache_retention`；短缓存过期后的单次冷请求不等于插件改变了稳定前缀。
+- 增加连续 replay 的前缀稳定性回归断言，区分缓存生命周期与 replacement-history 保真问题。
+
+## 0.3.2 - 2026-08-21
+
+### Fixed
+
+- Native V2 compact 与同路由 replay 现在和 DSH/Pi 普通 Responses 请求复用相同的 session `prompt_cache_key`、缓存 retention 与会话 header，避免压缩边界额外切换 NewAPI/Sub2API 的缓存和账号粘性域；`cacheRetention: none` 时同时省略这些缓存信号。
+- 移除未被插件直接导入或注入的 `@deepseek-ai/dsh-compaction-basic` peer 声明，避免 DSH/pnpm 安装时出现误导性的宿主依赖警告；Basic fallback 继续通过 DSH `llm/stream` 的 `next()` 链调用宿主实现。
+
 ## 0.3.1 - 2026-08-21
 
 ### Fixed

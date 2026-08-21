@@ -41,7 +41,9 @@ import { AlphaCapabilityStore, alphaCapabilityFingerprint } from '../lib/web-sea
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { createSessionGenerationTracker } from '../lib/session-lease.js'
 import {
+  buildNativeReplacementHistory,
   buildPortableResponsesInputWithImages,
+  checkpointNativeReplacementHistory,
   hydrateNativeImageReferences,
   inputImageCount,
   normalInput,
@@ -70,6 +72,42 @@ function route(overrides = {}) {
     ...overrides,
   }
 }
+
+test('native replacement history retains real user messages and excludes contextual injection', () => {
+  const compaction = { type: 'compaction', id: 'cmp-retained', encrypted_content: 'opaque-retained' }
+  const oldUser = { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'old user request' }] }
+  const latestUser = { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'latest user request' }] }
+  const replacement = buildNativeReplacementHistory([
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>runtime details</environment_context>' }] },
+    oldUser,
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'assistant response' }] },
+    { type: 'function_call_output', call_id: 'call-1', output: 'tool output' },
+    latestUser,
+  ], compaction)
+  assert.deepEqual(replacement, [oldUser, latestUser, compaction])
+})
+
+test('old compaction-only checkpoint derives bounded native replacement from portable history', () => {
+  const compaction = { type: 'compaction', id: 'cmp-old', encrypted_content: 'opaque-old' }
+  const oldUser = { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'portable recent request' }] }
+  assert.deepEqual(checkpointNativeReplacementHistory({
+    nativeOutput: [compaction],
+    nativeCompaction: compaction,
+    portableHistory: [oldUser, { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'portable answer' }] }],
+  }), [oldUser, compaction])
+})
+
+test('native replacement history applies its token budget from newest user messages', () => {
+  const compaction = { type: 'compaction', id: 'cmp-budget', encrypted_content: 'opaque-budget' }
+  const replacement = buildNativeReplacementHistory([
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'older request' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: '0123456789' }] },
+  ], compaction, { tokenBudget: 1 })
+  assert.deepEqual(replacement, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: '6789' }] },
+    compaction,
+  ])
+})
 
 function portableRecord(overrides = {}) {
   const currentRoute = route(overrides)
@@ -104,15 +142,9 @@ function jsonResponse(value, status = 200) {
 }
 
 function compactSseResponse({ id = 'compact-response-1', object = 'response.compaction', usage = { input_tokens: 4, output_tokens: 2 }, output: outputOverride } = {}) {
-  const output = outputOverride ?? [
-    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'preserved context' }] },
-    { type: 'compaction', id: 'cmp-native', encrypted_content: 'opaque-native' },
-  ]
-  const events = [
-    { type: 'response.output_item.done', item: output[0] },
-    { type: 'response.output_item.done', item: output[1] },
-    { type: 'response.completed', response: { id, object, output, usage } },
-  ]
+  const output = outputOverride ?? [{ type: 'compaction', id: 'cmp-native', encrypted_content: 'opaque-native' }]
+  const events = output.map((item, output_index) => ({ type: 'response.output_item.done', output_index, item }))
+  events.push({ type: 'response.completed', response: { id, object, output, usage } })
   const text = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
   return new Response(text, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
@@ -865,15 +897,17 @@ test('native V2 compaction builds the trigger request and parses SSE output', as
     model: 'gpt-5.6-sol',
     input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep' }] }],
     promptCacheKey: 'session-1',
+    promptCacheRetention: '24h',
     tools: [{ name: 'websearch_gpt', description: 'Search', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }],
   })
   assert.equal(body.stream, true)
   assert.equal(body.store, false)
   assert.deepEqual(body.tools, [{ type: 'function', name: 'websearch_gpt', description: 'Search', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }, strict: false }])
+  assert.equal(body.prompt_cache_retention, '24h')
   assert.deepEqual(body.input.at(-1), { type: 'compaction_trigger' })
   const parsed = await parseNativeCompactionSse(compactSseResponse(), { maxResponseBytes: 100000 })
   assert.equal(parsed.responseId, 'compact-response-1')
-  assert.equal(parsed.output.length, 2)
+  assert.equal(parsed.output.length, 1)
   assert.equal(parsed.compaction.encrypted_content, 'opaque-native')
   assert.deepEqual(parsed.usage, { inputTokens: 4, outputTokens: 2 })
   assert.throws(() => buildNativeCompactionBody({ model: 'gpt-5.6-sol', input: [{ type: 'compaction_trigger' }] }), { code: 'LCX_COMPACT_DUPLICATE_TRIGGER' })
@@ -885,7 +919,11 @@ test('native V2 retries reuse one idempotency key', async () => {
   let attempts = 0
   globalThis.fetch = async (_url, init) => {
     attempts += 1
-    seen.push(init.headers['idempotency-key'])
+    seen.push({
+      idempotencyKey: init.headers['idempotency-key'],
+      clientRequestId: init.headers['x-client-request-id'],
+      body: init.body,
+    })
     if (attempts === 1) return new Response('temporary failure', { status: 503 })
     return compactSseResponse()
   }
@@ -895,12 +933,14 @@ test('native V2 retries reuse one idempotency key', async () => {
       model: 'gpt-5.6-sol',
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep' }] }],
       idempotencyKey: 'retry-key',
-      headers: { authorization: 'Bearer test-key' },
+      headers: { authorization: 'Bearer test-key', 'x-client-request-id': 'session-1' },
       signal: AbortSignal.timeout(5000),
       timeoutMs: 5000,
       maxAttempts: 2,
     })
-    assert.deepEqual(seen, ['retry-key', 'retry-key'])
+    assert.deepEqual(seen.map((request) => request.idempotencyKey), ['retry-key', 'retry-key'])
+    assert.deepEqual(seen.map((request) => request.clientRequestId), ['session-1', 'session-1'])
+    assert.equal(seen[0].body, seen[1].body)
   } finally {
     globalThis.fetch = previousFetch
   }
@@ -1997,7 +2037,8 @@ test('same-route v3 replay sends complete native output through direct SSE with 
     assert.deepEqual(calls[0].body.tools, [{ type: 'function', ...tools[0], strict: false }])
     assert.match(String(calls[0].headers['x-codex-beta-features']), /remote_compaction_v2/u)
     assert.equal(calls[0].body.instructions, system)
-    assert.equal(calls[0].body.prompt_cache_key, routeFingerprint(route()))
+    assert.equal(calls[0].body.prompt_cache_key, 'session-1')
+    assert.equal(calls[0].headers['x-client-request-id'], 'session-1')
     assert.deepEqual(calls[0].body.input, [
       ...nativeRecord.nativeOutput,
       { type: 'message', role: 'user', content: [
@@ -2014,6 +2055,59 @@ test('same-route v3 replay sends complete native output through direct SSE with 
     assert.deepEqual(chunks.filter((chunk) => chunk.type === 'reasoning-delta').map((chunk) => chunk.text), ['private replay thought'])
     assert.deepEqual(chunks.filter((chunk) => chunk.type === 'text-delta').map((chunk) => chunk.text), ['Hel', 'lo'])
     assert.deepEqual(chunks.at(-2).usage, { inputTokens: 8, outputTokens: 7, cacheReadTokens: 3 })
+
+    const nextChunks = []
+    for await (const chunk of listener({
+      provider: 'lcx', model: 'gpt-5.6-sol', sessionId: 'session-1', tools, system,
+      messages: [
+        message('user', marker),
+        { role: 'user', content: [
+          { type: 'text', text: 'continue' },
+          { type: 'image', attachment: { attachmentId: 'sha256:test', mediaType: 'image/png' } },
+        ] },
+        message('assistant', 'Hello'),
+        message('user', 'continue again'),
+      ],
+    }, () => { throw new Error('replay should be intercepted') })) nextChunks.push(chunk)
+
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls[1].body.input.slice(0, calls[0].body.input.length), calls[0].body.input)
+    assert.equal(calls[1].body.instructions, calls[0].body.instructions)
+    assert.deepEqual(calls[1].body.tools, calls[0].body.tools)
+    assert.equal(calls[1].body.prompt_cache_key, calls[0].body.prompt_cache_key)
+    assert.equal(calls[1].headers['session-id'], calls[0].headers['session-id'])
+    assert.equal(calls[1].headers['x-client-request-id'], calls[0].headers['x-client-request-id'])
+    assert.deepEqual(nextChunks, chunks)
+  } finally {
+    globalThis.fetch = previousFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('native V2 checkpoint builds replacement history when upstream returns only compaction', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-lcx-codex-'))
+  const previousFetch = globalThis.fetch
+  let listener
+  const settingsValue = { enabled: true, webSearch: false, remoteCompaction: true, fallbackToBasicCompaction: false, provider: 'lcx', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY', model: 'gpt-5.6-sol' }
+  const harness = testContext(settingsValue)
+  const compaction = { type: 'compaction', id: 'cmp-only', encrypted_content: 'opaque-only' }
+  globalThis.fetch = async () => compactSseResponse({ output: [compaction] })
+  harness.ctx.on = (_event, handler) => { listener = handler }
+  try {
+    apply(harness.ctx, { checkpointPath: join(dir, 'checkpoints.json'), maxAttempts: 1 })
+    const chunks = []
+    for await (const chunk of listener({
+      provider: 'lcx', model: 'gpt-5.6-sol', purpose: 'compaction', sessionId: 'same-session',
+      messages: [message('user', 'keep this recent request')],
+    }, () => { throw new Error('compaction should be intercepted') })) chunks.push(chunk)
+
+    const markerText = chunks.find((chunk) => chunk.type === 'text-delta').text
+    const checkpointId = markerText.match(/\[dsh-lcx-codex-v3-checkpoint:([0-9a-f-]{36})\]/iu)[1]
+    const saved = new CheckpointV3Store(join(dir, 'checkpoints-v3.json')).get(checkpointId)
+    assert.deepEqual(saved.nativeOutput, [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep this recent request' }] },
+      compaction,
+    ])
   } finally {
     globalThis.fetch = previousFetch
     rmSync(dir, { recursive: true, force: true })
@@ -2143,6 +2237,23 @@ test('apply uses native V2 Responses compaction, stores full output, and replays
   let listener
   const settingsValue = { enabled: true, webSearch: false, remoteCompaction: true, fallbackToBasicCompaction: true, provider: 'lcx', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY', model: 'gpt-5.6-sol' }
   const harness = testContext(settingsValue)
+  let providerCacheRetention = 'long'
+  const originalGet = harness.ctx.get.bind(harness.ctx)
+  harness.ctx.get = (name) => {
+    if (name !== 'settings') return originalGet(name)
+    return {
+      register: () => ({ get: () => settingsValue, watch: () => () => {} }),
+      get: (namespace) => namespace === 'llm-pi-ai'
+        ? { providers: { lcx: {
+          api: 'openai-responses',
+          baseURL: 'https://api.lcxbot.com/v1',
+          apiKeyEnv: 'LCX_API_KEY',
+          cacheRetention: providerCacheRetention,
+          compat: { supportsLongCacheRetention: true },
+        } } }
+        : undefined,
+    }
+  }
   const attachment = {
     attachmentId: `sha256:${'c'.repeat(64)}`,
     mediaType: 'image/png',
@@ -2173,14 +2284,17 @@ test('apply uses native V2 Responses compaction, stores full output, and replays
   }
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), body: JSON.parse(init.body), headers: init.headers })
-    return calls.length === 1
-      ? compactSseResponse({ output: [
+    if (calls.length === 1) {
+      return compactSseResponse({ output: [
         { type: 'message', role: 'user', content: [
           { type: 'input_text', text: 'old context' },
           { type: 'input_image', image_url: 'data:image/png;base64,AQID' },
         ] },
         { type: 'compaction', id: 'cmp-native', encrypted_content: 'opaque-native' },
       ] })
+    }
+    return calls.length === 4
+      ? compactSseResponse()
       : replaySseResponse({ usage: { input_tokens: 0, output_tokens: 0 } })
   }
   harness.ctx.on = (_event, handler) => { listener = handler }
@@ -2209,7 +2323,9 @@ test('apply uses native V2 Responses compaction, stores full output, and replays
     assert.equal(calls[0].body.stream, true)
     assert.deepEqual(calls[0].body.input.at(-1), { type: 'compaction_trigger' })
     assert.deepEqual(calls[0].body.input[0].content[1], { type: 'input_image', image_url: 'data:image/png;base64,AQID' })
-    assert.equal(calls[0].body.prompt_cache_key, routeFingerprint(route()))
+    assert.equal(calls[0].body.prompt_cache_key, 'session-1')
+    assert.equal(calls[0].body.prompt_cache_retention, '24h')
+    assert.equal(calls[0].headers['x-client-request-id'], 'session-1')
     assert.match(calls[0].headers['x-codex-beta-features'], /remote_compaction_v2/iu)
     assert.match(String(calls[0].headers['idempotency-key']), /^[0-9a-f-]{36}$/iu)
 
@@ -2221,11 +2337,39 @@ test('apply uses native V2 Responses compaction, stores full output, and replays
     assert.equal(calls.length, 2)
     assert.equal(llmCalls.length, 0)
     assert.equal(calls[1].body.stream, true)
+    assert.equal(calls[1].body.prompt_cache_key, 'session-1')
+    assert.equal(calls[1].body.prompt_cache_retention, '24h')
+    assert.equal(calls[1].headers['x-client-request-id'], 'session-1')
     assert.deepEqual(calls[1].body.input.at(-1), { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'continue' }] })
     assert.deepEqual(calls[1].body.input[0].content[1], { type: 'input_image', image_url: 'data:image/png;base64,AQID' })
     assert.equal(calls[1].body.input.some((item) => item.type === 'compaction' && item.encrypted_content === 'opaque-native'), true)
     assert.equal(JSON.stringify(calls[1].body.input).includes(marker), false)
     assert.deepEqual(replayChunks, nativeChunks)
+
+    providerCacheRetention = 'none'
+    const uncachedReplayChunks = []
+    for await (const chunk of listener({
+      provider: 'lcx', model: 'gpt-5.6-sol', sessionId: 'session-1',
+      messages: [message('user', marker), message('user', 'continue without cache')],
+    }, () => { throw new Error('replay should be intercepted') })) uncachedReplayChunks.push(chunk)
+    assert.equal(calls.length, 3)
+    assert.equal(Object.hasOwn(calls[2].body, 'prompt_cache_key'), false)
+    assert.equal(Object.hasOwn(calls[2].body, 'prompt_cache_retention'), false)
+    assert.equal(Object.hasOwn(calls[2].headers, 'x-client-request-id'), false)
+    assert.equal(Object.hasOwn(calls[2].headers, 'session-id'), false)
+    assert.deepEqual(uncachedReplayChunks, nativeChunks)
+
+    const uncachedCompactChunks = []
+    for await (const chunk of listener({
+      provider: 'lcx', model: 'gpt-5.6-sol', purpose: 'compaction', sessionId: 'session-2',
+      messages: [message('user', 'uncached context'), message('user', 'You are now acting as a compaction engine. Output the checkpoint.')],
+    }, () => { throw new Error('compaction should be intercepted') })) uncachedCompactChunks.push(chunk)
+    assert.equal(calls.length, 4)
+    assert.equal(Object.hasOwn(calls[3].body, 'prompt_cache_key'), false)
+    assert.equal(Object.hasOwn(calls[3].body, 'prompt_cache_retention'), false)
+    assert.equal(Object.hasOwn(calls[3].headers, 'x-client-request-id'), false)
+    assert.equal(Object.hasOwn(calls[3].headers, 'session-id'), false)
+    assert.match(uncachedCompactChunks.find((chunk) => chunk.type === 'text-delta').text, /LCX 压缩完成/u)
   } finally {
     globalThis.fetch = previousFetch
     rmSync(dir, { recursive: true, force: true })

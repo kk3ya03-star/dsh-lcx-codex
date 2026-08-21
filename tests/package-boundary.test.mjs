@@ -41,6 +41,7 @@ test('installation package contains only runtime and user-facing files', () => {
   })
   assert.equal(packageJson.homepage, 'https://github.com/kk3ya03-star/dsh-lcx-codex#readme')
   assert.deepEqual(packageJson.bugs, { url: 'https://github.com/kk3ya03-star/dsh-lcx-codex/issues' })
+  assert.equal(Object.hasOwn(packageJson.peerDependencies, '@deepseek-ai/dsh-compaction-basic'), false)
 })
 
 test('Chinese and English README files link to each other and keep the same safety boundary', () => {
@@ -79,7 +80,7 @@ test('public wording identifies the compatibility boundary without official affi
   assert.match(readme, /https:\/\/www\.npmjs\.com\/package\/dsh-lcx-codex/iu)
   assert.match(readme, /推荐从 npm 安装/iu)
   assert.doesNotMatch(readme, /npm registry 尚未发布/iu)
-  assert.match(readme, /dsh plugin --profile web add \.\\dsh-lcx-codex-0\.3\.1\.tgz/iu)
+  assert.match(readme, /dsh plugin --profile web add \.\\dsh-lcx-codex-0\.3\.2\.tgz/iu)
   assert.match(readme, /dsh plugin --profile web update dsh-lcx-codex/iu)
   assert.match(readme, /dsh plugin --profile web remove dsh-lcx-codex/iu)
   assert.match(readme, /网络目标由当前活动 DSH `openai-responses` provider 的 `baseURL` 决定/iu)

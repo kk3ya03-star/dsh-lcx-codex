@@ -78,7 +78,7 @@ dsh plugin --profile web add dsh-lcx-codex
 You can also install a specific `.tgz` file from a GitHub Release:
 
 ```powershell
-dsh plugin --profile web add .\dsh-lcx-codex-0.3.1.tgz
+dsh plugin --profile web add .\dsh-lcx-codex-0.3.2.tgz
 ```
 
 Start DSH after installation:
@@ -130,6 +130,8 @@ The probe does not print the key or full response bodies. Restart DSH, or disabl
 - Alpha capabilities: `$DSH_HOME/storages/lcx-codex/web-alpha-capabilities.json`
 - Alpha references: `$DSH_HOME/storages/lcx-codex/web-alpha-refs.json`
 - Only Native remote-compaction V2 is supported; `/responses/compact` is never called.
+- Same-route replay reuses the DSH session `prompt_cache_key` and preserves the existing request prefix. A single cold request can still occur after the short-lived upstream cache expires, so the cumulative session hit rate is not evidence that the plugin changed the prefix.
+- Sub2API strips the unsupported `prompt_cache_retention` field on its Codex OAuth path, so requesting `24h` does not extend cache lifetime on that route. Use the `cached_tokens` reported by consecutive real requests as the authoritative signal.
 - Checkpoints never store raw image bytes or data URLs.
 - Opaque checkpoints are not replayed across an incompatible provider, model, base URL, session, or lineage.
 - Image generation is not included.

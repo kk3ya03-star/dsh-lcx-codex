@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { requestNativeCompaction } from '../lib/compact-v2.js'
+import { buildNativeReplacementHistory } from '../lib/compact.js'
 import { LcxResponsesSearchProvider } from '../lib/index.js'
 import { fetchJsonWithRetry } from '../lib/transport.js'
 import { buildHostedSearchBody, normalizeHostedSearchArgs, parseHostedSearchResponse } from '../lib/web-search-hosted.js'
@@ -94,10 +95,11 @@ test('real Alpha capability classification', { skip: !alphaEnabled && 'set RUN_L
 })
 
 test('real Native V2 Responses compact contract', { skip: !enabled && skipReason() }, async () => {
+  const input = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Return a compact checkpoint for this short test.' }] }]
   const result = await requestNativeCompaction({
     baseURL,
     model,
-    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Return a compact checkpoint for this short test.' }] }],
+    input,
     promptCacheKey: `dsh-lcx-codex-e2e-${Date.now()}`,
     headers: { authorization: `Bearer ${process.env.LCX_API_KEY}` },
     signal: AbortSignal.timeout(timeoutMs),
@@ -108,4 +110,6 @@ test('real Native V2 Responses compact contract', { skip: !enabled && skipReason
   assert.equal(result.compaction.type, 'compaction')
   assert.ok(result.compaction.encrypted_content.length > 0)
   assert.ok(result.output.length >= 1)
+  const replacement = buildNativeReplacementHistory(input, result.compaction)
+  assert.deepEqual(replacement.map((item) => item.type), ['message', 'compaction'])
 })

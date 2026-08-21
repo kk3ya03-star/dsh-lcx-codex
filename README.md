@@ -78,7 +78,7 @@ dsh plugin --profile web add dsh-lcx-codex
 也可以下载 GitHub Release 中的 `.tgz` 安装指定版本：
 
 ```powershell
-dsh plugin --profile web add .\dsh-lcx-codex-0.3.1.tgz
+dsh plugin --profile web add .\dsh-lcx-codex-0.3.2.tgz
 ```
 
 安装后启动 DSH：
@@ -130,6 +130,8 @@ node (Join-Path $dshHome 'profiles\web\node_modules\dsh-lcx-codex\scripts\probe-
 - Alpha capability：`$DSH_HOME/storages/lcx-codex/web-alpha-capabilities.json`
 - Alpha refs：`$DSH_HOME/storages/lcx-codex/web-alpha-refs.json`
 - 只支持 Native remote-compaction V2，不调用 `/responses/compact`
+- 同路由 replay 会复用 DSH session 的 `prompt_cache_key` 并保持已有请求前缀稳定；短期缓存过期后仍可能出现单次冷请求，不能用会话累计命中率判断插件是否破坏缓存
+- Sub2API 的 Codex OAuth 转换层会删除上游不支持的 `prompt_cache_retention`，因此经该路径设置 `24h` 不会延长缓存；以实际连续请求的 `cached_tokens` 为准
 - Checkpoint 不保存图片原始字节或 data URL
 - Opaque checkpoint 不跨不兼容 provider、model、base URL、session 或 lineage 回放
 - 不包含图片生成功能
