@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  statuses: write
 
 jobs:
   publish:
@@ -49,7 +50,20 @@ jobs:
       - name: Upgrade npm CLI for trusted publishing
         run: npm install --global npm@latest
 
+      - name: Check whether version already exists
+        id: registry
+        shell: bash
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.registry.outputs.exists != 'true'
         shell: bash
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
@@ -58,3 +72,29 @@ jobs:
           else
             npm publish --provenance --tag latest
           fi
+
+      - name: Mark npm publication verified
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d '{"state":"success","context":"npm/published","description":"npm version exists and is verified"}'
+
+      - name: Mark npm publication failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d '{"state":"failure","context":"npm/published","description":"npm publication workflow failed"}' || true
