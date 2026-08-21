@@ -16,7 +16,6 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,74 +26,74 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install dependencies
-        run: npm install --ignore-scripts --no-audit --no-fund
-
-      - name: Run tests
-        run: npm test
-
-      - name: Validate DSH tool schemas
-        run: npm run test:schema
-
-      - name: Verify tag matches package version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Release pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "package.json version ($PACKAGE_VERSION) does not match tag ($GITHUB_REF_NAME)"
+          set -uo pipefail
+          mark() {
+            local context="$1" state="$2" description="$3"
+            curl -sS -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -d "{\"state\":\"${state}\",\"context\":\"npm/${context}\",\"description\":\"${description}\"}" >/dev/null || true
+          }
+
+          mark install pending "installing dependencies"
+          if ! npm install --ignore-scripts --no-audit --no-fund; then
+            mark install failure "npm install failed"
             exit 1
           fi
+          mark install success "dependencies installed"
 
-      - name: Upgrade npm CLI for trusted publishing
-        run: npm install --global npm@latest
+          mark tests pending "running tests"
+          if ! npm test; then
+            mark tests failure "npm test failed"
+            exit 1
+          fi
+          if ! npm run test:schema; then
+            mark tests failure "schema validation failed"
+            exit 1
+          fi
+          mark tests success "tests and schemas passed"
 
-      - name: Check whether version already exists
-        id: registry
-        shell: bash
-        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$PACKAGE_VERSION" != "$TAG_VERSION" ]]; then
+              mark publish failure "tag does not match package version"
+              exit 1
+            fi
+          fi
+
+          mark registry pending "checking npm registry"
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            mark registry success "version already exists on npm"
+            mark published success "npm version verified"
+            exit 0
           fi
+          mark registry success "version not present; publishing"
 
-      - name: Publish to npm
-        if: steps.registry.outputs.exists != 'true'
-        shell: bash
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          mark publish pending "publishing with trusted publishing"
+          if ! npm install --global npm@latest; then
+            mark publish failure "npm CLI upgrade failed"
+            exit 1
+          fi
           if [[ "$PACKAGE_VERSION" == *-* ]]; then
-            npm publish --provenance --tag next
+            if ! npm publish --provenance --tag next; then
+              mark publish failure "npm publish failed"
+              exit 1
+            fi
           else
-            npm publish --provenance --tag latest
+            if ! npm publish --provenance --tag latest; then
+              mark publish failure "npm publish failed"
+              exit 1
+            fi
           fi
-
-      - name: Mark npm publication verified
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d '{"state":"success","context":"npm/published","description":"npm version exists and is verified"}'
-
-      - name: Mark npm publication failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          curl -sS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d '{"state":"failure","context":"npm/published","description":"npm publication workflow failed"}' || true
+          mark publish success "npm publish completed"
+          mark published success "npm version published"
