@@ -1,47 +1,106 @@
 # Changelog
 
-本项目遵循语义化版本。未通过真实验收的能力只记录在Unreleased，不作为已发布功能。
+## 0.4.0-rc.8
 
-## Unreleased
+- Rebase the plugin on DSH `0.1.1-rc.2`; older DSH releases are no longer a supported runtime target.
+- Native V2 compaction image replay now uses DSH `attachments.readImageRequest()` with the active `llm-pi-ai` route's request-image pixel/byte policy instead of reading normalized master bytes directly.
+- Native image requests use DSH's deterministic `offloadRequestImagesWithPolicy()` projection before serialization, matching the current request-size behavior for long image-heavy sessions.
+- Keep rc.7 active-Agent Hosted Search routing, isolated search cache namespace, 240s search timeout, rc.5 conversation-fidelity checkpointing, and rc.6 90% Native-first / 95% emergency pressure policy unchanged.
+- CI installs against current declared DSH packages instead of enforcing the stale rc.8 lockfile.
 
-## 0.3.1 - 2026-08-21
-
-### Fixed
-
-- 删除未被 DSH 官方识别、且错误写死旧域名与 `LCX_API_KEY` 的 `dshhub` 权限块；README 改为声明网络目标和凭据由当前 `openai-responses` provider 动态决定。
-- 添加 npm 与 DSH 社区检索使用的标准关键词，其中包括 `dsh-plugin` GitHub topic 对应关键词。
-- 新增独立英文用户文档 `README_EN.md`，并与中文 README 互相链接。
-
-## 0.3.0 - 2026-08-21
-
-### Changed
-
-- 收紧 npm/DSH 安装包，只保留运行时代码、Alpha 运维探针、许可证和用户文档；开发测试与 schema 校验脚本继续保留在源码仓库。
-- README 和包元数据明确 `LCX` 只是插件名称；支持 Sub2API 反代或 NewAPI 中转的 GPT 模型，不隶属于 OpenAI；Alpha 能力继续按部署 fingerprint 与可信 provenance 分类，不作全局 native 承诺。
-- 明确 Alpha 经过 NewAPI 时渠道类型必须为 `Sub2API`，不能使用普通 `OpenAI` 渠道。
-- README 改为面向用户的中文文档，提供经 DSH/pnpm 帮助核对的 GitHub URL、Release 包、更新和卸载命令；本地 `link:` 安装明确归入源码开发流程。
-
-### Added
-
-- Hosted Search 完整结构化参数与 citation/source/image 输出。
-- 独立 `websearch_alpha`，支持 search、image、open/find/click、PDF screenshot、finance、weather、sports 和 time；capability/ref sidecar 按 route 与 session 隔离。
-- Native V2 checkpoint v3、同路由 replay、Sol/Luna portable migration、fork/tree/restart generation lease 与 durable-image migration。
+## 0.4.0-rc.7 - 2026-08-22
 
 ### Fixed
 
-- Hosted Search 与 Alpha Search 现在和 Native V2 Compact 一样，复用 DSH 已添加的 `openai-responses` provider 路由、凭据引用、headers 与 retry policy；不再要求用户为插件重复配置 `LCX_API_KEY`。
-- README 将插件运行时凭据与运行在 DSH 外的 Alpha 探针/E2E 测试凭据明确分开。
-- README 改为简短的用户手册，以 npm 安装为主；Alpha 提示前置，并按 NewAPI 当前源码区分 4 种中转渠道类型与 Sub2API 直连，共 5 种部署路径。
-- Native replay and portable migration no longer depend on the nonexistent `GenerateOptions.branchId`; fork safety uses public session ancestry and derived marker history while preserving existing v3 fingerprint compatibility.
-- README 的本地 link 安装示例不再包含开发机绝对路径。
-- Alpha 从 rc.8 公共 `session.requestContext()` 读取 active route，避免模型切换后的 capability 误判。
-- Alpha 对 HTTP 200 内的函数调用语义错误 fail closed，并修正 sports action 的 wire 字段。
-- Responses SSE 去重、usage、工具配对、并发 sidecar、Windows ACL、图片 offload/hydrate 和 remote/local summary 边界。
+- Ordinary DSH `web_search` now follows the active Agent `provider/model` instead of always using the plugin fallback GPT model. A Luna conversation now searches with Luna; a Sol conversation searches with Sol.
+- Added an AsyncLocalStorage route bridge at the DSH `tools/execute` boundary so the provider-only `ctx.web.search()` seam can receive Agent route context without changing the model-visible `web_search` schema.
+- Hosted Search now uses a separate stable `dsh-lcx-search:<route hash>` `prompt_cache_key`, avoiding intentional cache-key sharing with Native conversation replay.
+- The settings UI now labels the configured Responses endpoint/model as **fallback** values, matching their actual rc.7 role.
 
-## 0.2.0
+### Kept from rc.6
 
-- Hosted Responses query-only Web Search。
-- Native Remote Compaction V2，拒绝legacy transport。
-- checkpoint v3、同route replay和第一批portable model migration。
-- 图片同route attachment hydrate，portable image migration保持fail closed。
-- 协议、大小、超时、重试、redirect和日志脱敏基础测试。
+- 240-second default DSH `web_search` deadline.
+- Native-first automatic pressure policy: 90% Native V2, 95% emergency DSH prune.
+- rc.5 conversation-fidelity checkpoints and restart-safe DSH session-log persistence.
+
+### Docs / release
+
+- Reworked the README around the current architecture and real cache observations.
+- Added a blue/white DSH-LCX-CODEX hero banner for GitHub/npm.
+- GitHub trusted publishing is wired through `.github/workflows/publish.yml`: pre-release tags publish to npm dist-tag `next`; stable tags publish to `latest`.
+
+## 0.4.0-rc.6
+
+- Added Native-first automatic pressure coordination for GPT Responses sessions: below the configured Native threshold the plugin suppresses DSH's stock 80% pressure compaction/prune path; at the default 90% threshold it lets compaction proceed while temporarily suppressing tool-result pruning so Native V2 runs first.
+- Added a separate emergency prune threshold (default 95%). At or above this zone, DSH's replay-safe tool-result pruner is allowed to run before compaction as overflow protection.
+- Added adjustable `web_search` tool deadline, default 240 seconds (30–600s). This mutates only DSH's non-model-visible `ToolDefinition.timeoutMs`, so the model tool schema and prompt-cache prefix do not change.
+- Added Settings UI controls for automatic compaction, Native threshold, emergency prune threshold, and web search timeout.
+- Kept the rc.5 checkpoint/fidelity format unchanged (`lcx-native-compaction-v5`); rc.6 is a pressure/timeout coordination release, not another checkpoint migration.
+
+## 0.4.0-rc.5
+
+- Adds a bounded conversation-fidelity layer after real DSH testing showed assistant-only facts could be lost by opaque Native V2 compaction.
+- New `lcx-native-compaction-v5` checkpoints retain selected user/developer/system messages plus user-visible assistant final answers before the opaque compaction item.
+- Keeps explicit retained history within an estimated 64k-token ceiling; defaults reserve at most 24k for assistant answers and cap one retained answer at about 3k tokens.
+- Does not copy reasoning, tool calls/results, raw search payloads, or telemetry into the fidelity prefix.
+- Repairs rc.3/rc.4 v4 checkpoints from append-only `shadowedSeqs`, including assistant-visible answers when the original DSH events still exist.
+- Stores only the single opaque compaction output item, ignoring unrelated terminal output items from nonstandard proxies.
+- Route compatibility now accepts both native checkpoint versions 4 and 5.
+- Adds regression coverage for the exact assistant-only anchor failure (`Cobalt-Sparrow-604` / `81736`) and the 64k retention ceiling.
+
+## 0.4.0-rc.4
+
+- Fixes a Native V2 replay fidelity bug found by real DSH session-log testing.
+- Native checkpoints now persist the retained client-authored Responses messages before the opaque `compaction` item, matching current OpenAI Codex remote-compaction V2 replacement-history semantics.
+- Existing rc.3 opaque-only v4 checkpoints are repaired on replay by reconstructing the missing shadowed user history from the DSH append-only session log.
+- Adds replay/retention regression coverage and an explicit Native success diagnostic.
+- Keeps the rc.3 search-provider, remote-first fallback, and session-log-native checkpoint architecture unchanged.
+
+## 0.4.0-rc.3
+
+- Fix Cordis external-package loading: all `ctx.web`/`ctx.llm` service access now occurs inside an explicit `ctx.inject(['llm', 'web'], ...)` scope.
+- This fixes `cannot get property "web" without inject` when DSH loads the plugin from a profile-installed `.tgz`.
+- No protocol or checkpoint-format changes from rc.2.
+
+## 0.4.0-rc.2 - 2026-08-21
+
+- Packaging-only fix over rc.1: remove unnecessary `@deepseek-ai/dsh-compaction-basic` and `@deepseek-ai/dsh-web` peer declarations.
+- The plugin consumes DSH runtime services through injected `ctx.*` seams and does not import or mount either package directly.
+- Avoids misleading pnpm "missing peer" warnings and, importantly, avoids encouraging users to install a second compaction backend.
+
+## 0.4.0-rc.1 - 2026-08-21
+
+### Architecture
+
+- Keep DSH `compaction-basic` as the sole compaction service owner; use only its documented/interceptable `purpose=compaction` `llm/stream` summarizer seam.
+- Replace parallel local+remote compaction with remote-first fallback.
+- Persist new Native V2 opaque state in DSH `compaction/summary.rawOutput` using `lcx-native-compaction-v4`; the model-visible replacement stays short.
+- Remove new-checkpoint writes to the v3 JSON sidecar. The v3 sidecar is now read-only compatibility for old sessions.
+- Reconstruct portable history for route migration from DSH append-only `shadowedSeqs` instead of duplicating every checkpoint's portable history.
+- Preserve same-route fork replay through DSH session ancestry.
+- Centralize the remaining direct Responses-native transport in `compact-v2.js` and `responses-replay.js`.
+
+### Search
+
+- Make `ctx.web` / DSH `web_search` the ordinary Hosted Search entry point.
+- Remove the ambiguous ordinary `websearch_gpt` tool.
+- Add opt-in `websearch_gpt_advanced` for Hosted-only controls that DSH `WebSearchRequest` cannot express.
+- Keep `websearch_alpha` independent and capability-gated.
+- Isolate the DSH rc.8 runtime SearchProvider-selection compatibility shim.
+
+### Reliability
+
+- Rehydrate DSH image attachment references when replaying legacy v3 checkpoints.
+- Resolve startup settings into runtime route config immediately instead of waiting for the first settings change.
+- Do not assume `events[seq]` is always the event whose `event.seq === seq`; use a safe fallback lookup.
+- Add protocol, session persistence, migration and architecture regression tests.
+
+### Compatibility
+
+- Node.js >= 20.
+- Target DSH `0.1.1-rc.2` only.
+- Existing 0.3.x v3 marker sessions remain best-effort readable through the old sidecar.
+
+## 0.3.1
+
+- Previous Hosted/Alpha Search and Native V2 checkpoint-v3 implementation.

@@ -1,5 +1,7 @@
-# Adds optional search and compaction for Sub2API-proxied or NewAPI-relayed GPT
-# models without touching existing profiles or presets.
+# Optional Responses/Codex capabilities for GPT routes already configured in llm-pi-ai.
+# This does not replace DSH's compaction service. Native V2 is installed as the
+# documented purpose=compaction llm/stream override, leaving compaction policy,
+# range selection, pruning, transactions and /compact owned by DSH.
 - insert:
     - id: lcx-codex
       name: dsh-lcx-codex
@@ -8,11 +10,15 @@
         baseURL: https://api.lcxbot.com/v1
         apiKeyEnv: LCX_API_KEY
         model: gpt-5.6-sol
-        compactTransport: native-v2
-        checkpointPath: !!js dshHomePath('storages/lcx-codex/checkpoints-v3.json')
+        legacyCheckpointPath: !!js dshHomePath('storages/lcx-codex/checkpoints-v3.json')
         alphaCapabilityPath: !!js dshHomePath('storages/lcx-codex/web-alpha-capabilities.json')
         alphaRefPath: !!js dshHomePath('storages/lcx-codex/web-alpha-refs.json')
         webSearchProvider: lcx-responses
         webMaxResults: 8
         timeoutMs: 300000
         maxAttempts: 3
+        requestImagePixelBudget: 4194304
+        requestImageMaxBytes: 1048576
+        webSearchTimeoutMs: 240000
+        autoCompactionThresholdPercent: 90
+        emergencyPruneThresholdPercent: 95

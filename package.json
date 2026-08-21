@@ -1,7 +1,7 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.3.4",
-  "description": "DSH web search and Responses native V2 compaction for Sub2API-proxied or NewAPI-relayed GPT models",
+  "version": "0.4.0-rc.8",
+  "description": "DSH Codex/Responses capabilities for existing openai-responses routes: hosted/alpha search and session-native V2 compaction",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -35,11 +35,13 @@
   },
   "files": [
     "lib/*.js",
-    "scripts/probe-alpha.mjs",
+    "scripts/*.mjs",
+    "assets/*.jpg",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
     "README_EN.md",
+    "ARCHITECTURE.md",
     "CHANGELOG.md"
   ],
   "dsh": {
@@ -50,31 +52,31 @@
       "platform": "web"
     }
   },
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.82.1"
-  },
   "devDependencies": {
-    "@deepseek-ai/dsh-settings": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-compaction-basic": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-llm": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-attachment": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-session": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0"
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "test:schema": "node scripts/validate-dsh-schema.mjs",
-    "test:e2e": "node --test tests/sub2api.e2e.test.mjs",
-    "probe:alpha": "node scripts/probe-alpha.mjs"
+    "probe:alpha": "node scripts/probe-alpha.mjs",
+    "pack:local": "npm pack --ignore-scripts",
+    "test:schema": "node scripts/validate-dsh-schema.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -1,160 +1,194 @@
-# dsh-lcx-codex
+<div align="center">
 
-[Chinese](README.md) | **English**
+<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/dsh-lcx-codex-banner.jpg" alt="DSH-LCX-CODEX" width="100%" />
 
-[![npm version](https://img.shields.io/npm/v/dsh-lcx-codex.svg)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![license](https://img.shields.io/npm/l/dsh-lcx-codex.svg)](LICENSE)
+# DSH-LCX-CODEX
 
-A community-maintained DSH plugin that adds Hosted Web Search, Alpha Search, and Native V2 remote compaction to GPT models served through an OpenAI Responses/Codex-compatible API.
+**OpenAI Responses / Codex-native capabilities for DeepSeek Harness.**
 
-> [!IMPORTANT]
-> Alpha Search currently has five supported deployment paths: a direct Sub2API connection, or one of four NewAPI channel types: `Sub2API`, `New API`, `ChatGPT Subscription (Codex)`, and `Advanced Custom`. A regular `OpenAI` channel does not support `/v1/alpha/search` and is rejected by NewAPI.
+[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
+![Node](https://img.shields.io/badge/Node-%3E%3D20-1677ff)
+![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4ea8ff)
+![License](https://img.shields.io/badge/license-MIT-1677ff)
 
-This list comes from NewAPI's current [`AlphaSearchHelper`](https://github.com/QuantumNous/new-api/blob/f116414284162ad15d8925f7bca494c109b83e93/relay/alpha_search_handler.go). Other NewAPI versions may differ, so the capability probe remains authoritative for a specific deployment.
+[简体中文](README.md) · **English**
 
-`LCX` is only the plugin name. It is not a service provider or protocol. The plugin supports GPT models served through:
+</div>
 
-- A direct Sub2API reverse proxy.
-- A NewAPI relay, meaning a third-party relay whose upstream channel connects to Sub2API.
+---
 
-```mermaid
-flowchart LR
-    accTitle: dsh-lcx-codex architecture
-    accDescr: The plugin reuses the active DSH openai-responses model route and credential, then sends Hosted Search, capability-gated Alpha Search, and Native V2 Compact requests through a controlled transport to a direct Sub2API or NewAPI relay deployment.
+`dsh-lcx-codex` is a community DSH plugin for GPT routes already configured through `llm-pi-ai / openai-responses`. It keeps DSH's Agent, Web, Session and Compaction ownership intact and fills the provider-native gaps.
 
-    dsh_session([DSH GPT session]) --> resolve_route[Reuse provider, model, baseURL, and credential]
+> `LCX` is only the project name. This project is not affiliated with OpenAI, DeepSeek, Sub2API or NewAPI.
 
-    subgraph plugin_capabilities ["dsh-lcx-codex"]
-        hosted_search[Hosted Search<br/>POST /responses + web_search]
-        alpha_gate{Alpha capability matches?}
-        alpha_search[Alpha Search<br/>POST /alpha/search]
-        alpha_disabled([Alpha is not registered])
-        native_compact[Native V2 Compact<br/>stream + compaction_trigger]
-    end
-
-    resolve_route --> hosted_search
-    resolve_route --> alpha_gate
-    resolve_route --> native_compact
-    alpha_gate -->|Yes| alpha_search
-    alpha_gate -->|No| alpha_disabled
-
-    hosted_search --> transport[Controlled authentication, timeout, retry, and response size]
-    alpha_search --> transport
-    native_compact --> transport
-
-    transport --> deployment{Deployment path}
-    deployment -->|Direct| sub2api[Sub2API]
-    deployment -->|Relay| newapi[Compatible NewAPI channel]
-    sub2api --> upstream([OpenAI Responses/Codex-compatible upstream])
-    newapi --> upstream
-
-    upstream -.->|Compaction output| checkpoint[(Checkpoint v3)]
-    checkpoint -->|Same route| opaque_replay[Opaque native replay]
-    checkpoint -->|Route or model changed| portable_migration[Portable migration]
-    opaque_replay --> transport
-    portable_migration --> transport
-```
-
-This project is not affiliated with OpenAI and is not an official OpenAI plugin or OAuth client.
+- **Current DSH image pipeline**: Native V2 reuses `readImageRequest()` and the active route image budgets, so compaction and ordinary GPT requests see the same deterministic image variants.
 
 ## Features
 
-| Feature | Tool or protocol | Behavior |
-|---|---|---|
-| Hosted Web Search | `websearch_gpt` | Uses `/responses` with `web_search` and returns text, direct sources, and citations |
-| Alpha Search | `websearch_alpha` | Uses `/alpha/search` for search, image, open/find/click, PDF screenshot, finance, weather, sports, and time actions |
-| Native V2 Compact | `/responses` with `compaction_trigger` | Stores checkpoint v3 and supports same-route replay, model migration, fork/tree sessions, restart recovery, and image attachments |
+| Capability | What it does | Default |
+|---|---|---:|
+| **DSH `web_search` → GPT Hosted Search** | Uses DSH's existing ordinary search tool; rc.7+ follows the active Agent GPT Responses model | opt-in |
+| **Advanced Hosted Search** | Native domain/location/context/image search controls | off |
+| **Alpha Search** | Stateful `search/open/find/click/screenshot`-style commands, capability-gated | off |
+| **Native Remote Compaction V2** | Uses Responses `compaction_trigger` and provider-native opaque state | opt-in |
+| **Conversation fidelity retention** | Bounded user + assistant-visible history protects low-salience facts | built-in |
+| **Session-native checkpoints** | Durable state lives in the DSH append-only session log | built-in |
+| **Native-first auto compaction** | 90% Native V2, 95% emergency DSH pruning; configurable | opt-in |
+| **Long web timeout** | DSH `web_search` deadline defaults to 240s, configurable 30–600s | built-in |
 
-Alpha is enabled only when a capability record matches the current endpoint, provider, model, and schema. Hosted and Alpha are separate protocols and never silently fall back to each other.
+## rc.8: DSH 0.1.1-rc.2 native alignment
+
+rc.8 targets **DSH 0.1.1-rc.2** directly. Ordinary Hosted Search still follows the active Agent route, while Native V2 image serialization now uses DSH's `readImageRequest()` request-version pipeline instead of reading attachment master bytes.
+
+Search routing still crosses DSH's `tools/execute` → SearchProvider boundary without changing the model-visible `web_search` schema:
+
+```text
+Agent: lcx / gpt-5.6-luna
+        └─ DSH web_search
+             └─ Hosted Search: lcx / gpt-5.6-luna
+```
+
+The settings-page model is now a **fallback** used only when no active Agent route is available.
+
+Hosted Search also receives its own stable cache namespace:
+
+```text
+conversation replay: dsh-lcx:<route hash>
+hosted search:       dsh-lcx-search:<route hash>
+```
+
+A search row with a low cache hit in NewAPI therefore does not imply conversation truncation.
+
+## Native V2 Compaction
+
+DSH continues to own pressure, range selection, pruning, durable replacement, `/compact`, and overflow recovery. The plugin replaces only the `purpose: compaction` summarizer transport with Native V2:
+
+```text
+DSH compaction transaction
+        └─ purpose=compaction
+              └─ /responses + compaction_trigger
+```
+
+Native success means zero basic-summary request. Basic summary runs only if Native fails and fallback is enabled.
+
+## Conversation fidelity layer
+
+Provider-native opaque compaction is intentionally lossy. Real long-session tests showed that assistant-only details can disappear even when the opaque checkpoint itself is valid. The current checkpoint therefore keeps:
+
+```text
+bounded client-visible history
++ bounded assistant-visible final answers
++ opaque Native V2 compaction item
+```
+
+The explicit prefix is bounded at roughly 64k estimated tokens, with up to about 24k reserved for assistant answers and about 3k per retained assistant answer. Reasoning, raw tool traces, large search payloads and telemetry are not copied back into the prompt.
+
+The goal is not byte-for-byte replay. It is **drop process noise, retain conversation facts**.
+
+## Automatic compaction
+
+```text
+0% -------------------- 90% ----- 95% ----- 100%
+        normal             Native   emergency   hard cap
+                           V2       DSH prune
+```
+
+Default behavior:
+
+- below 90%: suppress stock 80% pressure pruning for compatible Native sessions;
+- 90–95%: Native V2 first;
+- 95%+: DSH's replay-safe tool-result pruning may run as an emergency guard;
+- provider-confirmed context overflow keeps DSH's normal recovery path;
+- manual `/compact` is unaffected.
+
+## Cache behavior
+
+A provider cache miss is not the same thing as DSH deleting history.
+
+Observed real-world pattern:
+
+```text
+turn N:   ~155k uncached, cacheRead 0
+turn N+1: ~1k new input, ~155k cacheRead
+```
+
+That means the full context was resent and cached again. Prefix-changing operations include compaction, emergency pruning, route/model changes, and other DSH surface replacement. Restart/idle/provider cache TTL may also force a cold request independently of this plugin.
+
+## Search modes
+
+### Ordinary `web_search`
+
+Recommended default. It follows the current Agent GPT Responses route.
+
+### `websearch_gpt_advanced`
+
+Opt in only for Hosted-only parameters such as domain filters, approximate location, search-context size and image search. Keeping it disabled avoids unnecessary tool-catalog churn.
+
+### `websearch_alpha`
+
+Stateful Codex/Alpha-style `search/open/find/click/screenshot`; registered only after a matching capability probe.
 
 ## Installation
 
-Install from npm:
+Stable channel:
 
 ```powershell
 dsh plugin --profile web add dsh-lcx-codex
 ```
 
-You can also install a specific `.tgz` file from a GitHub Release:
+Pre-release channel (current rc.8):
 
 ```powershell
-dsh plugin --profile web add .\dsh-lcx-codex-0.3.1.tgz
+dsh plugin --profile web add dsh-lcx-codex@next
 ```
 
-Start DSH after installation:
+Local RC:
 
 ```powershell
+dsh plugin --profile web remove dsh-lcx-codex
+dsh plugin --profile web add .\dsh-lcx-codex-0.4.0-rc.8.tgz
 dsh web
 ```
 
-Open `Settings -> Plugins -> LCX / Codex capabilities` and enable Hosted, Alpha, or Native Compact as needed. The plugin is disabled by default.
+Do not delete existing sessions or `$DSH_HOME/storages/lcx-codex/` just to upgrade. The legacy v3 sidecar remains read-only compatibility state.
+
+## Recommended settings
+
+```text
+Enable plugin                         on
+GPT Hosted Search                     on
+Advanced Hosted Search               off
+Alpha Search                         off
+Native V2 remote compaction          on
+Native-first auto compaction         on
+Native threshold                     90%
+Emergency DSH prune                  95%
+web_search timeout                   240s
+```
 
 ## Requirements
 
-- Node.js 20 or later
-- DSH `0.1.0-rc.8` or a compatible release
-- A GPT model already added to DSH and working in a normal conversation
-- The model must use the `openai-responses` provider from `llm-pi-ai`
+- Node.js >= 20
+- DSH 0.1.1-rc.2
+- a working GPT `openai-responses` route in DSH
+- an upstream that actually supports the enabled Hosted Search / Native V2 / Alpha capabilities
 
-The plugin reuses the active DSH model's provider, model, Responses URL, credential reference, headers, and retry policy. Normal plugin operation does not require a second `LCX_API_KEY` configuration.
+Typical paths include direct Sub2API and NewAPI-relayed Responses routes.
 
-The endpoint and model fields in the plugin UI are defaults for cases without an active session route and for compatibility with the older direct-route configuration. An existing DSH provider configuration takes precedence.
+## Release channels
 
-## Alpha Probe
-
-Alpha capability is classified as `native`, `command-capable`, `emulated-search-only`, `unsupported`, or `unknown`. An HTTP 200 response alone does not prove that an action is native.
-
-The probe is a standalone Node.js script outside the DSH runtime, so it cannot use the DSH credentials service. It requires a local key file; normal plugin operation does not.
-
-```powershell
-$dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
-$env:LCX_API_KEY_FILE = 'C:\path\to\local-key.txt'
-$env:LCX_MODEL = 'the-exact-model-name'
-node (Join-Path $dshHome 'profiles\web\node_modules\dsh-lcx-codex\scripts\probe-alpha.mjs')
-```
-
-To also probe image, finance, weather, sports, and time actions:
-
-```powershell
-$env:LCX_ALPHA_PROBE_STRUCTURED = '1'
-node (Join-Path $dshHome 'profiles\web\node_modules\dsh-lcx-codex\scripts\probe-alpha.mjs')
-```
-
-The probe does not print the key or full response bodies. Restart DSH, or disable and re-enable Alpha, after the probe completes.
-
-## Data and Limits
-
-- The runtime network target is determined by the active DSH `openai-responses` provider's `baseURL`; it is not fixed to LCX or any other domain. The plugin only calls `/responses` and `/alpha/search` under that address.
-- The credential name comes from the same provider's `apiKeyEnv` and is resolved by the DSH credentials service. The plugin does not store API keys.
-- Checkpoints: `$DSH_HOME/storages/lcx-codex/checkpoints-v3.json`
-- Alpha capabilities: `$DSH_HOME/storages/lcx-codex/web-alpha-capabilities.json`
-- Alpha references: `$DSH_HOME/storages/lcx-codex/web-alpha-refs.json`
-- Only Native remote-compaction V2 is supported; `/responses/compact` is never called.
-- Checkpoints never store raw image bytes or data URLs.
-- Opaque checkpoints are not replayed across an incompatible provider, model, base URL, session, or lineage.
-- Image generation is not included.
-
-Never commit API keys, OAuth tokens, Authorization headers, account IDs, session cookies, or runtime sidecars to GitHub.
-
-## Update and Removal
-
-```powershell
-dsh plugin --profile web update dsh-lcx-codex
-dsh plugin --profile web remove dsh-lcx-codex
-```
-
-Removal does not delete `$DSH_HOME/storages/lcx-codex/`. Do not delete a checkpoint sidecar by itself while a session still references its marker.
+Stable releases use npm's `latest` tag. `0.4.0-rc.*` builds publish to npm's `next` tag. GitHub tags must match `package.json`; Trusted Publishing runs tests before publishing.
 
 ## Development
 
-```powershell
-npm install
+```bash
 npm test
 npm run test:schema
+npm pack --ignore-scripts
 ```
 
-Real E2E tests and the Alpha probe must read test credentials only from ignored local files or environment variables.
+See [ARCHITECTURE.md](ARCHITECTURE.md) and [CHANGELOG.md](CHANGELOG.md) for implementation details.
 
 ## License
 
-[MIT](LICENSE)
+MIT

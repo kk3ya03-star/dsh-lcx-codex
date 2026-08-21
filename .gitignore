@@ -1,17 +1,13 @@
 node_modules/
+*.tgz
+*.zip
 output/
-.playwright-cli/
-playwright-report/
-test-results/
 artifacts/
+test-results/
 screenshots/
 session-exports/
 service-logs/
 work/
-*.log
-.env
-.env.*
-!.env.example
 test-secrets/
 secrets/
 *.key
@@ -22,3 +18,4 @@ web-alpha-*.json
 *.har
 *.trace.zip
 *.session-export.json
+.DS_Store
