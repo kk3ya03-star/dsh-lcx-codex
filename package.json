@@ -1,6 +1,6 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.3.1",
+  "version": "0.3.4",
   "description": "DSH web search and Responses native V2 compaction for Sub2API-proxied or NewAPI-relayed GPT models",
   "keywords": [
     "deepseek-harness",
