@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+## 0.3.4 - 2026-08-21
+
+### Fixed
+
+- Hosted/Alpha Search 现在可由任意 DSH 主模型调用：当前主模型有兼容 GPT Responses 路由时优先复用，否则使用插件配置的 GPT 搜索路由。Native Compact 仍只作用于当前兼容 GPT 主模型。
+- Hosted 启用时继续接管 DSH 的 `searchProviderId`，关闭或卸载时恢复启用前的 provider；该接管行为不再阻止非 GPT 主模型使用插件配置的 GPT 搜索路由。
+
 ## 0.3.3 - 2026-08-21
 
 ### Fixed

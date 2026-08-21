@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-lcx-codex.svg)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![license](https://img.shields.io/npm/l/dsh-lcx-codex.svg)](LICENSE)
 
-社区维护的 DSH 插件，为兼容 OpenAI Responses/Codex 协议的 GPT 模型增加 Hosted Web Search、Alpha Search 和 Native V2 远程压缩。
+社区维护的 DSH 插件：让任意 DSH 主模型通过单独配置的 GPT Responses 路由调用 Hosted/Alpha Search，并为兼容 OpenAI Responses/Codex 协议的 GPT 主模型增加 Native V2 远程压缩。
 
 > [!IMPORTANT]
 > Alpha Search 有 5 种可用部署路径：Sub2API 直连，以及经 NewAPI 的 4 种渠道类型：`Sub2API`、`New API`、`ChatGPT Subscription (Codex)`、`Advanced Custom`。普通 `OpenAI` 渠道不支持 `/v1/alpha/search`，会在 NewAPI 内被拒绝。
@@ -20,9 +20,10 @@
 ```mermaid
 flowchart LR
     accTitle: dsh-lcx-codex 技术路线
-    accDescr: 插件复用当前 DSH openai-responses 模型的路由和凭据，将 Hosted Search、capability-gated Alpha Search 与 Native V2 Compact 请求经受控传输发送到 Sub2API 直连或 NewAPI 中转部署。
+    accDescr: Hosted 和 Alpha 可由任意 DSH 主模型调用，经已配置的 GPT openai-responses 路由发送；启用 Hosted 时插件接管 DSH 搜索 provider，关闭后恢复原 provider。Native V2 Compact 只作用于当前兼容 GPT 路由。
 
-    dsh_session([DSH GPT 会话]) --> resolve_route[复用 provider、model、baseURL 和凭据]
+    dsh_session([任意 DSH 主模型]) --> search_route[当前兼容 GPT 路由<br/>否则使用插件配置的 GPT 路由]
+    gpt_session([兼容 GPT 主模型]) --> compact_route[复用当前 provider、model、baseURL 和凭据]
 
     subgraph plugin_capabilities ["dsh-lcx-codex"]
         hosted_search[Hosted Search<br/>POST /responses + web_search]
@@ -32,9 +33,9 @@ flowchart LR
         native_compact[Native V2 Compact<br/>stream + compaction_trigger]
     end
 
-    resolve_route --> hosted_search
-    resolve_route --> alpha_gate
-    resolve_route --> native_compact
+    search_route --> hosted_search
+    search_route --> alpha_gate
+    compact_route --> native_compact
     alpha_gate -->|是| alpha_search
     alpha_gate -->|否| alpha_disabled
 
@@ -61,11 +62,11 @@ flowchart LR
 
 | 功能 | 工具或协议 | 说明 |
 |---|---|---|
-| Hosted Web Search | `websearch_gpt` | `/responses` + `web_search`，返回正文、来源和 citations |
-| Alpha Search | `websearch_alpha` | `/alpha/search`，支持 search、open/find/click、PDF screenshot、image、finance、weather、sports 和 time |
+| Hosted Web Search | `websearch_gpt` | 任意主模型可调用；经 GPT Responses 路由执行 `/responses` + `web_search`，返回正文、来源和 citations |
+| Alpha Search | `websearch_alpha` | 任意主模型可调用；经已验证的 GPT 路由执行 `/alpha/search`，支持 search、open/find/click、PDF screenshot、image、finance、weather、sports 和 time |
 | Native V2 Compact | `/responses` + `compaction_trigger` | 保存 checkpoint v3，支持同路由回放、模型迁移、fork/tree、重启和图片 attachment |
 
-Alpha 只有在 capability 记录与当前 endpoint、provider、model 和 schema 匹配时才会启用。Hosted 与 Alpha 是两条独立协议，不会互相静默降级。
+Alpha 只有在 capability 记录与搜索后端的 endpoint、provider、model 和 schema 匹配时才会启用。Hosted 与 Alpha 是两条独立协议，不会互相静默降级。启用 Hosted 时，DSH 会临时切换为插件搜索 provider，原始 provider 不再处理搜索；关闭 Hosted 或卸载插件后恢复启用前的 provider。
 
 ## 安装
 
@@ -78,7 +79,7 @@ dsh plugin --profile web add dsh-lcx-codex
 也可以下载 GitHub Release 中的 `.tgz` 安装指定版本：
 
 ```powershell
-dsh plugin --profile web add .\dsh-lcx-codex-0.3.2.tgz
+dsh plugin --profile web add .\dsh-lcx-codex-0.3.4.tgz
 ```
 
 安装后启动 DSH：
@@ -93,12 +94,12 @@ dsh web
 
 - Node.js 20 或更高版本
 - DSH `0.1.0-rc.8` 或兼容版本
-- 已在 DSH 中添加并能正常对话的 GPT 模型
-- 模型使用 `llm-pi-ai` 的 `openai-responses` provider
+- 已在 DSH 中添加并能正常对话的主模型；调用 Hosted/Alpha 的主模型不限于 GPT
+- 已配置一个可用的 GPT `openai-responses` provider，供 Hosted/Alpha 作为独立搜索后端；Native Compact 则要求当前主模型本身使用该类路由
 
-插件复用当前 DSH 模型的 provider、model、Responses 地址、凭据引用、headers 和 retry policy，并通过 DSH credentials service 取凭据。正常运行不需要再给插件配置一份 `LCX_API_KEY`。
+Hosted/Alpha 在当前主模型本身是兼容 GPT Responses 路由时复用该路由，否则使用插件设置中的 GPT Responses 路由。Native Compact 只复用当前 GPT 主模型的 provider、model、Responses 地址、凭据引用、headers 和 retry policy。凭据由 DSH credentials service 解析，正常运行不需要再给插件配置一份 `LCX_API_KEY`。
 
-界面中的 endpoint 和 model 字段用于没有活动会话路由时的默认选择，以及旧版直连配置兼容；同名 DSH provider 已存在时，以 DSH provider 配置为准。
+界面中的 provider、endpoint 和 model 字段用于搜索回退路由，以及旧版直连配置兼容；当前主模型不是兼容 GPT 路由时，Hosted/Alpha 使用这里选择的 GPT 路由。同名 DSH provider 已存在时，以 DSH provider 配置为准。
 
 ## Alpha probe
 
@@ -124,8 +125,9 @@ node (Join-Path $dshHome 'profiles\web\node_modules\dsh-lcx-codex\scripts\probe-
 
 ## 数据与限制
 
-- 网络目标由当前活动 DSH `openai-responses` provider 的 `baseURL` 决定，不固定到 LCX 或其他域名；插件只在该地址下调用 `/responses` 和 `/alpha/search`
-- 凭据名称取自同一 provider 的 `apiKeyEnv`，并由 DSH credentials service 解析；插件不会自行保存 API key
+- 搜索网络目标优先由当前兼容的 DSH `openai-responses` provider 决定，否则由插件设置中的 GPT provider 决定；不固定到 LCX 或其他域名，且只在该地址下调用 `/responses` 和 `/alpha/search`
+- 凭据名称取自最终选中的 GPT provider 的 `apiKeyEnv`，并由 DSH credentials service 解析；插件不会自行保存 API key
+- 启用 Hosted 时插件将 `ctx.web.searchProviderId` 临时切换为插件搜索 provider；关闭 Hosted 或卸载插件时恢复启用前的原 provider
 - Checkpoint：`$DSH_HOME/storages/lcx-codex/checkpoints-v3.json`
 - Alpha capability：`$DSH_HOME/storages/lcx-codex/web-alpha-capabilities.json`
 - Alpha refs：`$DSH_HOME/storages/lcx-codex/web-alpha-refs.json`

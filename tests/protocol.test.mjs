@@ -1732,6 +1732,83 @@ test('websearch_gpt reuses the active DSH Responses provider route and credentia
   }
 })
 
+test('websearch_gpt takes over the native search provider while enabled and uses its configured GPT route for a non-GPT caller', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-lcx-codex-non-gpt-hosted-'))
+  const previousFetch = globalThis.fetch
+  let registeredTool
+  let settingsValue = {
+    enabled: true,
+    webSearch: true,
+    remoteCompaction: false,
+    fallbackToBasicCompaction: false,
+    provider: 'relay',
+    baseURL: 'https://stale-plugin-config.example/v1',
+    apiKeyEnv: 'STALE_PLUGIN_KEY',
+    model: 'gpt-5.6-sol',
+  }
+  const harness = testContext(settingsValue, (tool) => { registeredTool = tool })
+  let settingsWatcher
+  let disposePlugin
+  const settings = {
+    register: () => ({
+      get: () => settingsValue,
+      watch(callback) {
+        settingsWatcher = callback
+        return () => {}
+      },
+    }),
+    get(namespace) {
+      return namespace === 'llm-pi-ai'
+        ? { providers: { relay: { api: 'openai-responses', baseURL: 'https://relay.example/v1', apiKeyEnv: 'RELAY_API_KEY' } } }
+        : undefined
+    },
+  }
+  harness.ctx.get = (name) => {
+    if (name === 'settings') return settings
+    if (name === 'credentials') return { resolve: async () => ({ value: 'dsh-stored-key', source: 'test' }) }
+    return name === 'tools' ? harness.ctx.tools : undefined
+  }
+  harness.ctx.effect = (register) => {
+    disposePlugin = register()
+  }
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body)
+    assert.equal(String(url), 'https://relay.example/v1/responses')
+    assert.equal(body.model, 'gpt-5.6-sol')
+    return jsonResponse({
+      id: 'search-response-non-gpt',
+      status: 'completed',
+      output: [
+        { type: 'web_search_call', action: { sources: [{ url: 'https://example.com', title: 'Example' }] } },
+        { type: 'message', content: [{ type: 'output_text', text: 'Search from configured GPT route.' }] },
+      ],
+    })
+  }
+  try {
+    apply(harness.ctx, { checkpointPath: join(dir, 'checkpoints.json'), maxAttempts: 1 })
+    assert.equal(harness.ctx.web.searchProviderId, 'lcx-responses')
+    const result = await registeredTool.execute({ query: 'Example' }, {
+      signal: undefined,
+      agent: {
+        id: 'session-non-gpt-hosted',
+        session: { requestContext: () => ({ provider: 'deepseek', model: 'deepseek-v4' }) },
+      },
+    })
+    assert.equal(result.content, 'Search from configured GPT route.')
+    settingsValue = { ...settingsValue, webSearch: false }
+    settingsWatcher()
+    assert.equal(harness.ctx.web.searchProviderId, 'deepseek-official')
+    settingsValue = { ...settingsValue, webSearch: true }
+    settingsWatcher()
+    assert.equal(harness.ctx.web.searchProviderId, 'lcx-responses')
+    disposePlugin()
+    assert.equal(harness.ctx.web.searchProviderId, 'deepseek-official')
+  } finally {
+    globalThis.fetch = previousFetch
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('websearch_gpt is disabled until explicitly enabled', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-lcx-codex-'))
   const registeredTools = []
@@ -1940,6 +2017,14 @@ test('websearch_alpha fingerprints and requests through the DSH Responses provid
     })
     assert.equal(result.content, 'Relay result')
     assert.equal(resolvedCredential, 'RELAY_API_KEY')
+    const nonGptResult = await tool.execute({ action: 'search_query', query: 'Example from DeepSeek' }, {
+      signal: undefined,
+      agent: {
+        id: 'session-alpha-non-gpt-route',
+        session: { requestContext: () => ({ provider: 'deepseek', model: 'deepseek-v4' }) },
+      },
+    })
+    assert.equal(nonGptResult.content, 'Relay result')
   } finally {
     globalThis.fetch = previousFetch
     rmSync(dir, { recursive: true, force: true })

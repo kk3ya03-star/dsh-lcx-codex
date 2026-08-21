@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-lcx-codex.svg)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![license](https://img.shields.io/npm/l/dsh-lcx-codex.svg)](LICENSE)
 
-A community-maintained DSH plugin that adds Hosted Web Search, Alpha Search, and Native V2 remote compaction to GPT models served through an OpenAI Responses/Codex-compatible API.
+A community-maintained DSH plugin that lets any DSH primary model call Hosted or Alpha Search through a separately configured GPT Responses route, and adds Native V2 remote compaction for compatible GPT primary models.
 
 > [!IMPORTANT]
 > Alpha Search currently has five supported deployment paths: a direct Sub2API connection, or one of four NewAPI channel types: `Sub2API`, `New API`, `ChatGPT Subscription (Codex)`, and `Advanced Custom`. A regular `OpenAI` channel does not support `/v1/alpha/search` and is rejected by NewAPI.
@@ -20,9 +20,10 @@ This list comes from NewAPI's current [`AlphaSearchHelper`](https://github.com/Q
 ```mermaid
 flowchart LR
     accTitle: dsh-lcx-codex architecture
-    accDescr: The plugin reuses the active DSH openai-responses model route and credential, then sends Hosted Search, capability-gated Alpha Search, and Native V2 Compact requests through a controlled transport to a direct Sub2API or NewAPI relay deployment.
+    accDescr: Hosted and Alpha can be called by any DSH primary model through a configured GPT openai-responses route. Enabling Hosted selects the plugin DSH search provider; disabling it restores the previous provider. Native V2 Compact applies only to the active compatible GPT route.
 
-    dsh_session([DSH GPT session]) --> resolve_route[Reuse provider, model, baseURL, and credential]
+    dsh_session([Any DSH primary model]) --> search_route[Use active compatible GPT route<br/>or configured GPT fallback route]
+    gpt_session([Compatible GPT primary model]) --> compact_route[Reuse active provider, model, baseURL, and credential]
 
     subgraph plugin_capabilities ["dsh-lcx-codex"]
         hosted_search[Hosted Search<br/>POST /responses + web_search]
@@ -32,9 +33,9 @@ flowchart LR
         native_compact[Native V2 Compact<br/>stream + compaction_trigger]
     end
 
-    resolve_route --> hosted_search
-    resolve_route --> alpha_gate
-    resolve_route --> native_compact
+    search_route --> hosted_search
+    search_route --> alpha_gate
+    compact_route --> native_compact
     alpha_gate -->|Yes| alpha_search
     alpha_gate -->|No| alpha_disabled
 
@@ -61,11 +62,11 @@ This project is not affiliated with OpenAI and is not an official OpenAI plugin 
 
 | Feature | Tool or protocol | Behavior |
 |---|---|---|
-| Hosted Web Search | `websearch_gpt` | Uses `/responses` with `web_search` and returns text, direct sources, and citations |
-| Alpha Search | `websearch_alpha` | Uses `/alpha/search` for search, image, open/find/click, PDF screenshot, finance, weather, sports, and time actions |
+| Hosted Web Search | `websearch_gpt` | Callable by any primary model; uses a GPT Responses route for `/responses` with `web_search` and returns text, direct sources, and citations |
+| Alpha Search | `websearch_alpha` | Callable by any primary model; uses a verified GPT route for `/alpha/search` search, image, open/find/click, PDF screenshot, finance, weather, sports, and time actions |
 | Native V2 Compact | `/responses` with `compaction_trigger` | Stores checkpoint v3 and supports same-route replay, model migration, fork/tree sessions, restart recovery, and image attachments |
 
-Alpha is enabled only when a capability record matches the current endpoint, provider, model, and schema. Hosted and Alpha are separate protocols and never silently fall back to each other.
+Alpha is enabled only when a capability record matches the search backend endpoint, provider, model, and schema. Hosted and Alpha are separate protocols and never silently fall back to each other. Enabling Hosted temporarily selects the plugin search provider, so the previous provider no longer handles search; disabling Hosted or removing the plugin restores the provider selected before activation.
 
 ## Installation
 
@@ -78,7 +79,7 @@ dsh plugin --profile web add dsh-lcx-codex
 You can also install a specific `.tgz` file from a GitHub Release:
 
 ```powershell
-dsh plugin --profile web add .\dsh-lcx-codex-0.3.2.tgz
+dsh plugin --profile web add .\dsh-lcx-codex-0.3.4.tgz
 ```
 
 Start DSH after installation:
@@ -93,12 +94,12 @@ Open `Settings -> Plugins -> LCX / Codex capabilities` and enable Hosted, Alpha,
 
 - Node.js 20 or later
 - DSH `0.1.0-rc.8` or a compatible release
-- A GPT model already added to DSH and working in a normal conversation
-- The model must use the `openai-responses` provider from `llm-pi-ai`
+- A primary model already added to DSH and working in a normal conversation; the caller of Hosted or Alpha does not need to be GPT
+- A working GPT `openai-responses` provider for the Hosted/Alpha search backend; Native Compact requires the active primary model itself to use such a route
 
-The plugin reuses the active DSH model's provider, model, Responses URL, credential reference, headers, and retry policy. Normal plugin operation does not require a second `LCX_API_KEY` configuration.
+Hosted and Alpha reuse the active route when the primary model already uses a compatible GPT Responses route; otherwise they use the GPT Responses route selected in the plugin settings. Native Compact only reuses the active GPT primary model's provider, model, Responses URL, credential reference, headers, and retry policy. Credentials are resolved by the DSH credentials service, so normal operation does not require a second `LCX_API_KEY` configuration.
 
-The endpoint and model fields in the plugin UI are defaults for cases without an active session route and for compatibility with the older direct-route configuration. An existing DSH provider configuration takes precedence.
+The provider, endpoint, and model fields in the plugin UI define the search fallback route and preserve compatibility with the older direct-route configuration. Hosted and Alpha use this GPT route when the active primary model is not on a compatible GPT route. An existing DSH provider configuration takes precedence.
 
 ## Alpha Probe
 
@@ -124,8 +125,9 @@ The probe does not print the key or full response bodies. Restart DSH, or disabl
 
 ## Data and Limits
 
-- The runtime network target is determined by the active DSH `openai-responses` provider's `baseURL`; it is not fixed to LCX or any other domain. The plugin only calls `/responses` and `/alpha/search` under that address.
-- The credential name comes from the same provider's `apiKeyEnv` and is resolved by the DSH credentials service. The plugin does not store API keys.
+- The search network target prefers the active compatible DSH `openai-responses` provider and otherwise uses the GPT provider selected in the plugin settings. It is not fixed to LCX or any other domain, and the plugin only calls `/responses` and `/alpha/search` under that address.
+- The credential name comes from the selected GPT provider's `apiKeyEnv` and is resolved by the DSH credentials service. The plugin does not store API keys.
+- Enabling Hosted temporarily changes `ctx.web.searchProviderId` to the plugin search provider; disabling Hosted or removing the plugin restores the provider selected before activation.
 - Checkpoints: `$DSH_HOME/storages/lcx-codex/checkpoints-v3.json`
 - Alpha capabilities: `$DSH_HOME/storages/lcx-codex/web-alpha-capabilities.json`
 - Alpha references: `$DSH_HOME/storages/lcx-codex/web-alpha-refs.json`
