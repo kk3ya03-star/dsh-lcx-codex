@@ -1,0 +1,32 @@
+name: Create rc.8 tag once
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create v0.4.0-rc.8 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v0.4.0-rc.8"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "dsh-lcx-codex 0.4.0-rc.8"
+          git push origin "$TAG"
