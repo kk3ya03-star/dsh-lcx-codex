@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640" viewBox="0 0 1600 640" role="img" aria-labelledby="title desc">
+  <title id="title">DSH-LCX-CODEX</title>
+  <desc id="desc">Native Responses capabilities for DeepSeek Harness: Hosted Search, Alpha Search and Native V2 Compaction.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.56" stop-color="#0b1d35"/>
+      <stop offset="1" stop-color="#10294a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#72a7ff"/>
+      <stop offset="0.48" stop-color="#8ee7ff"/>
+      <stop offset="1" stop-color="#a1ffd6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#4f8cff" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#4f8cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M 44 0 L 0 0 0 44" fill="none" stroke="#9fc4ff" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="640" rx="28" fill="url(#bg)"/>
+  <rect width="1600" height="640" rx="28" fill="url(#grid)"/>
+  <circle cx="1290" cy="270" r="390" fill="url(#glow)"/>
+  <circle cx="220" cy="710" r="370" fill="url(#glow)" opacity="0.7"/>
+
+  <g transform="translate(96 102)">
+    <rect x="0" y="0" width="160" height="38" rx="19" fill="#102f55" stroke="#4c87cf" stroke-opacity="0.75"/>
+    <text x="80" y="25" text-anchor="middle" fill="#b9d9ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="700" letter-spacing="1.8">DSH PLUGIN</text>
+
+    <text x="0" y="122" fill="#f5f9ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-2">DSH-LCX-CODEX</text>
+    <rect x="0" y="145" width="608" height="5" rx="2.5" fill="url(#accent)"/>
+    <text x="0" y="202" fill="#b8c9df" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="29" font-weight="500">Native Responses capabilities for DeepSeek Harness</text>
+    <text x="0" y="248" fill="#8299b8" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22">Search · Compaction · Replay · Session fidelity</text>
+
+    <g transform="translate(0 310)" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="650">
+      <g>
+        <rect width="178" height="48" rx="14" fill="#102b4c" stroke="#4a84c5"/>
+        <text x="89" y="31" text-anchor="middle" fill="#c9e2ff">Hosted Search</text>
+      </g>
+      <g transform="translate(196 0)">
+        <rect width="166" height="48" rx="14" fill="#102b4c" stroke="#4a84c5"/>
+        <text x="83" y="31" text-anchor="middle" fill="#c9e2ff">Alpha Search</text>
+      </g>
+      <g transform="translate(380 0)">
+        <rect width="242" height="48" rx="14" fill="#103443" stroke="#55a9a9"/>
+        <text x="121" y="31" text-anchor="middle" fill="#c9fff0">Native V2 Compact</text>
+      </g>
+    </g>
+  </g>
+
+  <g transform="translate(970 124)" filter="url(#shadow)" font-family="Inter,Segoe UI,Arial,sans-serif">
+    <rect x="0" y="0" width="510" height="390" rx="28" fill="#09182a" stroke="#365b84" stroke-width="1.5"/>
+    <text x="38" y="54" fill="#7994b5" font-size="17" font-weight="700" letter-spacing="1.5">RUNTIME PATH</text>
+
+    <g transform="translate(42 91)">
+      <rect x="0" y="0" width="130" height="70" rx="18" fill="#122c4b" stroke="#5689c4"/>
+      <text x="65" y="31" text-anchor="middle" fill="#f1f7ff" font-size="23" font-weight="750">DSH</text>
+      <text x="65" y="53" text-anchor="middle" fill="#7fa0c4" font-size="14">Agent · Session</text>
+
+      <path d="M 144 35 C 168 35, 177 35, 198 35" fill="none" stroke="#6fa8e8" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 190 28 L 201 35 L 190 42" fill="none" stroke="#6fa8e8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <rect x="216" y="0" width="130" height="70" rx="18" fill="#122c4b" stroke="#5689c4"/>
+      <text x="281" y="31" text-anchor="middle" fill="#f1f7ff" font-size="23" font-weight="750">Pi</text>
+      <text x="281" y="53" text-anchor="middle" fill="#7fa0c4" font-size="14">Responses adapter</text>
+
+      <path d="M 360 35 C 384 35, 393 35, 414 35" fill="none" stroke="#6fa8e8" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 406 28 L 417 35 L 406 42" fill="none" stroke="#6fa8e8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g transform="translate(42 206)">
+      <rect x="0" y="0" width="426" height="104" rx="20" fill="#0f233a" stroke="#3b678f"/>
+      <text x="24" y="34" fill="#91add0" font-size="15" font-weight="700" letter-spacing="1">LCX EXTENSION SEAMS</text>
+      <text x="24" y="66" fill="#eef6ff" font-size="19" font-weight="650">Hosted / Alpha Search</text>
+      <text x="224" y="66" fill="#eef6ff" font-size="19" font-weight="650">Native Compact / Replay</text>
+      <text x="24" y="90" fill="#7994b5" font-size="14">Keep DSH ownership; extend only where native semantics are missing.</text>
+    </g>
+
+    <text x="42" y="354" fill="#6f88a6" font-size="14">stable 0.4.0 · verified on DSH 0.1.1-rc.2</text>
+  </g>
+</svg>
