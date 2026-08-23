@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.4.0-rc.13 - 2026-08-23
+
+### Fixed
+
+- Restrict opaque Native checkpoint replay to the exact source DSH session. Parent/child ancestry remains valid only for portable migration, so a fork never sends the parent session's opaque Native state.
+- Reconcile Responses replay deltas and terminal output by stable item/call identity instead of `output_index` alone, preventing changed-index duplicate/empty text blocks and keeping terminal-only function calls balanced.
+- Replace the simplified Native message/tool serializer with the public `@earendil-works/pi-ai@0.82.1` OpenAI Responses converters, preserving reasoning/message identities, tool linkage, constrained-tool semantics, deferred-tool transcript semantics, and DSH image boundaries.
+- Match ordinary Pi `openai-responses` system-prompt placement: Native compact/replay now carries the developer/system prelude inside the canonical input prefix rather than introducing a separate top-level `instructions` prefix difference.
+- Restore strict validation of DSH Pi replay-state envelopes before reusing native signatures; mismatched replay metadata degrades to a portable foreign-assistant projection instead of injecting stale provider-native identity.
+- Treat Pi canonical role-only developer/user items as durable retained history and keep image persistence on `dsh_image_attachment` references rather than request image payloads.
+- Use Pi/model or explicitly configured DSH Responses compatibility only; unknown custom routes no longer assume strict tools, grammar tools, or tool-search support.
+- Mirror DSH/OpenAI Responses generation controls into Native compact/replay (`reasoning` + encrypted-reasoning include, temperature, and max output tokens), preventing the real Terra `xhigh` compact path from dropping the envelope used by ordinary Pi requests.
+- Source automatic-compaction generation controls from the matching session request header rather than the Basic compaction summarizer request, so the selected conversation effort (for example Terra `xhigh`) reaches the Native provider request.
+- Declare the DSH `sessions` service as an explicit Cordis runtime injection because checkpoint/replay and automatic-compaction generation parity read the live session/request header.
+- Maintain a deterministic per-session request-header cache from DSH `session/event`; `compaction/start` synchronously refreshes it from the live Session before the Native request, avoiding reliance on async-context propagation for generation parity.
+- Register that cross-session `session/event` observer with Cordis `{ global: true }`, matching DSH system-wide observers so Agent-carrier session events reach the standing plugin scope.
+- Snapshot the exact `agentArg.session.requestHeader()` inside the Native-first pressure wrapper immediately before delegating to Basic compaction; this is the deterministic pressure-path source of generation controls, with the global session-event cache retained only as a secondary path.
+- Seed the request-header cache from already-live sessions at plugin installation, seed newly announced resume/fork sessions, and evict disposed session entries so manual/non-pressure compaction remains restart-safe without retaining stale headers.
+- Match the explicit Remote V2 tool-control contract used by current Codex and mature Responses compaction implementations: Native compact/replay send `tool_choice: "auto"` and `parallel_tool_calls: true` on the plain `openai-responses` route.
+- Preserve only bounded provider machine diagnostics (`code`, `type`, `param`) from `response.failed`; the safe identifiers are included in the generic failure message/log so DSH compaction history can diagnose failures, while provider messages/bodies remain excluded.
+- Persist Pi replay envelope v2 on successful Native replay finish so DSH retains response id/stop reason plus text/reasoning native metadata across post-compact turns.
+- Preserve normal Pi OpenAI function-call identity as `call_id|item_id` for replay deltas and completed tool-call blocks, preventing loss of the provider `fc_*` item id on the next canonical request.
+- Treat the session header `config` as the effective ordinary-request envelope even when DSH marks a value in `adapterDefaults`; those materialized defaults (for example Terra `xhigh` and `maxTokens`) are still sent by normal Pi and therefore must be mirrored by Native compact/replay.
+
+### Validation
+
+- `tests/rc13-regressions.test.mjs`: 15/15 passed.
+- Full local suite: 58/58 passed; DSH schema validation: 4/4 passed; `git diff --check` passed.
+- Installed DSH/NewAPI acceptance passed on Terra xhigh: automatic 90% Native V2 compact, continuous replay/cache re-warm, DSH Web restart/resume, real GUI `/compact` plus continuation, and parent→child fork portable isolation all completed without pre-Native stock prune or cross-session opaque replay.
+- This remains a local release candidate only; no npm/GitHub publication or tag is implied.
+
+## 0.4.0-rc.12 - 2026-08-22
+
+### Fixed
+
+- Serialize every `compactIfNeeded()` call per concrete preset compaction service so same-generation sessions cannot observe each other’s temporary Native-first pruner/config state; queued calls are abortable and plugin cleanup drains active owners before restoring the original method.
+- Align Native `openai-responses` session affinity with the active Pi adapter: default OpenAI-format routes use `session_id` plus `x-client-request-id`, while OpenRouter-format routes use `x-session-id`; explicit affinity headers remain authoritative.
+- Restrict Basic fallback to allowlisted retryable first-checkpoint failures and fail closed once a Native/legacy checkpoint already exists.
+- Require a real `response.completed` terminal event with `status=completed` for Native compaction/replay and reject orphan `function_call_output` items.
+- Set credential-bearing fetches to `redirect: error` and keep provider response bodies/messages out of surfaced/logged transport errors.
+
+## 0.4.0-rc.11 - 2026-08-22
+
+### Fixed
+
+- Restore ERR-051 cache/session affinity semantics that regressed in the rc.8 refactor: Native V2 compaction and same-route replay now use the DSH/Pi conversation session id as the clamped `prompt_cache_key` instead of a route fingerprint, inherit the active provider `cacheRetention`, emit `prompt_cache_retention: 24h` only for supported `long` retention, and omit Native cache affinity when retention is `none`.
+- Keep ordinary Hosted Search on its intentionally separate `dsh-lcx-search:<route hash>` namespace.
+
+## 0.4.0-rc.10 - 2026-08-22
+
+### Fixed
+
+- Fix Native-first pressure coordination for DSH 0.1.1-rc.2 Agent presets by using the public `agentPresets.serviceFor(agent, name)` resolver for preset-local `compaction` and `toolResultPruner` instances. This replaces the rc.9 assumption that ordinary `agent.ctx` lookup could see entry-local isolated services.
+
+## 0.4.0-rc.9 - 2026-08-22
+
+### Fixed
+
+- Restore the Alpha capability/ref-store interfaces consumed by `lib/index.js`; the rc.8 release package could pass its unit tests but fail immediately at module import with missing `AlphaCapabilityStore` / `AlphaRefStore` exports.
+- Add package-entry import regression coverage so CI fails when the server entry point and internal module exports drift out of sync.
+- Restore Native-first pressure coordination for isolated agent presets using DSH 0.1.1-rc.2's public `agentPresets.serviceFor(agent, name)` resolver. Preset-local `compaction` / `toolResultPruner` services are not visible through ordinary host or `agent.ctx` lookup; the plugin now addresses the actual per-Agent instances before applying the 90% Native / 95% emergency policy. A root service-lifecycle hook remains for non-preset deployments.
 ## 0.4.0-rc.8
 
 - Rebase the plugin on DSH `0.1.1-rc.2`; older DSH releases are no longer a supported runtime target.

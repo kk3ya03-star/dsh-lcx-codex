@@ -19,3 +19,17 @@ web-alpha-*.json
 *.trace.zip
 *.session-export.json
 .DS_Store
+
+# Private control-plane / local runtime additions
+.playwright-cli/
+*.log
+*.tmp
+*.bak
+*.backup_*
+.env
+.env.*
+!.env.example
+*credential*
+.vscode/
+.idea/
+Thumbs.db

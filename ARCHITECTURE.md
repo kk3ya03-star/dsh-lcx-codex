@@ -9,7 +9,7 @@ DSH 0.1.1-rc.2 `compaction-basic` defaults to a `0.8` pressure threshold and, on
 - provider-confirmed context overflow continues to use DSH's original `context-overflow` recovery unchanged;
 - manual `/compact` remains unchanged.
 
-The pressure wrapper is installed on the actual agent-scoped compaction instance when an agent enters `running`, because DSH's own pre-step listener dynamically dispatches `this.compactIfNeeded()` at event time. The wrapper is restored on plugin cleanup.
+Agent presets may isolate `compaction` and `toolResultPruner` inside entry-local Cordis realms. DSH 0.1.1-rc.2 explicitly documents that these preset services are invisible to both the host and ordinary `agent.ctx`; host-side code must address them through `agentPresets.serviceFor(agent, name)`. LCX therefore observes agent lifecycle events globally, resolves each Agent's real preset-local compaction/pruner through that public resolver, and patches the concrete compaction instance. A root `ctx.inject(['compaction'], ...)` hook remains only for non-preset/non-isolated deployments. Concrete Cordis service identity is used for de-duplication. DSH's own pre-step listener dynamically dispatches `this.compactIfNeeded()` at event time, and the wrapper is restored on plugin cleanup.
 
 ## rc.6 search timeout coordination
 
@@ -17,12 +17,16 @@ The pressure wrapper is installed on the actual agent-scoped compaction instance
 
 # Architecture Notes — 0.4 Native Session Refactor / rc.6 Pressure Coordination
 
+## rc.11 Native cache identity
+
+Native compaction and same-route replay reuse the active DSH/Pi conversation cache identity: the clamped session id is the `prompt_cache_key`, provider `cacheRetention` is respected, and `long` may emit `prompt_cache_retention: 24h` when supported. `cacheRetention: none` omits Native prompt-cache/session affinity. Ordinary Hosted Search remains intentionally isolated under `dsh-lcx-search:<route hash>` so search traffic cannot share the main conversation request/cache namespace.
+
 ## Design invariants
 
 1. **DSH owns compaction policy.** LCX never independently decides threshold, compact range, pruning, transaction boundaries or overflow retries.
 2. **Native success performs one compaction model request.** Basic summary is a failure fallback, not a parallel portable-copy generator.
 3. **DSH session log is the new checkpoint source of truth.** Opaque Native V2 state lives in `compaction/summary.rawOutput`; v3 sidecar access is legacy read-only.
-4. **Opaque state never crosses an incompatible route.** Provider, model, base URL and session ancestry gate native replay.
+4. **Opaque state is same-session only.** Provider, model, base URL and exact `sourceSessionId === currentSessionId` gate Native opaque replay. Verified parent/child ancestry authorizes portable migration only; a fork never sends the parent's opaque checkpoint state.
 5. **Route migration is transparent and transient.** Reconstruct shadowed DSH messages and hand them to the normal adapter; do not persist a second portable history copy.
 6. **Ordinary search has one model tool.** `web_search` is ordinary search; `websearch_gpt_advanced` exists only for parameters absent from `WebSearchRequest`; Alpha remains its own stateful protocol.
 7. **Provider-native wire code is isolated.** Direct `/responses` SSE code is limited to Native V2 compaction/replay and Hosted Search protocol calls.

@@ -209,7 +209,7 @@ dsh plugin --profile web add dsh-lcx-codex@next
 
 ```powershell
 dsh plugin --profile web remove dsh-lcx-codex
-dsh plugin --profile web add .\dsh-lcx-codex-0.4.0-rc.8.tgz
+dsh plugin --profile web add .\dsh-lcx-codex-0.4.0-rc.13.tgz
 dsh web
 ```
 

@@ -16,6 +16,47 @@ import {
   parseAlphaSearchResponse,
 } from '../lib/web-search-alpha.js'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
+import { authenticatedHeaders, promptCacheKey, promptCacheRetention } from '../lib/route.js'
+import { replayBody, requestNativeReplay } from '../lib/responses-replay.js'
+
+test('Native cache namespace matches the DSH/Pi session cache identity', async () => {
+  const sessionId = 'session-19104ea5-757f-4d2f-8c02-3601a6b8de31'
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'short' }), sessionId)
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'none' }), undefined)
+  assert.equal(promptCacheKey({ sessionId: 'x'.repeat(80) }, { cacheRetention: 'short' }), 'x'.repeat(64))
+  assert.equal(promptCacheRetention({ cacheRetention: 'long', supportsLongCacheRetention: true }), '24h')
+  assert.equal(promptCacheRetention({ cacheRetention: 'short' }), undefined)
+
+  const envName = 'LCX_TEST_CACHE_HEADER_KEY'
+  const previous = process.env[envName]
+  process.env[envName] = 'redacted-test-value'
+  try {
+    const headers = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, sessionId)
+    assert.equal(headers['x-client-request-id'], sessionId)
+    assert.equal(headers.session_id, sessionId)
+    assert.equal(headers['session-id'], undefined)
+    const noAffinity = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, undefined, null)
+    assert.equal(noAffinity['x-client-request-id'], undefined)
+    assert.equal(noAffinity.session_id, undefined)
+    assert.equal(noAffinity['session-id'], undefined)
+    const openrouter = await authenticatedHeaders(undefined, { apiKeyEnv: envName, provider: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', headers: {} }, sessionId)
+    assert.equal(openrouter['x-session-id'], sessionId)
+    assert.equal(openrouter.session_id, undefined)
+    assert.equal(openrouter['x-client-request-id'], undefined)
+  } finally {
+    if (previous === undefined) delete process.env[envName]
+    else process.env[envName] = previous
+  }
+})
+
+test('Native compaction and replay carry the same cache retention envelope', () => {
+  const compact = buildNativeCompactionBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
+  const replay = replayBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
+  assert.equal(compact.prompt_cache_key, 'session-x')
+  assert.equal(compact.prompt_cache_retention, '24h')
+  assert.equal(replay.prompt_cache_key, 'session-x')
+  assert.equal(replay.prompt_cache_retention, '24h')
+})
 
 function sseResponse(events) {
   const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
@@ -165,4 +206,82 @@ test('DSH 0.1.1 request-image projection is used for Native serialization', asyn
   assert.deepEqual(policy, { maxPixels:123456, maxBytes:654321 })
   assert.equal(readImageCalls, 0)
   assert.equal(result.input[0].content[0].type, 'input_image')
+})
+
+
+test('Alpha parser persists refs that appear only in rendered web-run output', () => {
+  const parsed = parseAlphaSearchResponse({
+    id: 'alpha_click_1',
+    output: 'Destination (https://example.com/next)\nciteturn2view0 [wordlim: 200] Crawled: today; Content type: text/html; Total lines: 20',
+    results: [],
+  }, { action: 'click', capability: 'native', requestId: 'req-click', retrievedAt: '2026-08-22T00:00:00.000Z' })
+  assert.equal(parsed.refs.includes('turn2view0'), true)
+  assert.equal(parsed.refRecords.some((record) => record.refId === 'turn2view0'), true)
+})
+
+
+test('Native compaction requires response.completed and completed status', async () => {
+  const validOutput = [{ id: 'cmp_done', type: 'compaction', encrypted_content: 'opaque' }]
+  await assert.rejects(
+    parseNativeCompactionSse(sseResponse([{ type: 'response.done', response: { id: 'resp_done', status: 'completed', output: validOutput } }])),
+    (error) => error?.code === 'LCX_COMPACT_INCOMPLETE_SSE',
+  )
+  await assert.rejects(
+    parseNativeCompactionSse(sseResponse([{ type: 'response.completed', response: { id: 'resp_bad_status', status: 'in_progress', output: validOutput } }])),
+    (error) => error?.code === 'LCX_COMPACT_INCOMPLETE_SSE' || error?.code === 'LCX_COMPACT_INVALID_RESPONSE',
+  )
+})
+
+test('Native compaction rejects orphan function_call_output', async () => {
+  const response = sseResponse([{
+    type: 'response.completed',
+    response: {
+      id: 'resp_orphan', status: 'completed',
+      output: [
+        { type: 'function_call_output', call_id: 'orphan', output: 'x' },
+        { id: 'cmp_orphan', type: 'compaction', encrypted_content: 'opaque' },
+      ],
+    },
+  }])
+  await assert.rejects(parseNativeCompactionSse(response), (error) => error?.code === 'LCX_COMPACT_INVALID_RESPONSE')
+})
+
+test('Native replay requires response.completed', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => sseResponse([{
+    type: 'response.done',
+    response: { id: 'resp_replay_done', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x' }] }] },
+  }])
+  try {
+    await assert.rejects(async () => {
+      for await (const _chunk of requestNativeReplay({ baseURL: 'https://example.invalid/v1', model: 'gpt-5.6-terra', input: [], headers: {}, maxAttempts: 1 })) { /* consume */ }
+    }, (error) => error?.code === 'LCX_RESPONSES_INCOMPLETE')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Native compaction exposes only safe upstream machine fields', async () => {
+  const response = sseResponse([{
+    type: 'response.failed',
+    response: {
+      error: {
+        code: 'invalid_request_error',
+        type: 'invalid_request_error',
+        param: 'parallel_tool_calls',
+        message: 'SECRET provider detail must not escape',
+      },
+    },
+  }])
+  await assert.rejects(parseNativeCompactionSse(response), (error) => {
+    assert.equal(error?.code, 'LCX_COMPACT_UPSTREAM_ERROR')
+    assert.equal(error?.providerCode, 'invalid_request_error')
+    assert.equal(error?.providerType, 'invalid_request_error')
+    assert.equal(error?.providerParam, 'parallel_tool_calls')
+    assert.match(String(error?.message ?? ''), /providerCode=invalid_request_error/u)
+    assert.match(String(error?.message ?? ''), /providerType=invalid_request_error/u)
+    assert.match(String(error?.message ?? ''), /providerParam=parallel_tool_calls/u)
+    assert.doesNotMatch(String(error?.message ?? ''), /SECRET|provider detail/u)
+    return true
+  })
 })
