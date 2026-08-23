@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 - 2026-08-23
+
+### Stable promotion
+
+- Promote the fully validated `0.4.0-rc.13` runtime to the stable `0.4.0` line with no functional/runtime code changes.
+- Make the rc.13 Native V2 hardening, canonical Responses replay/serialization fixes, session isolation, cache continuity, and concurrency/lifecycle fixes the recommended stable release.
+- Preserve `0.3.4` only as historical stable state; `0.4.0` becomes the default npm `latest` after publication.
+
+### Validation
+
+- Runtime-sensitive source is required to remain content-identical to the already live-tested rc.13 release.
+- Full suite: 58/58 passed; DSH schema validation: 4/4 passed.
+- Real rc.13 DSH acceptance already covers automatic Native pressure Compact, replay/cache re-warm, restart/resume, real GUI `/compact`, parent/child opaque isolation, and dual-session same-preset ServiceMutex failure cleanup.
+- Stable promotion adds no new runtime behavior; publication is a version/documentation promotion only.
+
 ## 0.4.0-rc.13 - 2026-08-23
 
 ### Fixed
