@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/dsh-lcx-codex-banner.svg" alt="dsh-lcx-codex — 为 DSH 增加 GPT Hosted Search、Codex 风格网页操作与 Native V2 Compaction" width="100%" />
+<img src="assets/dsh-lcx-codex-banner.png" alt="dsh-lcx-codex — 为 DSH 增加 GPT Hosted Search、Codex 风格网页操作与 Native V2 Compaction" width="100%" />
 
 [![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
