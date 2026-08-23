@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/dsh-lcx-codex-banner.svg" alt="DSH-LCX-CODEX" width="100%" />
-
-**Add GPT Hosted Search, Codex / Alpha Web Actions and Native V2 Compaction to DeepSeek Harness.**
+<img src="assets/dsh-lcx-codex-banner-en.svg" alt="dsh-lcx-codex — GPT Hosted Search, Codex-style Web Actions, and Native V2 Compaction for DSH" width="100%" />
 
 [![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
@@ -14,61 +12,42 @@
 
 </div>
 
-> **No DSH core changes and no replacement Agent / Session / Web / Compaction stack.**  
-> DSH stays in control of session and execution lifecycle; LCX only extends missing native capabilities on GPT Responses routes.
+> **DSH remains the host. LCX fills missing native capabilities on GPT Responses routes without modifying DSH core or replacing Agent / Session / Web / Compaction.**
 
----
+## What it solves
 
-## Why use it
+If DSH already has a working GPT `openai-responses` route, `dsh-lcx-codex` lets that route use more of the native GPT Responses capability set while keeping DSH's existing entries and lifecycle ownership intact.
 
-If DSH already has a working GPT `openai-responses` route, LCX mainly solves three problems:
+| Scenario | Existing DSH surface | With LCX |
+|---|---|---|
+| Ordinary web search | DSH `web_search` | **Keep the same `web_search` entry** while LCX maps its SearchProvider to the active GPT Hosted Search route |
+| Advanced Hosted Search controls | Keep ordinary search simple | Optionally add `websearch_gpt_advanced` for domain filters, approximate location, search context, image search, and related controls |
+| Stateful page / PDF browsing | DSH keeps Web lifecycle ownership | Optionally add Codex / Alpha Web Actions: `search → open → find/click → screenshot` |
+| Long-session compaction | DSH keeps pressure, transactions, and recovery | Prefer Responses Native V2 checkpoints at the existing compaction seam |
 
-- **Keep one ordinary search entry**: the model continues to call native DSH `web_search`, while LCX maps it to the active GPT Hosted Search route.
-- **Add advanced capabilities only when needed**: Advanced Hosted and Alpha Web Actions stay out of the tool catalog until explicitly enabled.
-- **Prefer native long-session compaction**: Native V2 is integrated into the existing DSH compaction lifecycle while preserving continuation, restart and fork safety boundaries.
+**The goal is not to build another Agent stack. It is to let a DSH GPT route use the native capabilities it should already have access to.**
 
-## Quick start
+## Three core capabilities
 
-```powershell
-dsh plugin --profile web add dsh-lcx-codex
-dsh web
+### 1. GPT Hosted Search: keep the ordinary search entry
+
+When enabled, the model still sees the native DSH `web_search` tool for ordinary search. LCX changes the SearchProvider path instead of registering a second duplicate search tool.
+
+Enable `websearch_gpt_advanced` only when you need finer Hosted Search controls.
+
+### 2. Codex-style Web Actions: opt in when needed
+
+`websearch_alpha` is for stateful browsing and structured Web actions:
+
+```text
+search → open → find / click → screenshot
 ```
 
-Enable the plugin in **DSH Settings**, then turn on only the capabilities you need.
+It is off by default and is registered only after the exact endpoint / provider / model / schema passes a capability probe. Unknown deployments are **fail-closed** rather than mislabeled as Alpha-capable.
 
-**Requirements**
+### 3. Native V2 Compaction: preserve DSH session semantics
 
-- Node.js `>=20`
-- a working GPT `openai-responses` route in DSH
-- actual upstream support for the Hosted Search / Native V2 / Alpha capabilities you plan to enable
-
-## Core capabilities
-
-| Capability | User-visible behavior | Default |
-|---|---|---:|
-| **GPT Hosted Search** | Native DSH `web_search` follows the active GPT Responses route | Optional |
-| **Advanced Hosted Search** | Domain filters, approximate location, search context, image search and other Hosted controls | Off |
-| **Codex / Alpha Web Actions** | `search → open → find/click → screenshot` plus structured Web actions | Off |
-| **Native V2 Compaction** | Long sessions prefer provider-native checkpoints | Optional |
-| **Session continuity** | Continue after compact, restore after restart, safely migrate forks / models | Built in |
-
-## Which search tool should I use?
-
-The three entries have different jobs. You do not need to enable all of them.
-
-| What you want to do | Entry | Best for |
-|---|---|---|
-| Ordinary web lookup | DSH `web_search` | General search, research and retrieval |
-| Control Hosted Search parameters | `websearch_gpt_advanced` | Domain allow/block, approximate location, search context, image search and related controls |
-| Browse pages or PDFs statefully | `websearch_alpha` | `search/open/find/click/screenshot` plus finance/weather/sports/time actions |
-
-When GPT Hosted Search is enabled, the model still sees **only the native DSH `web_search` entry for ordinary search**. LCX replaces the SearchProvider instead of creating another duplicate search tool.
-
-`websearch_gpt_advanced` is off by default. `websearch_alpha` is also off by default and is registered only after the exact endpoint / provider / model / schema passes a capability probe. Unknown deployments are not mislabeled as supported.
-
-## Native V2 Compaction
-
-LCX does not create a second compaction engine. DSH still owns pressure, compactable ranges, `/compact`, durable session transactions, tool-result pruning and overflow recovery. LCX only requests Responses Native V2 at the existing compaction LLM seam.
+LCX does not create a second compaction engine. DSH still owns pressure, compactable ranges, `/compact`, durable session transactions, tool-result pruning, and overflow recovery. LCX only requests Responses Native V2 at the existing compaction LLM seam.
 
 Default automatic policy:
 
@@ -79,11 +58,60 @@ Default automatic policy:
 ```
 
 - **90%**: prefer Native V2.
-- **95%**: emergency DSH pruning becomes allowed.
+- **95%**: allow emergency DSH pruning.
 - provider-confirmed context overflow: keep DSH's original recovery path.
 - manual `/compact`: keep the native DSH session transaction.
 
-After compaction, the exact source session can directly reuse its own Native checkpoint. Forks or model migrations never send a parent's opaque state across sessions and use portable migration instead. Restart/resume rebuilds from the DSH session log.
+The exact source session can reuse its own Native checkpoint. Forks or model migrations never send a parent's opaque state across sessions and use portable migration instead. Restart/resume rebuilds from the DSH session log.
+
+## Get started in 30 seconds
+
+### 1. Install
+
+```powershell
+dsh plugin --profile web add dsh-lcx-codex
+dsh web
+```
+
+### 2. Enable it in DSH Settings
+
+For a first run, start with the smallest useful configuration:
+
+| Setting | Suggested first-run value |
+|---|---:|
+| Enable plugin | **On** |
+| Use GPT Hosted Search | **On** when you want GPT Hosted Search |
+| Advanced Hosted Search | **Off** until you need advanced controls |
+| Alpha Search | **Off** until the current route is confirmed compatible |
+| Native V2 remote compaction | **On** only when the upstream actually supports Native V2 |
+| Native-first auto compaction | **On** when using Native V2 |
+
+**Requirements**
+
+- Node.js `>=20`
+- a working GPT `openai-responses` route in DSH
+- actual upstream support for the Hosted Search / Native V2 / Alpha capabilities you plan to enable
+
+### 3. Verify that it is actually active
+
+Do not stop at checking toggles. Verify observable behavior for each capability:
+
+| Capability | What you should observe |
+|---|---|
+| GPT Hosted Search | The ordinary tool entry remains DSH `web_search`, while the actual request follows the active GPT Responses route |
+| Advanced Hosted | `websearch_gpt_advanced` appears after enablement and exposes the advanced controls separately |
+| Alpha Web Actions | `websearch_alpha` appears only after the capability probe succeeds |
+| Native V2 | Compaction follows the provider-native checkpoint path; ordinary Basic Compaction is never presented as a successful Native V2 run |
+
+## Which search tool should I use?
+
+The three entries serve different jobs. **You do not need to enable all of them.**
+
+| What you want to do | Entry | Best for |
+|---|---|---|
+| Ordinary web lookup | DSH `web_search` | General search, research, and retrieval |
+| Control Hosted Search parameters | `websearch_gpt_advanced` | Domain allow/block, approximate location, search context, image search, and related controls |
+| Browse pages or PDFs statefully | `websearch_alpha` | `search/open/find/click/screenshot` and structured Web actions |
 
 ## How it fits into DSH
 
@@ -94,9 +122,9 @@ DSH Agent / Session / Web
 └─ compact / replay ────> LCX Native bridge ───> Responses Native V2
 ```
 
-**DSH is the host; LCX is a compatibility extension.** The plugin prefers the active DSH route's `baseURL`, credential reference, headers, model and retry policy instead of maintaining a second account configuration.
+**DSH is the host; LCX is a compatibility extension.** The plugin prefers the active DSH route's `baseURL`, credential reference, headers, model, and retry policy instead of maintaining a second account configuration.
 
-For checkpoint internals, canonical replay, Pi serialization, cache identity, fork safety and pressure coordination, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For checkpoint internals, canonical replay, Pi serialization, cache identity, fork safety, and pressure coordination, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Compatibility
 
@@ -109,7 +137,7 @@ Current formally verified stack:
 A new DSH release is **not** assumed compatible. The project first reviews the DSH / Pi seams that changed and then runs risk-appropriate tests. A newer Pi registry version alone does not automatically upgrade the plugin dependency.
 
 <details>
-<summary><strong>Recommended settings</strong></summary>
+<summary><strong>Full recommended settings</strong></summary>
 
 | Setting | Recommended | Notes |
 |---|---:|---|
@@ -181,4 +209,4 @@ npm pack --ignore-scripts
 
 MIT
 
-> `LCX` is only the project name. This is a community project and is not affiliated with OpenAI, DeepSeek, Sub2API or NewAPI.
+> `LCX` is only the project name. This is a community project and is not affiliated with OpenAI, DeepSeek, Sub2API, or NewAPI.

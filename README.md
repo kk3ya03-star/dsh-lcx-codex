@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/dsh-lcx-codex-banner.svg" alt="DSH-LCX-CODEX" width="100%" />
-
-**为 DeepSeek Harness 补上 GPT Hosted Search、Codex / Alpha Web Actions 与 Native V2 Compaction。**
+<img src="assets/dsh-lcx-codex-banner.svg" alt="dsh-lcx-codex — 为 DSH 增加 GPT Hosted Search、Codex 风格网页操作与 Native V2 Compaction" width="100%" />
 
 [![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
@@ -14,61 +12,42 @@
 
 </div>
 
-> **不修改 DSH 核心，不替换 Agent / Session / Web / Compaction。**  
-> DSH 继续拥有会话与执行生命周期；LCX 只扩展 GPT Responses 路径缺失的原生能力。
+> **DSH 仍然是 host。LCX 只补齐 GPT Responses 路径缺失的原生能力，不修改 DSH 核心，也不替换 Agent / Session / Web / Compaction。**
 
----
+## 它解决什么
 
-## 为什么用它
+如果你的 DSH 已经有一个可工作的 GPT `openai-responses` route，`dsh-lcx-codex` 让这条 route 更完整地使用 GPT Responses 原生能力，同时尽量保持 DSH 原有入口和生命周期不变。
 
-如果你的 DSH 已经有可工作的 GPT `openai-responses` route，LCX 主要解决三件事：
+| 场景 | DSH 原有入口 | LCX 增强后 |
+|---|---|---|
+| 普通联网搜索 | DSH `web_search` | **仍然使用同一个 `web_search`**，由 LCX SearchProvider 映射到当前 GPT Hosted Search |
+| Hosted Search 高级参数 | 普通搜索入口保持简洁 | 按需增加 `websearch_gpt_advanced`，提供域名过滤、近似位置、search context、图片搜索等 |
+| 连续网页 / PDF 浏览 | DSH 继续拥有 Web 生命周期 | 按需增加 Codex / Alpha Web Actions：`search → open → find/click → screenshot` |
+| 长会话压缩 | DSH 继续负责 pressure、事务与 recovery | 在现有 compaction seam 上优先请求 Responses Native V2 checkpoint |
 
-- **普通搜索不换入口**：模型继续调用 DSH 原生 `web_search`，插件把它映射到当前 GPT Hosted Search。
-- **需要时才增加高级能力**：Advanced Hosted 与 Alpha Web Actions 默认不占用工具目录，按需启用。
-- **长会话优先原生压缩**：在 DSH 原有 compaction 生命周期里接入 Native V2，并保留继续对话、重启和 fork 的安全边界。
+**目标不是再造一套 Agent，而是让 DSH 的 GPT route 用上它本来就应该拥有的原生能力。**
 
-## 快速开始
+## 三大能力
 
-```powershell
-dsh plugin --profile web add dsh-lcx-codex
-dsh web
+### 1. GPT Hosted Search：普通搜索不换入口
+
+启用后，模型看到的普通搜索工具依然是 DSH 原生 `web_search`。LCX 替换的是 SearchProvider 路径，而不是再注册一个重复的“普通搜索”工具。
+
+需要更细控制时，再单独启用 `websearch_gpt_advanced`。
+
+### 2. Codex 风格 Web Actions：需要时再打开
+
+`websearch_alpha` 面向连续浏览和结构化 Web action：
+
+```text
+search → open → find / click → screenshot
 ```
 
-然后在 **DSH Settings** 中启用插件，并只打开需要的功能。
+它默认关闭，并且只有当前 endpoint / provider / model / schema 通过 capability probe 后才注册。未知部署采用 **fail-closed**，不会被误报成“支持 Alpha”。
 
-**前提条件**
+### 3. Native V2 Compaction：保留 DSH 会话语义
 
-- Node.js `>=20`
-- DSH 中已有可工作的 GPT `openai-responses` route
-- 你的上游实际支持准备启用的 Hosted Search / Native V2 / Alpha 能力
-
-## 核心能力
-
-| 能力 | 用户看到的行为 | 默认 |
-|---|---|---:|
-| **GPT Hosted Search** | DSH 原生 `web_search` 直接跟随当前 GPT Responses route | 按需开启 |
-| **Advanced Hosted Search** | 域名过滤、近似位置、search context、图片搜索等高级参数 | 关闭 |
-| **Codex / Alpha Web Actions** | `search → open → find/click → screenshot`，以及结构化 Web actions | 关闭 |
-| **Native V2 Compaction** | 长会话优先使用 provider-native checkpoint | 按需开启 |
-| **Session continuity** | Compact 后继续对话、重启恢复、fork / model migration 安全迁移 | 内置 |
-
-## 搜索工具怎么选
-
-三个入口用途不同，不需要全部开启：
-
-| 你要做什么 | 使用入口 | 说明 |
-|---|---|---|
-| 普通联网搜索 | DSH `web_search` | 默认选择；找资料、查网页、一般检索 |
-| 控制 Hosted Search 参数 | `websearch_gpt_advanced` | 域名 allow/block、近似位置、search context、图片搜索等 |
-| 连续浏览网页或 PDF | `websearch_alpha` | `search/open/find/click/screenshot`，以及 finance/weather/sports/time 等结构化 action |
-
-启用 GPT Hosted Search 后，模型看到的普通搜索工具**仍然只有 DSH `web_search`**；LCX 只是替换 SearchProvider，不再额外制造一个重复的普通搜索入口。
-
-`websearch_gpt_advanced` 默认关闭。`websearch_alpha` 也默认关闭，并且只有当前 endpoint / provider / model / schema 通过 capability probe 后才注册；未知部署不会被误报为“支持”。
-
-## Native V2 Compaction
-
-LCX 不创建第二套 compaction engine。DSH 仍然负责 pressure、compactable range、`/compact`、durable session transaction、tool-result pruning 与 overflow recovery；LCX 只在现有 compaction LLM seam 上请求 Responses Native V2。
+LCX 不创建第二套 compaction engine。DSH 仍然拥有 pressure、compactable range、`/compact`、durable session transaction、tool-result pruning 与 overflow recovery；LCX 只在已有 compaction LLM seam 上请求 Responses Native V2。
 
 默认自动策略：
 
@@ -81,9 +60,58 @@ LCX 不创建第二套 compaction engine。DSH 仍然负责 pressure、compactab
 - **90%**：优先尝试 Native V2。
 - **95%**：才允许 emergency DSH prune。
 - provider-confirmed context overflow：继续使用 DSH 原有恢复逻辑。
-- 手动 `/compact`：仍然使用 DSH 原生会话事务。
+- 手动 `/compact`：继续使用 DSH 原生会话事务。
 
-Compact 后，同一 source session 可以直接复用自己的 Native checkpoint；fork 或模型迁移不会跨 session 发送 parent 的 opaque state，而是走 portable migration；重启后从 DSH session log 恢复。
+同一 source session 可以继续复用自己的 Native checkpoint；fork 或模型迁移不会跨 session 发送 parent 的 opaque state，而是走 portable migration；重启后从 DSH session log 恢复。
+
+## 30 秒开始使用
+
+### 1. 安装
+
+```powershell
+dsh plugin --profile web add dsh-lcx-codex
+dsh web
+```
+
+### 2. 在 DSH Settings 启用
+
+第一次使用建议从最小配置开始：
+
+| 设置 | 建议 |
+|---|---:|
+| Enable plugin | **On** |
+| Use GPT Hosted Search | 需要 GPT Hosted Search 时 **On** |
+| Advanced Hosted Search | **Off**，需要高级参数再开 |
+| Alpha Search | **Off**，确认当前 route 支持后再开 |
+| Native V2 remote compaction | 上游实际支持 Native V2 时 **On** |
+| Native-first auto compaction | 使用 Native V2 时 **On** |
+
+**前提条件**
+
+- Node.js `>=20`
+- DSH 中已有可工作的 GPT `openai-responses` route
+- 上游 endpoint 实际支持你准备启用的 Hosted Search / Native V2 / Alpha 能力
+
+### 3. 确认它真的生效
+
+不要只看开关是否打开，按能力检查实际行为：
+
+| 能力 | 应看到什么 |
+|---|---|
+| GPT Hosted Search | 普通工具入口仍是 DSH `web_search`，实际请求走当前 GPT Responses route |
+| Advanced Hosted | 启用后出现 `websearch_gpt_advanced`，高级参数可以单独控制 |
+| Alpha Web Actions | 只有 capability probe 通过时才出现 `websearch_alpha` |
+| Native V2 | compact 时出现 provider-native checkpoint 路径；普通 Basic Compaction 不会被伪装成 Native V2 成功 |
+
+## 搜索工具怎么选
+
+三个入口用途不同，**不需要全部开启**：
+
+| 你要做什么 | 使用入口 | 适合场景 |
+|---|---|---|
+| 普通联网搜索 | DSH `web_search` | 找资料、查网页、一般检索 |
+| 控制 Hosted Search 参数 | `websearch_gpt_advanced` | 域名 allow/block、近似位置、search context、图片搜索等 |
+| 连续浏览网页或 PDF | `websearch_alpha` | `search/open/find/click/screenshot` 与结构化 Web actions |
 
 ## 它如何接入 DSH
 
@@ -96,7 +124,7 @@ DSH Agent / Session / Web
 
 **DSH 是 host，LCX 是兼容扩展层。** 插件优先复用当前 DSH route 的 `baseURL`、credential reference、headers、模型与 retry policy，而不是维护第二套账号配置。
 
-更深的 checkpoint、canonical replay、Pi serializer、cache identity、fork safety 与 pressure coordination 设计见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+checkpoint、canonical replay、Pi serializer、cache identity、fork safety 与 pressure coordination 等实现细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 兼容性
 
@@ -106,10 +134,10 @@ DSH Agent / Session / Web
 |---|---|---|---|---|
 | `0.4.0` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **VERIFIED** |
 
-**新的 DSH 版本不会自动视为兼容。** 项目会先检查受影响的 DSH / Pi seam，再按风险运行对应测试；Pi registry 单独出现新版本也不会自动升级插件依赖。
+新的 DSH 版本**不会自动视为兼容**。项目会先检查受影响的 DSH / Pi seam，再按风险运行对应测试；Pi registry 单独出现新版本也不会自动升级插件依赖。
 
 <details>
-<summary><strong>推荐设置</strong></summary>
+<summary><strong>完整推荐设置</strong></summary>
 
 | 设置 | 推荐值 | 说明 |
 |---|---:|---|
