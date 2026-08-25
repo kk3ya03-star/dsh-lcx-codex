@@ -83,7 +83,7 @@ jobs:
             exit 1
           fi
           if [[ "$PACKAGE_VERSION" == *-* ]]; then
-            if ! npm publish --provenance --tag next; then
+            if ! npm publish --provenance --tag prelatest; then
               mark publish failure "npm publish failed"
               exit 1
             fi
