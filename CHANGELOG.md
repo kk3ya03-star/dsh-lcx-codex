@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1-pre.1 - Candidate QA pending / not published
+
+- Integrates the accepted Alpha stateful continuation and fail-closed capability work from #20, #21, and #22.
+- Includes accepted compatibility seam isolation (#24), typed protocol-core hardening (#25), unified conservative token budgeting (#26), and the installed-plugin settings lifecycle fix (#36).
+- This is an unpublished candidate for #19 installed-candidate and cross-feature QA; no npm publication, tag, or release is implied.
+
 ## 0.4.0 - 2026-08-23
 
 ### Stable promotion

@@ -1,0 +1,73 @@
+version: 0.4.1-pre.1
+private_source:
+  repository: kk3ya03-star/dsh-lcx-codex-private
+  commit: bc87c9c4879cfbf4484154856e9f81a27b8da33d
+  candidate_branch: qa/0.4.1-pre.1
+  artifact_sha256: 1133644BB129EB190DCDC52E0FE917A7766A7466733EA92DA7A1B3EF67143B22
+approval:
+  product_owner: approved
+  reference: private issue #23, PRODUCT-OWNER RELEASE APPROVAL, 2026-08-25
+public_target:
+  repository: kk3ya03-star/dsh-lcx-codex
+  base_commit: df5024e663b78a7fc38e47e056ff168c72fbbb3f
+  release_branch: release/0.4.1-pre.1
+  prerelease_tag: prelatest
+  release_tooling_commit: 748dd38fa673176e5b13d0319e0e94a7d48d936c
+included_candidate_paths:
+  - .gitattributes
+  - .gitignore
+  - cordis.patch.yml
+  - package.json
+  - tsconfig.typed-core.json
+  - lib/**
+  - scripts/**
+  - tests/**
+  - CHANGELOG.md
+  - ARCHITECTURE.md
+  - LICENSE
+preserved_distribution_paths:
+  - README.md
+  - README_EN.md
+  - assets/**
+  - .github/workflows/publish.yml
+excluded_private_paths:
+  - AGENTS.md
+  - AI-MANIFEST.yml
+  - GOVERNANCE.md
+  - PROJECT-CHARTER.md
+  - STATUS.md
+  - ROADMAP.md
+  - ACCEPTANCE.md
+  - DESIGN.md
+  - DEVELOPMENT-PLAN.md
+  - ERRORS.md
+  - RESEARCH.md
+  - docs/governance/**
+  - docs/decisions/**
+  - docs/handoff/**
+  - docs/templates/**
+  - qa/**
+  - releases/**
+  - compatibility/**
+  - tools/**
+  - .github/workflows/governance.yml
+  - .github/workflows/upstream-watch.yml
+workflow_correction:
+  path: .github/workflows/publish.yml
+  change: prerelease npm dist-tag next to prelatest
+  source: public release tooling commit 748dd38fa673176e5b13d0319e0e94a7d48d936c
+verification:
+  exported_tree_gates:
+    npm_install_ignore_scripts_no_lockfile: pass
+    tests: 111/111 pass
+    schema: 4/4 pass
+    typecheck: TypeScript 7.0.2 pass
+    server_and_client_entry_smoke: pass
+    npm_pack_boundary: 28 files pass
+    private_path_and_credential_scan: pass
+    git_diff_check: pass
+  parity:
+    status: pass
+    compared_paths: 32 runtime/source/config/test paths
+    method: SHA-256 equality against the frozen private candidate
+  commit_binding: public release commit and post-publish evidence are recorded in private issue #23
