@@ -1,6 +1,6 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.4.1-pre.1",
+  "version": "0.4.1",
   "description": "DSH Codex/Responses capabilities for existing openai-responses routes: hosted/alpha search and session-native V2 compaction",
   "keywords": [
     "deepseek-harness",
