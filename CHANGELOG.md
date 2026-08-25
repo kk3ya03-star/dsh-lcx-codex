@@ -1,10 +1,16 @@
 # Changelog
 
-## 0.4.1-pre.1 - Candidate QA pending / not published
+## 0.4.1-pre.1 - 2026-08-25
 
+### Released prerelease
+
+- Published as `dsh-lcx-codex@0.4.1-pre.1` on npm dist-tag `prelatest`; stable `latest` remains `0.4.0`.
 - Integrates the accepted Alpha stateful continuation and fail-closed capability work from #20, #21, and #22.
 - Includes accepted compatibility seam isolation (#24), typed protocol-core hardening (#25), unified conservative token budgeting (#26), and the installed-plugin settings lifecycle fix (#36).
-- This is an unpublished candidate for #19 installed-candidate and cross-feature QA; no npm publication, tag, or release is implied.
+- Passed installed-candidate and cross-feature QA before publication, including ordinary/Advanced Hosted Search, Native compaction/replay, restart/resume, model continuation, fork isolation, and fail-closed Alpha behavior where unsupported.
+- Public promotion preserved source/runtime parity with the frozen private candidate; package, schema, typecheck, import, install-chain, and publication gates passed.
+- Post-release registry installation and Loader/client/settings-chain verification passed. The final provider-gated ordinary `web_search` recheck was not covered because the temporary authorized upstream credential returned HTTP 401; this was recorded as an external-auth verification gap rather than a package/source/runtime defect.
+- This release remains a prerelease. It does not replace the formally VERIFIED stable `0.4.0` compatibility line.
 
 ## 0.4.0 - 2026-08-23
 
@@ -94,7 +100,7 @@
 
 ### Fixed
 
-- Ordinary DSH `web_search` now follows the active Agent `provider/model` instead of always using the plugin fallback GPT model. A Luna conversation now searches with Luna; a Sol conversation searches with Sol.
+- Ordinary DSH `web_search` now follows the active Agent `provider/model` instead of always using the plugin fallback GPT model. A Luna conversation now searches with Luna; a Sol conversation now searches with Sol.
 - Added an AsyncLocalStorage route bridge at the DSH `tools/execute` boundary so the provider-only `ctx.web.search()` seam can receive Agent route context without changing the model-visible `web_search` schema.
 - Hosted Search now uses a separate stable `dsh-lcx-search:<route hash>` `prompt_cache_key`, avoiding intentional cache-key sharing with Native conversation replay.
 - The settings UI now labels the configured Responses endpoint/model as **fallback** values, matching their actual rc.7 role.
