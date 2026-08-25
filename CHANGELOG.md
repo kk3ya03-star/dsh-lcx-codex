@@ -1,16 +1,30 @@
 # Changelog
 
+## 0.4.1 - 2026-08-25
+
+### Stable promotion
+
+- Promote the fully QA-passed `0.4.1-pre.1` runtime to stable `0.4.1` with **zero functional/runtime code changes**.
+- Make Alpha stateful continuation/fail-closed fixes, DSH compatibility-seam isolation, typed protocol hardening, conservative token budgeting, and the installed Settings lifecycle fix part of the default stable line.
+- Publish stable `0.4.1` to npm dist-tag `latest`; the prior `prelatest=0.4.1-pre.1` remains historical prerelease state.
+
+### Validation basis
+
+- `0.4.1-pre.1` passed Installed Candidate + Cross-feature QA before publication.
+- Public promotion preserved runtime/source parity with the frozen prerelease candidate.
+- Stable promotion requires package/version, typecheck, tests, schema, package/import boundary and zero-runtime-diff checks before publication.
+
 ## 0.4.1-pre.1 - 2026-08-25
 
 ### Released prerelease
 
-- Published as `dsh-lcx-codex@0.4.1-pre.1` on npm dist-tag `prelatest`; stable `latest` remains `0.4.0`.
+- Published as `dsh-lcx-codex@0.4.1-pre.1` on npm dist-tag `prelatest`; stable `latest` remained `0.4.0` at prerelease publication time.
 - Integrates the accepted Alpha stateful continuation and fail-closed capability work from #20, #21, and #22.
 - Includes accepted compatibility seam isolation (#24), typed protocol-core hardening (#25), unified conservative token budgeting (#26), and the installed-plugin settings lifecycle fix (#36).
 - Passed installed-candidate and cross-feature QA before publication, including ordinary/Advanced Hosted Search, Native compaction/replay, restart/resume, model continuation, fork isolation, and fail-closed Alpha behavior where unsupported.
 - Public promotion preserved source/runtime parity with the frozen private candidate; package, schema, typecheck, import, install-chain, and publication gates passed.
 - Post-release registry installation and Loader/client/settings-chain verification passed. The final provider-gated ordinary `web_search` recheck was not covered because the temporary authorized upstream credential returned HTTP 401; this was recorded as an external-auth verification gap rather than a package/source/runtime defect.
-- This release remains a prerelease. It does not replace the formally VERIFIED stable `0.4.0` compatibility line.
+- Superseded as the recommended release by stable `0.4.1` after zero-functional-change promotion.
 
 ## 0.4.0 - 2026-08-23
 
@@ -88,6 +102,7 @@
 - Restore the Alpha capability/ref-store interfaces consumed by `lib/index.js`; the rc.8 release package could pass its unit tests but fail immediately at module import with missing `AlphaCapabilityStore` / `AlphaRefStore` exports.
 - Add package-entry import regression coverage so CI fails when the server entry point and internal module exports drift out of sync.
 - Restore Native-first pressure coordination for isolated agent presets using DSH 0.1.1-rc.2's public `agentPresets.serviceFor(agent, name)` resolver. Preset-local `compaction` / `toolResultPruner` services are not visible through ordinary host or `agent.ctx` lookup; the plugin now addresses the actual per-Agent instances before applying the 90% Native / 95% emergency policy. A root service-lifecycle hook remains for non-preset deployments.
+
 ## 0.4.0-rc.8
 
 - Rebase the plugin on DSH `0.1.1-rc.2`; older DSH releases are no longer a supported runtime target.
@@ -129,7 +144,7 @@
 
 - Adds a bounded conversation-fidelity layer after real DSH testing showed assistant-only facts could be lost by opaque Native V2 compaction.
 - New `lcx-native-compaction-v5` checkpoints retain selected user/developer/system messages plus user-visible assistant final answers before the opaque compaction item.
-- Keeps explicit retained history within an estimated 64k-token ceiling; defaults reserve at most 24k for assistant answers and cap one retained answer at about 3k tokens.
+- Keeps explicit retained history within an estimated 64k-token ceiling; defaults reserve at most 24k for assistant answers and cap one retained assistant answer at about 3k tokens.
 - Does not copy reasoning, tool calls/results, raw search payloads, or telemetry into the fidelity prefix.
 - Repairs rc.3/rc.4 v4 checkpoints from append-only `shadowedSeqs`, including assistant-visible answers when the original DSH events still exist.
 - Stores only the single opaque compaction output item, ignoring unrelated terminal output items from nonstandard proxies.
