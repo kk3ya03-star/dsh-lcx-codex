@@ -4,12 +4,10 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - "main"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
   statuses: write
 
@@ -19,8 +17,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -43,14 +39,6 @@ jobs:
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
               -d "{\"state\":\"${state}\",\"context\":\"npm/${context}\",\"description\":\"${description}\"}" >/dev/null || true
           }
-
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-
-          # The main-branch trigger is a one-shot stable-promotion path for 0.4.1 only.
-          if [[ "$GITHUB_REF" == "refs/heads/main" && "$PACKAGE_VERSION" != "0.4.1" ]]; then
-            echo "main promotion trigger is restricted to package version 0.4.1"
-            exit 0
-          fi
 
           mark install pending "installing dependencies"
           if ! npm install --ignore-scripts --no-audit --no-fund; then
@@ -78,19 +66,7 @@ jobs:
           fi
           mark tests success "typecheck tests schema package passed"
 
-          if [[ "$GITHUB_REF" == "refs/heads/main" && "$PACKAGE_VERSION" == "0.4.1" ]]; then
-            git fetch --force --tags
-            if ! git rev-parse -q --verify refs/tags/v0.4.1-pre.1 >/dev/null; then
-              mark tests failure "v0.4.1-pre.1 baseline tag missing"
-              exit 1
-            fi
-            if ! git diff --quiet v0.4.1-pre.1 -- lib scripts tests cordis.patch.yml tsconfig.typed-core.json; then
-              mark tests failure "runtime/source differs from accepted prerelease"
-              git diff --stat v0.4.1-pre.1 -- lib scripts tests cordis.patch.yml tsconfig.typed-core.json
-              exit 1
-            fi
-          fi
-
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
             if [[ "$PACKAGE_VERSION" != "$TAG_VERSION" ]]; then
@@ -126,35 +102,3 @@ jobs:
           fi
           mark publish success "npm publish completed"
           mark published success "npm version published"
-
-      - name: Finalize v0.4.1 stable tag and release
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [[ "$PACKAGE_VERSION" != "0.4.1" ]]; then
-            exit 0
-          fi
-
-          git fetch --force --tags
-          if git rev-parse -q --verify refs/tags/v0.4.1 >/dev/null; then
-            TARGET="$(git rev-list -n 1 v0.4.1)"
-            if [[ "$TARGET" != "$GITHUB_SHA" ]]; then
-              echo "existing v0.4.1 points to $TARGET, expected $GITHUB_SHA" >&2
-              exit 1
-            fi
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a v0.4.1 "$GITHUB_SHA" -m "dsh-lcx-codex v0.4.1"
-            git push origin refs/tags/v0.4.1
-          fi
-
-          if ! gh release view v0.4.1 >/dev/null 2>&1; then
-            gh release create v0.4.1 \
-              --title "v0.4.1" \
-              --notes "Stable zero-functional-change promotion of the fully QA-passed 0.4.1-pre.1 runtime. npm latest: dsh-lcx-codex@0.4.1."
-          fi
