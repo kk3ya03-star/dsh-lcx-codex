@@ -2,7 +2,7 @@
 
 <img src="assets/dsh-lcx-codex-banner.png" alt="dsh-lcx-codex — 为 DSH 增加 GPT Hosted Search、Codex 风格网页操作与 Native V2 Compaction" width="100%" />
 
-[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm%20latest)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
 ![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4ea8ff)
 ![Node](https://img.shields.io/badge/Node-%3E%3D20-2f855a)
@@ -13,6 +13,19 @@
 </div>
 
 > **DSH 仍然是 host。LCX 只补齐 GPT Responses 路径缺失的原生能力，不修改 DSH 核心，也不替换 Agent / Session / Web / Compaction。**
+
+## 版本通道
+
+当前同时维护稳定版与预发布版：
+
+| 通道 | 当前版本 | 适合谁 | 安装方式 |
+|---|---|---|---|
+| `latest` | `0.4.0` | 希望使用当前正式稳定 / VERIFIED 版本 | `dsh plugin --profile web add dsh-lcx-codex` |
+| `prelatest` | `0.4.1-pre.1` | 希望使用最新修复并愿意测试预发布版本 | `dsh plugin --profile web add dsh-lcx-codex@prelatest` |
+
+**一般用户建议先用 `latest`。** 如果你需要 `0.4.1-pre.1` 中已经完成 QA 的 Alpha stateful continuation、安装态 Settings lifecycle 修复、typed protocol core 或统一 token budgeting，再选择 `prelatest`。
+
+`0.4.1-pre.1` 已发布到 npm `prelatest`，但它仍然是 prerelease；当前正式稳定兼容性声明仍以 `0.4.0` 为准。
 
 ## 它解决什么
 
@@ -45,6 +58,8 @@ search → open → find / click → screenshot
 
 它默认关闭，并且只有当前 endpoint / provider / model / schema 通过 capability probe 后才注册。未知部署采用 **fail-closed**，不会被误报成“支持 Alpha”。
 
+> 完整的 URL/stateful continuation 与 capability fail-closed 修复属于 `0.4.1-pre.1`。如果你依赖这条完整链路，建议使用 `@prelatest`；不要把 stable `0.4.0` 的行为等同于当前 prerelease。
+
 ### 3. Native V2 Compaction：保留 DSH 会话语义
 
 LCX 不创建第二套 compaction engine。DSH 仍然拥有 pressure、compactable range、`/compact`、durable session transaction、tool-result pruning 与 overflow recovery；LCX 只在已有 compaction LLM seam 上请求 Responses Native V2。
@@ -68,10 +83,21 @@ LCX 不创建第二套 compaction engine。DSH 仍然拥有 pressure、compactab
 
 ### 1. 安装
 
+**稳定版（推荐默认）**
+
 ```powershell
 dsh plugin --profile web add dsh-lcx-codex
 dsh web
 ```
+
+**当前预发布版**
+
+```powershell
+dsh plugin --profile web add dsh-lcx-codex@prelatest
+dsh web
+```
+
+如果要从一个通道切到另一个通道，建议先通过 DSH 官方 plugin remove/add 路径切换，不要删除用户 session 或 storage。
 
 ### 2. 在 DSH Settings 启用
 
@@ -85,6 +111,8 @@ dsh web
 | Alpha Search | **Off**，确认当前 route 支持后再开 |
 | Native V2 remote compaction | 上游实际支持 Native V2 时 **On** |
 | Native-first auto compaction | 使用 Native V2 时 **On** |
+
+> 正式安装态 Settings namespace / 配置卡 lifecycle 修复包含在 `0.4.1-pre.1`。如果 stable `0.4.0` 的安装态 UI 与这里的说明不一致，可直接测试 `@prelatest`。
 
 **前提条件**
 
@@ -130,11 +158,28 @@ checkpoint、canonical replay、Pi serializer、cache identity、fork safety 与
 
 当前正式验证组合：
 
-| Plugin | DSH | DSH host Pi | Plugin Pi | 状态 |
-|---|---|---|---|---|
-| `0.4.0` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **VERIFIED** |
+| Release line | Plugin | DSH | DSH host Pi | Plugin Pi | 状态 |
+|---|---|---|---|---|---|
+| Stable / `latest` | `0.4.0` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **VERIFIED** |
+| Prerelease / `prelatest` | `0.4.1-pre.1` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **RELEASED PRERELEASE / QA PASSED** |
 
-新的 DSH 版本**不会自动视为兼容**。项目会先检查受影响的 DSH / Pi seam，再按风险运行对应测试；Pi registry 单独出现新版本也不会自动升级插件依赖。
+`0.4.1-pre.1` 的 prerelease QA 与发布链已经通过，但它**不会自动升级为 stable compatibility authority**。新的 DSH 版本也不会自动视为兼容；项目会先检查受影响的 DSH / Pi seam，再按风险运行对应测试。
+
+<details>
+<summary><strong>0.4.1-pre.1 包含什么</strong></summary>
+
+相对 stable `0.4.0`，当前 prerelease 主要包括：
+
+- Alpha URL/stateful continuation 与 capability fail-closed 修复；
+- DSH compatibility seam 收敛；
+- route / Native V2 / checkpoint 的 typed protocol core；
+- Native retention 与 portable migration 的统一保守 token budgeting；
+- 正式安装态 settings namespace / configuration card lifecycle 修复；
+- Installed Candidate + Cross-feature QA。
+
+完整版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+</details>
 
 <details>
 <summary><strong>完整推荐设置</strong></summary>
@@ -158,10 +203,16 @@ checkpoint、canonical replay、Pi serializer、cache identity、fork safety 与
 <details>
 <summary><strong>其他安装方式</strong></summary>
 
-**预发布版**
+**指定稳定版本**
 
 ```powershell
-dsh plugin --profile web add dsh-lcx-codex@next
+dsh plugin --profile web add dsh-lcx-codex@0.4.0
+```
+
+**指定当前预发布版本**
+
+```powershell
+dsh plugin --profile web add dsh-lcx-codex@0.4.1-pre.1
 ```
 
 **本地 tarball**
@@ -183,10 +234,13 @@ dsh web
 确认插件和 Hosted Search 已启用，并且当前 Agent 能解析到兼容的 GPT `openai-responses` route。
 
 **`websearch_alpha` 没出现**  
-这是预期的 fail-closed 行为。Alpha 必须对当前 route/schema 完成可信 capability probe 后才注册。
+这是预期的 fail-closed 行为。Alpha 必须对当前 route/schema 完成可信 capability probe 后才注册。如果你依赖完整 stateful continuation，请先确认正在使用 `0.4.1-pre.1` 或更高的相应版本线。
 
 **Native V2 没有生效**  
 确认当前 GPT Responses endpoint 实际支持 `remote_compaction_v2`。插件不会把普通 Basic Compaction 假装成 Native V2 成功。
+
+**安装成功但配置卡不可见**  
+如果你使用的是 stable `0.4.0`，可测试 `@prelatest`；`0.4.1-pre.1` 包含正式安装态 settings lifecycle 修复。
 
 </details>
 
@@ -194,6 +248,7 @@ dsh web
 <summary><strong>开发</strong></summary>
 
 ```bash
+npm run typecheck
 npm test
 npm run test:schema
 npm pack --ignore-scripts
