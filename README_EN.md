@@ -1,7 +1,6 @@
 # dsh-lcx-codex
 
-[![npm stable](https://img.shields.io/npm/v/dsh-lcx-codex?label=stable&color=1677ff)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest&color=7c3aed)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?label=stable&color=1677ff)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
 ![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4ea8ff)
 ![Node](https://img.shields.io/badge/Node-%5E22.19%20%7C%7C%20%3E%3D24-2f855a)
@@ -10,34 +9,42 @@
 
 [简体中文](README.md) · **English** · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md) · [Releases](https://github.com/kk3ya03-star/dsh-lcx-codex/releases)
 
-> **Keep a DSH GPT Responses conversation on one request lifecycle owner from the first ordinary turn through tools, Prompt Cache, Native V2 Compact / Replay, restart recovery, and GPT model switching.**
+> **Keep a DSH GPT Responses conversation on one final Responses wire owner from the first ordinary turn through tools, Native V2 Compact / Replay, restart recovery, and GPT model switching.**
 
-`dsh-lcx-codex` does not replace the DSH Agent, Session, Tool Executor, or compaction policy. DSH remains the host; when **LCX is ON**, LCX owns the final request / SSE wire for the selected GPT Responses conversation.
+`dsh-lcx-codex` does not replace DSH. DSH still owns the Agent, Session, model selection, tool execution, attachments, and compaction policy. When **LCX is ON**, LCX owns the final request / SSE wire for the selected GPT Responses conversation.
 
-## Release status
+## Current stable release
 
-| Channel | Version | npm dist-tag | Status |
-|---|---:|---|---|
-| Stable | `0.4.1` | `latest` | **VERIFIED STABLE** |
-| Prerelease | `0.4.2-pre.1` | `prelatest` | **VERIFIED PRERELEASE** |
-
-`0.4.2-pre.1` is the current architecture prerelease and has passed real DSH + Sub2API release-candidate validation. Stay on `latest` for the conservative stable path; use `prelatest` for full GPT Responses lifecycle ownership, plugin Pi 0.84.3, and the updated Prompt Cache path.
+**`0.4.2`** is the current stable release and a **zero-functional-change stable promotion** of the fully validated `0.4.2-pre.1` runtime.
 
 ```powershell
-# Stable
 dsh plugin --profile web add dsh-lcx-codex
-
-# 0.4.2 prerelease
-dsh plugin --profile web add dsh-lcx-codex@0.4.2-pre.1
-
 dsh web
 ```
 
+- npm dist-tag: `latest`
+- DSH: `0.1.1-rc.2`
+- Plugin Pi: `0.84.3`
+- Node.js: `^22.19.0 || >=24.0.0`
+
+`0.4.2-pre.1` remains a historical prerelease; new users should install `latest`.
+
+## Product contract
+
+```text
+LCX OFF
+= use the native DSH LLM path
+
+LCX ON
+= LCX owns the final Responses request / SSE wire
+  for the selected GPT Responses conversation starting at ordinary turn 1
+```
+
+Turn LCX off before switching to Claude, Gemini, DeepSeek, or another non-GPT model. Model switching itself does not require a DSH restart.
+
 ## Why LCX exists
 
-DSH owns the Agent, Session, tool execution, model selection, and compaction policy. But if ordinary GPT Responses requests, Native Compact / Replay, cache identity, and provider-native state are constructed by different wire owners, long conversations can cross an unnecessary lifecycle boundary.
-
-`0.4.2-pre.1` unifies that path:
+DSH already owns the Agent, Session, tools, and compaction lifecycle. LCX addresses the final provider-native GPT Responses layer: ordinary requests, tools, Native Compact, Replay, restart/resume, and GPT route migration no longer switch final wire owners inside one conversation.
 
 ```text
                         DSH
@@ -55,8 +62,6 @@ DSH owns the Agent, Session, tool execution, model selection, and compaction pol
                                     ↓
                                  tools
                                     ↓
-                             Prompt Cache
-                                    ↓
                          Native V2 Compact
                                     ↓
                                 Replay
@@ -66,38 +71,29 @@ DSH owns the Agent, Session, tool execution, model selection, and compaction pol
                          GPT Model Migration
 ```
 
-### Product contract
-
-```text
-LCX OFF
-= use the native DSH LLM path
-
-LCX ON
-= LCX owns the final wire for the selected GPT Responses conversation
-  starting with ordinary turn 1
-```
-
-Turn LCX off before switching to Claude, Gemini, DeepSeek, or another non-GPT model. Model switching itself does not require a DSH restart.
+Compact therefore changes history representation without also changing request ownership.
 
 ## Core capabilities
 
 ### 1. Full GPT Responses lifecycle ownership
 
-With LCX ON, ordinary requests, tool continuations, Native Compact, Native Replay, restart/resume, and portable GPT model migration use one request builder / transport owner.
+With LCX ON, ordinary requests, tool continuations, Native Compact, Native Replay, restart/resume, and portable GPT migration use one LCX Responses request-builder / transport owner.
 
-Compact is therefore a history-representation transition, not a simultaneous history + request-owner transition.
+DSH remains the canonical session/history owner. LCX does not create a second conversation database or replace the DSH Tool Executor.
 
 ### 2. GPT-5.6 Prompt Cache
 
-`0.4.2-pre.1` uses the updated GPT-5.6 Prompt Cache path:
+`0.4.2` uses the current GPT-5.6 cache-options path and maintains stable cache identity inside a session:
 
 - implicit caching by default;
-- `prompt_cache_options.ttl = 30m`;
-- stable prompt-cache identity inside a session;
-- reusable prefixes across ordinary / tool / compact / replay / restart epochs where the provider permits it;
-- the final real RC workload observed `60,928` cached input tokens on a warm request.
+- the supported route sends `prompt_cache_options.ttl = 30m`;
+- ordinary consecutive turns and tool-heavy workloads can reuse warm prefixes;
+- Native Compact intentionally creates a new history/cache epoch, so the old uncompressed prefix is not promised to remain reusable;
+- real long-session validation repeatedly observed near-complete prefix reuse while request topology remained stable.
 
-Cache reuse depends on the provider, model, prefix, and session state. The number above is an observed acceptance result, not a fixed performance guarantee.
+Cache reuse depends on provider behavior, model, request prefix, tool schemas, and session state; it is not a fixed performance guarantee.
+
+One confirmed boundary: activating a skill at runtime can change the top-level tool schema and cause a one-time cache reset. The new topology warms again on the next request. The currently supported route rejects content-level `prompt_cache_breakpoint`, and DSH `0.1.1-rc.2` does not expose authoritative dynamic-tool provenance, so `0.4.2` preserves the safe one-time reset instead of guessing tool history.
 
 ### 3. Native V2 Compact + Replay
 
@@ -116,7 +112,7 @@ Default pressure coordination:
 - provider-confirmed overflow stays with DSH recovery;
 - manual `/compact` keeps the native DSH compaction transaction.
 
-Native v5 checkpoints no longer retain a duplicate per-request canonical developer/system prelude. Repeated Compact → Replay cycles do not linearly accumulate high-priority prompts, and retained assistant-visible copies preserve valid `phase` semantics.
+Native checkpoint v5 persists provider-native compaction state plus the portable retained history needed for fidelity. Compatible same-session routes can use Native replay; incompatible routes never reuse unsafe opaque state.
 
 ### 4. Restart / Resume + hot GPT switching
 
@@ -132,11 +128,11 @@ Terra
   → Continue
 ```
 
-Compatible model/route resumes may reuse Native opaque state. An incompatible GPT model / route drops unsafe opaque state and reconstructs portable history while remaining on LCX Responses transport.
+Compatible route/model resumes may restore Native opaque state. An incompatible GPT model / route drops unsafe opaque state and reconstructs portable history while remaining on LCX Responses transport.
 
 ### 5. Hosted Search + stateful Web Actions
 
-Ordinary search still uses DSH's native `web_search`; LCX can map its SearchProvider to the active GPT Hosted Search route instead of exposing a second ordinary-search tool.
+Ordinary web search still uses DSH's native `web_search`. LCX can map its SearchProvider to the active GPT Hosted Search route instead of exposing a second ordinary-search tool.
 
 | Need | Entry |
 |---|---|
@@ -150,7 +146,7 @@ Alpha supports:
 search → open → find / click → screenshot
 ```
 
-It is off by default and is registered only after the current endpoint / provider / model / schema passes a capability probe. Unknown deployments fail closed.
+Alpha is off by default and is registered only after the current endpoint / provider / model / schema passes a capability probe. Unknown deployments fail closed.
 
 ### 6. Isolated Pi 0.84.3 upgrade
 
@@ -160,20 +156,20 @@ The plugin uses `@earendil-works/pi-ai 0.84.3` without overriding the DSH host d
 DSH 0.1.1-rc.2
 └─ host Pi 0.82.1      ← unchanged
 
-dsh-lcx-codex 0.4.2-pre.1
+dsh-lcx-codex 0.4.2
 └─ plugin Pi 0.84.3    ← isolated plugin dependency
 ```
 
 Pi owns canonical Responses message/tool serialization, reasoning, IDs, strict/grammar/custom tools, `additional_tools`, `tool_search`, namespace, and stream semantics. LCX does not maintain a second generic provider framework.
 
-## Get started in 30 seconds
+## Configure in 30 seconds
 
 ### Requirements
 
 - Node.js `^22.19.0 || >=24.0.0`
 - DSH `0.1.1-rc.2`
 - a working GPT Responses route in DSH
-- actual upstream support for any Hosted Search / Native V2 / Alpha capability you enable
+- actual upstream support for the Hosted Search / Native V2 / Alpha capabilities you enable
 
 ### Suggested first-run settings
 
@@ -194,19 +190,19 @@ Pi owns canonical Responses message/tool serialization, reasoning, IDs, strict/g
 | Capability | Expected behavior |
 |---|---|
 | LCX ownership | With LCX ON, the first GPT ordinary request already uses the LCX Responses path |
-| Prompt Cache | Warm continuations may report provider `cached_tokens` |
+| Prompt Cache | Stable warm turns may report provider `cached_tokens` |
 | Hosted Search | Ordinary entry remains DSH `web_search` |
 | Advanced Hosted | `websearch_gpt_advanced` appears when enabled |
 | Alpha | `websearch_alpha` appears only after capability validation |
-| Native V2 | Compact produces provider-native checkpoint behavior instead of relabeling Basic Compaction |
-| Replay | The same DSH session continues after Compact without duplicate canonical prelude |
+| Native V2 | Compact produces provider-native checkpoint behavior rather than relabeling Basic Compaction |
+| Replay | The same DSH session continues after Compact and remains resumable after restart |
 
 ## DSH / LCX responsibility boundary
 
 | Component | Owns |
 |---|---|
 | **DSH** | Agent loop, Session/history, GenerateOptions, model/credential selection, tool execution, AttachmentStore, pressure policy, compaction transaction |
-| **DSH rc.2 compatibility seam** | Projects DSH messages / GenerateOptions into Pi Context and bridges results back to DSH |
+| **DSH compatibility seam** | Projects DSH messages / GenerateOptions into Pi Context and bridges results back to DSH |
 | **Plugin Pi 0.84.3** | Canonical Responses serialization / parser semantics |
 | **LCX** | ON/OFF ownership, final Responses body + HTTP/SSE wire, ordinary/compact/replay orchestration, Native opaque state, Search capabilities |
 
@@ -216,19 +212,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for checkpoint, portable replay, cache id
 
 | Plugin | DSH | DSH host Pi | Plugin Pi | Status |
 |---|---|---|---|---|
-| `0.4.1` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **VERIFIED STABLE** |
-| `0.4.2-pre.1` | `0.1.1-rc.2` | `0.82.1` | `0.84.3` | **VERIFIED PRERELEASE** |
+| `0.4.2` | `0.1.1-rc.2` | `0.82.1` | `0.84.3` | **VERIFIED STABLE** |
+| `0.4.1` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | historical stable |
 
-New DSH / Pi / gateway versions are not assumed compatible automatically; affected seams are validated incrementally.
+DSH `0.1.2-alpha.1` and newer Pi versions are not part of the formal `0.4.2` compatibility claim. They will be validated by affected seam rather than assumed compatible automatically.
 
 ## Current boundaries
 
-`0.4.2-pre.1` validates the core lifecycle while keeping these boundaries explicit:
-
-- the current DSH/Pi host vocabulary does not expose `prompt_cache_breakpoint`, so this stack cannot place explicit cache breakpoints manually;
-- `reasoning.context` / `reasoning.mode` remain host/Pi exposure boundaries; LCX does not invent a second control surface;
-- the normal operational context profile remains in the ~`262K` class; 1.05M long context is not enabled by default;
-- credentialed `ALPHA-004` runtime coverage remains `NOT_COVERED`, while fail-closed behavior is covered by tests;
+- The supported route uses implicit Prompt Cache. Content-level explicit breakpoints are rejected on that route and are not exposed as a product setting.
+- Dynamic skills/plugins that change the top-level tool schema can trigger a one-time prompt-cache reset; functionality remains correct and the new topology warms again.
+- `reasoning.context` / `reasoning.mode` remain host/Pi exposure boundaries; LCX does not invent a second control surface.
+- The normal operational context profile remains in the ~`262K` class; 1.05M long context is not enabled by default.
+- Credentialed `ALPHA-004` runtime coverage remains `NOT_COVERED`, while fail-closed behavior is covered by tests.
 - Programmatic Tool Calling is not currently advertised as supported.
 
 ## FAQ
@@ -250,14 +245,14 @@ By design. LCX changes the SearchProvider behind DSH `web_search` instead of exp
 <details>
 <summary><strong>Why is Alpha sometimes missing?</strong></summary>
 
-That is the fail-closed behavior. `websearch_alpha` is not registered until the active route/schema passes capability probing.
+That is fail-closed behavior. `websearch_alpha` is not registered until the active route/schema passes capability probing.
 
 </details>
 
 <details>
-<summary><strong>Why is npm latest still 0.4.1?</strong></summary>
+<summary><strong>Why can a skill load cause the cache to warm again?</strong></summary>
 
-`0.4.2-pre.1` is a verified prerelease, while stable promotion is a separate release decision. Install `@0.4.2-pre.1` explicitly if you want the new lifecycle architecture now.
+Some skills dynamically register new top-level tools. Tool schemas are part of the cacheable prompt prefix, so a topology change can establish a new cache epoch. `0.4.2` prioritizes correct tool definitions instead of guessing provenance to force reuse of an old cache.
 
 </details>
 
