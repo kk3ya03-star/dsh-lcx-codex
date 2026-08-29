@@ -10,6 +10,7 @@
         baseURL: https://api.lcxbot.com/v1
         apiKeyEnv: LCX_API_KEY
         model: gpt-5.6-sol
+        supportsExplicitPromptCacheMode: true
         legacyCheckpointPath: !!js dshHomePath('storages/lcx-codex/checkpoints-v3.json')
         alphaCapabilityPath: !!js dshHomePath('storages/lcx-codex/web-alpha-capabilities.json')
         alphaRefPath: !!js dshHomePath('storages/lcx-codex/web-alpha-refs.json')

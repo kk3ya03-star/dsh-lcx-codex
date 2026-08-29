@@ -10,22 +10,22 @@ test('native compaction is remote-first rather than parallel local+remote', asyn
 test('Native openai-responses keeps the Pi system prompt inside canonical input', async () => { const source = await text('lib/index.js'); const serializer = await text('lib/dsh-responses.js'); assert.match(source, /systemPrompt: options\.system/u); assert.doesNotMatch(source, /instructions: options\.system/u); assert.match(serializer, /includeSystemPrompt: normalized\.includeSystemPrompt/u); assert.match(serializer, /@earendil-works\/pi-ai\/api\/openai-responses-shared/u); assert.doesNotMatch(serializer, /file:\/\/\/|AppData|dist\/api\/openai-responses-shared/u) })
 test('new checkpoints are session-log native and old v3 sidecar is read-only compatibility', async () => { const index = await text('lib/index.js'); const native = await text('lib/native-checkpoint.js'); const legacy = await text('lib/legacy-v3.js'); assert.match(native, /lcx-native-compaction-v5/u); assert.match(native, /lcx-native-compaction-v4/u); assert.match(native, /rawOutput/u); assert.match(legacy, /readFileSync/u); assert.doesNotMatch(legacy, /writeFile|renameSync|mkdirSync/u); assert.doesNotMatch(index, /CheckpointV3Store/u) })
 test('native checkpoint keeps a bounded conversation-fidelity prefix before opaque compaction state', async () => { const source = await text('lib/native-checkpoint.js'); assert.match(source, /RETAINED_MESSAGE_TOKEN_BUDGET = 64_000/u); assert.match(source, /ASSISTANT_RETENTION_TOKEN_RESERVE = 24_000/u); assert.match(source, /retainedConversationPlan\(input/u); assert.match(source, /\[\.\.\.retention\.items, structuredClone\(result\.compaction\)\]/u) })
-test('package targets DSH 0.1.1-rc.2 directly', async () => { const pkg = JSON.parse(await text('package.json')); assert.equal(pkg.dependencies['@earendil-works/pi-ai'], '0.82.1'); assert.equal(pkg.devDependencies['@deepseek-ai/dsh-llm'], '0.1.1-rc.2'); assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-attachment'], '^0.1.1-rc.2'); assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-compaction-basic'], undefined); assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-web'], undefined) })
-test('Cordis service access uses plugin-level inject metadata without a nested lifecycle gate', async () => {
-  const source = await text('lib/index.js')
-  const applyMatch = source.match(/export function apply\(ctx, configInput = \{\}\) \{([\s\S]*?)\n\}/u)
-  assert.ok(applyMatch, 'exported apply(ctx, configInput) body must remain inspectable')
-  const applyBody = applyMatch[1]
-
-  assert.match(source, /export const inject = \['llm', 'web', 'sessions'\]/u)
-  assert.match(applyBody, /^\s*return installInjected\(ctx, configInput\)\s*$/u)
-  assert.doesNotMatch(applyBody, /ctx\.inject\(\s*\[\s*['"]llm['"]\s*,\s*['"]web['"]\s*,\s*['"]sessions['"]/u)
-  assert.match(source, /ctx\.inject\(\['compaction'\]/u)
-  assert.match(source, /installSettingsSection\(ctx, SETTINGS_NS/u)
-  assert.match(source, /apply\.inject = inject/u)
-  assert.match(source, /apply\.Config = Config/u)
+test('package isolates Pi 0.84.3 from the DSH 0.82.x host', async () => {
+  const pkg = JSON.parse(await text('package.json'))
+  assert.equal(pkg.dependencies['@earendil-works/pi-ai'], '0.84.3')
+  assert.equal(pkg.devDependencies['@deepseek-ai/dsh-llm'], '0.1.1-rc.2')
+  assert.equal(pkg.engines.node, '^22.19.0 || >=24.0.0')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-attachment'], '^0.1.1-rc.2')
 })
-test('Native-first pressure delays DSH prune to the emergency zone', async () => { const source = await text('lib/index.js'); assert.match(source, /auto pressure .*Native V2 first/u); assert.match(source, /emergency DSH prune allowed/u); assert.match(source, /ratioPercent < auto/u); assert.match(source, /ratioPercent < emergency/u) })
+test('target cache capability is plugin-owned instead of written into host Pi settings', async () => {
+  const source = await text('lib/index.js')
+  const patch = await text('cordis.patch.yml')
+  assert.match(source, /supportsExplicitPromptCacheMode: z\.boolean\(\)\.default\(false\)/u)
+  assert.match(source, /supportsExplicitPromptCacheMode: input\.supportsExplicitPromptCacheMode === true/u)
+  assert.match(patch, /supportsExplicitPromptCacheMode: true/u)
+  assert.doesNotMatch(patch, /providers:\s*\n\s+lcx:[\s\S]*?supportsExplicitPromptCacheMode/u)
+})
+test('Native-first pressure delays DSH prune to the emergency zone', async () => { const source = await text('lib/index.js'); assert.match(source, /auto pressure .*Native V2 first/u); assert.match(source, /emergency DSH prune allowed/u); assert.match(source, /compactionPressureBand\(totalTokens, contextWindow/u); assert.match(source, /pressure\.band === 'below'/u); assert.match(source, /pressure\.band === 'native'/u) })
 test('web_search deadline is extended without changing its model schema', async () => { const source = await text('lib/index.js'); const compat = await text('lib/dsh-compat.js'); assert.match(compat, /definition\.timeoutMs/u); assert.match(source, /webSearchTimeoutSeconds/u); const client = await text('lib/client.js'); assert.match(client, /240/u) })
 test('ordinary Hosted Search follows the active Agent without changing web_search schema', async () => { const source = await text('lib/index.js'); assert.match(source, /AsyncLocalStorage/u); assert.match(source, /hostedSearchRouteContext\.run\(active/u); assert.match(source, /web_search route:/u); assert.match(source, /dsh-lcx-search:/u); const hosted = await text('lib/web-search-hosted.js'); assert.match(hosted, /prompt_cache_key/u) })
 test('rc.8 uses the DSH 0.1.1 request-image API directly', async () => { const source = await text('lib/dsh-responses.js'); assert.match(source, /readImageRequest/u); assert.match(source, /offloadRequestImagesWithPolicy/u); assert.doesNotMatch(source, /attachments\?\.readImage\)/u); assert.match(source, /DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 \* 2048/u); assert.match(source, /DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 \* 1024/u) })
@@ -138,4 +138,43 @@ test('Alpha registration is scoped to the exact selected route while execution r
   assert.match(source, /syncAlphaToolForAgent\(ctx, agent, state, \(\) => runtimeConfig, capabilityStore, refStore, alphaToolRegistrations\)/u)
   assert.match(source, /event\?\.type === 'request\/header'[\s\S]*?syncAlphaToolForAgent\(ctx, agent, state/u)
   assert.doesNotMatch(source, /tools\.register\(createAlphaTool/u)
+})
+
+test('LCX ON owns first-turn ordinary Responses requests', async () => {
+  const source = await text('lib/index.js')
+  assert.ok(source.includes("if (!state.enabled || options.purpose === 'session-title') return next()"))
+  assert.ok(source.includes('return managedResponsesStream(options, routeConfig, ctx)'))
+  assert.equal(source.includes('if (!hasNative && !hasLegacy) return next()'), false)
+  assert.doesNotMatch(source, /recursiveLlmStream|bypassReplayOptions/u)
+})
+
+test('Ordinary Compact and Replay share the LCX Responses core', async () => {
+  const source = await text('lib/index.js')
+  const request = await text('lib/responses-request.js')
+  const stream = await text('lib/responses-stream.js')
+  assert.ok(source.includes('serializeNativeAware(options.messages'))
+  assert.ok(source.includes('buildResponsesBody('))
+  assert.ok(source.includes('streamResponsesRequest('))
+  assert.match(request, /buildCompactionResponsesBody/u)
+  assert.match(stream, /processResponsesStream/u)
+})
+
+test('LCX master switch is the only lifecycle ownership switch', async () => {
+  const source = await text('lib/index.js')
+  const client = await text('lib/client.js')
+  assert.equal(source.includes("!state.remoteCompaction"), false)
+  assert.ok(source.includes("if (options.purpose === 'compaction')"))
+  assert.ok(source.includes('if (!routeConfig) return unavailableManagedRouteStream(options)'))
+  assert.equal(client.includes("id:'lcx-compact'"), false)
+  assert.equal(client.includes("s.remoteCompaction.value"), false)
+})
+
+test('Native replay keeps the accepted Remote V2 tool controls on the shared body', async () => {
+  const source = await text('lib/index.js')
+  assert.ok(source.includes("if (nativeReplay) { body.tool_choice = 'auto'; body.parallel_tool_calls = true }"))
+})
+
+test('managed Responses refuses unsupported stop sequences instead of silently dropping them', async () => {
+  const source = await text('lib/index.js')
+  assert.ok(source.includes('LCX_RESPONSES_UNSUPPORTED_OPTION'))
 })

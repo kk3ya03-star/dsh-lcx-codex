@@ -8,6 +8,7 @@ import {
 } from '../lib/token-budget.js'
 import {
   ASSISTANT_RETENTION_PER_MESSAGE_TOKEN_CAP,
+  createNativeCheckpointBlock,
   portableMessagesForCheckpoint,
   retainedConversationPlan,
   stateFromSummaryEvent,
@@ -41,6 +42,12 @@ function checkpointSession(messages, id = 'checkpoint-fixture') {
   return { events }
 }
 
+const route = { provider: 'lcx', model: 'gpt-5.6-sol', baseURL: 'https://example.invalid/v1', sessionId: 'session-fixture' }
+const compaction = { type: 'compaction', encrypted_content: 'opaque-fixture' }
+function activeCheckpointSession(id) {
+  return { events: [{ seq: 0, type: 'compaction/start', data: { compactionId: id } }] }
+}
+
 test('token fixture 1: English prose is deterministic and never cheaper than legacy /4', () => {
   const text = 'A concise English sentence has ordinary words and spaces.'
   assert.equal(estimateTextTokens(text), estimateTextTokens(text))
@@ -72,6 +79,54 @@ test('token fixture 6: truncated assistant item including marker and structure s
   assert.equal(plan.assistantCount, 1)
   assert.ok(estimateBudgetItem(plan.items[0]) <= ASSISTANT_RETENTION_PER_MESSAGE_TOKEN_CAP)
   assert.match(plan.items[0].content[0].text, /LCX retained answer truncated/u)
+})
+
+test('assistant supplemental retention preserves valid Responses phases', () => {
+  const plan = retainedConversationPlan([
+    { ...textMessage('assistant', 'working'), id: 'msg-commentary', phase: 'commentary' },
+    { ...textMessage('assistant', 'done'), id: 'msg-final', phase: 'final_answer' },
+    { ...textMessage('assistant', 'unknown'), id: 'msg-unknown', phase: 'future_phase' },
+  ])
+  assert.deepEqual(plan.items.map((item) => item.phase), ['commentary', 'final_answer', undefined])
+  assert.deepEqual(plan.items.map((item) => item.id), ['msg-commentary', 'msg-final', 'msg-unknown'])
+})
+
+test('truncated assistant supplemental retention keeps phase but drops provider item id', () => {
+  const plan = retainedConversationPlan([
+    { ...textMessage('assistant', 'long answer '.repeat(5_000)), id: 'msg-old-provider-id', phase: 'commentary' },
+  ], { assistantPerMessageTokenCap: 100 })
+  assert.equal(plan.items[0].phase, 'commentary')
+  assert.equal(plan.items[0].id, undefined)
+  assert.match(plan.items[0].content[0].text, /LCX retained answer truncated/u)
+})
+
+test('canonical prelude is request-ephemeral across two compact and replay epochs', () => {
+  const prelude = textMessage('developer', 'canonical-prelude-fingerprint')
+  const genuineDeveloper = textMessage('developer', 'genuine-late-developer-item')
+  const user1 = textMessage('user', 'first')
+  const toolPair = [
+    { type: 'function_call', id: 'fc-1', call_id: 'call-1', name: 'lookup', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call-1', output: 'ok' },
+  ]
+  const first = createNativeCheckpointBlock({
+    session: activeCheckpointSession('compact-1'), route, result: { compaction },
+    input: [prelude, genuineDeveloper, user1, ...toolPair], ephemeralPreludeItemCount: 1,
+  })
+  assert.equal(first.nativeOutput.some((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint'), false)
+  assert.equal(first.nativeOutput.some((item) => item?.content?.[0]?.text === 'genuine-late-developer-item'), true)
+  assert.equal(first.nativeOutput.filter((item) => item?.type === 'compaction').length, 1)
+
+  const replay1 = [prelude, ...first.nativeOutput, textMessage('user', 'after compact one')]
+  assert.equal(replay1.filter((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint').length, 1)
+  const second = createNativeCheckpointBlock({
+    session: activeCheckpointSession('compact-2'), route, result: { compaction },
+    input: replay1, ephemeralPreludeItemCount: 1,
+  })
+  const replay2 = [prelude, ...second.nativeOutput, textMessage('user', 'after compact two')]
+  assert.equal(replay2.filter((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint').length, 1)
+  assert.equal(replay2.filter((item) => item?.type === 'compaction').length, 1)
+  assert.equal(replay2.some((item) => item?.content?.[0]?.text === 'genuine-late-developer-item'), true)
+  assert.equal(replay2.filter((item) => item?.type === 'function_call').length, replay2.filter((item) => item?.type === 'function_call_output').length)
 })
 
 test('token fixture 7: mixed client and assistant accounting honors 64k total and 24k assistant reserve', () => {

@@ -1,5 +1,5 @@
 version: 0.4.2-pre.1
-state: PREPARED_FOR_CURATED_EXPORT
+state: READY_FOR_MERGE
 private_source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   integrated_commit: 96092102b19b430939c1feb50cf766a01c1e8b26
@@ -68,17 +68,25 @@ release_invariants:
   - npm latest remains 0.4.1; this prerelease publishes only to prelatest
 verification:
   exported_tree_gates:
-    npm_install: pending
-    tests: pending
-    schema: pending
-    typecheck: pending
-    server_and_client_entry_smoke: pending
-    npm_pack_boundary: pending
-    private_path_and_credential_scan: pending
-    git_diff_check: pending
+    npm_install: PASS (159 packages; ignore-scripts, no audit/fund, no lockfile)
+    tests: PASS (134/134)
+    schema: PASS (4/4)
+    typecheck: PASS
+    server_and_client_entry_smoke: PASS (server import; browser loader registration contract)
+    npm_pack_boundary: PASS (30 entries; 219952 bytes; 464038 unpacked bytes)
+    private_path_and_credential_scan: PASS
+    git_diff_check: PASS
   parity:
-    status: pending
+    status: PASS (40/40 promoted files; preserved distribution paths unchanged)
     method: SHA-256/content equality for every promoted runtime/source/config/test path
+  public_artifact:
+    filename: dsh-lcx-codex-0.4.2-pre.1.tgz
+    sha256: BAAE6B1B099DCF93C41A7A85BAC9200A74452125E1F133A7C1C0E959C03691DE
+    size_bytes: 219952
+    entry_count: 30
+    note: public artifact intentionally preserves public README and README_EN
+  probe_notes:
+    - plain Node import of lib/client.js is invalid because it is a browser loader bundle; the loader registration contract passed with a minimal window.__ModuleLoader__.load stub
   post_publish:
     public_commit_tree_tag: pending
     trusted_publish_workflow: pending

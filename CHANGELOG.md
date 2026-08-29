@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2-pre.1 - candidate under runtime acceptance
+
+### Architecture
+
+- Make the LCX master switch the GPT Responses lifecycle ownership switch: when enabled, the first ordinary Agent turn, tools, Native V2 compaction, native replay and portable GPT-model migration share one LCX final-wire path.
+- Upgrade only the plugin's direct Pi dependency to `0.84.3`; DSH 0.1.1-rc.2 and its host Pi 0.82.x remain isolated and unchanged.
+- Reuse Pi 0.84 canonical Responses serializers and stream semantics for strict/grammar/custom tools, deferred `additional_tools` / `tool_search`, namespace, reasoning, IDs and cache behavior.
+- Add one standard Responses request builder and shared LCX HTTP/SSE transport/parser bridge; remove the old portable recursive bypass back to the DSH adapter.
+- Preserve checkpoint v5, DSH compaction transactions, Native-first pressure coordination, first-checkpoint Basic fallback, restart/resume and Search/#20 architecture.
+- Normalize ordinary/replay failures into DSH terminal taxonomy and keep DSH as the visible retry owner.
+
+### Validation state
+
+- Engineering gates pass on the private work branch; exact commit-bound DSH + Sub2API runtime acceptance remains mandatory before integration, publication or a `VERIFIED` compatibility claim.
+
 ## 0.4.1 - 2026-08-25
 
 ### Stable promotion
