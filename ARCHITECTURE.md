@@ -1,3 +1,27 @@
+# GPT Responses full-lifecycle ownership — 0.4.2-pre.1
+
+## Product contract
+
+`LCX OFF` leaves every LLM request on the native DSH adapter path. `LCX ON` is the ownership switch for the selected GPT Responses conversation: LCX owns the final Responses wire from the first ordinary turn through tool loops, Native V2 compaction, native replay, portable model migration, and restart/resume. Users turn LCX off before selecting a non-GPT model; DSH model switching itself remains hot and requires no restart.
+
+## Responsibility boundary
+
+- **DSH** remains the Agent, Session, request assembly, model/settings/credential, tool-execution, attachment, pressure-policy and compaction-transaction owner.
+- **The rc.2 compatibility seam** projects DSH `GenerateOptions` and durable replay content into Pi's provider-neutral `Context`. It exists only because DSH 0.1.1-rc.2 does not publish `toPiContext()` / `toStreamChunks()` as stable package APIs.
+- **Plugin Pi 0.84.3** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing.
+- **LCX** owns the final body, HTTP/SSE wire, safe error normalization, ordinary/compact/replay orchestration, Remote V2 opaque state and checkpoint compatibility.
+
+## Unified request path
+
+`serializeNativeAware()` is the shared history compiler. With no checkpoint it serializes ordinary history; with a compatible checkpoint it injects retained native history plus the opaque compaction item; with an incompatible GPT model/route it reconstructs portable DSH history. All three representations continue through one standard LCX request builder and one LCX transport/parser bridge. Compact is the standard request plus `compaction_trigger` and the Remote V2 feature header; native replay is the standard request plus opaque history. Portable migration never recursively bypasses LCX back to `PiAiAdapter`.
+
+Ordinary and replay requests perform one provider attempt and emit DSH terminal failure chunks using the host taxonomy, leaving visible retries to DSH's `agent/request-error` policy. Native compaction retains its bounded idempotent retry and first-checkpoint Basic fallback. Genuine upstream tool namespace is stored only in adapter-private replay metadata because DSH rc.2's visible ToolCall block has no namespace field.
+
+## Gateway continuity
+
+The stable DSH session id drives Pi-compatible prompt-cache/session-affinity fields. Sub2API v0.1.183 accepts `session_id`, `session-id`, and `x-client-request-id` for Codex account stickiness and repairs recovered custom-tool/tool-search item ID prefixes. Runtime acceptance therefore verifies both LCX wire continuity and gateway account continuity; release prose is not treated as the wire contract.
+
+---
 
 ## rc.6 pressure coordination
 

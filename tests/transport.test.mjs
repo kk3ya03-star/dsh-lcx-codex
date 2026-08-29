@@ -32,3 +32,21 @@ test('credential transports reject redirects and do not expose provider bodies',
     globalThis.fetch = originalFetch
   }
 })
+
+test('single-attempt transports preserve bounded provider retry guidance', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('rate limited', {
+    status: 429,
+    headers: { 'content-type': 'text/plain', 'retry-after-ms': '45000' },
+  })
+  try {
+    for (const transport of [fetchJsonWithRetry, fetchSseWithRetry]) {
+      await assert.rejects(
+        transport('https://example.invalid/v1/test', {}, {}, undefined, 1000, { maxAttempts: 1 }),
+        (error) => error?.status === undefined && error?.cause?.status === 429 && error?.cause?.providerRetryAfterMs === 30000,
+      )
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

@@ -7,13 +7,18 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "skipLibCheck": true
   },
   "files": [
     "lib/route.js",
     "lib/compact-v2.js",
     "lib/native-checkpoint.js",
-    "lib/token-budget.js"
+    "lib/token-budget.js",
+    "lib/responses-stream.js"
   ]
 }

@@ -26,7 +26,8 @@ import {
 import { AlphaCapabilityStore, alphaCapabilityFingerprint, alphaCapabilityUsable } from '../lib/web-search-capability.js'
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
-import { authenticatedHeaders, promptCacheKey, promptCacheRetention } from '../lib/route.js'
+import { authenticatedHeaders, promptCacheKey, promptCacheRetention, resolveResponsesRouteConfig } from '../lib/route.js'
+import { buildResponsesBody } from '../lib/responses-request.js'
 import { replayBody, requestNativeReplay } from '../lib/responses-replay.js'
 
 test('Native cache namespace matches the DSH/Pi session cache identity', async () => {
@@ -59,13 +60,64 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   }
 })
 
-test('Native compaction and replay carry the same cache retention envelope', () => {
-  const compact = buildNativeCompactionBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
-  const replay = replayBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
-  assert.equal(compact.prompt_cache_key, 'session-x')
-  assert.equal(compact.prompt_cache_retention, '24h')
-  assert.equal(replay.prompt_cache_key, 'session-x')
-  assert.equal(replay.prompt_cache_retention, '24h')
+function responsesRouteFixture(providers, fallbackOverrides = {}) {
+  return {
+    ctx: { settings: { get: () => ({ providers }) } },
+    fallback: {
+      provider: 'lcx', model: 'gpt-5.6-sol', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY',
+      timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 1, requestImagePixelBudget: 1, requestImageMaxBytes: 1,
+      ...fallbackOverrides,
+    },
+  }
+}
+
+test('legal host custom-provider profile receives plugin-owned GPT-5.6 cache capability', () => {
+  const profile = { api: 'openai-responses', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY' }
+  const { ctx, fallback } = responsesRouteFixture({ lcx: profile }, { supportsExplicitPromptCacheMode: true })
+  for (const model of ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']) {
+    const resolved = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model }, fallback)
+    assert.equal(resolved?.responsesCompat?.supportsExplicitPromptCacheMode, true)
+
+    const descriptor = { id: resolved.model, provider: resolved.provider, reasoning: true, compat: resolved.responsesCompat }
+    const body = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-route', cacheRetention: resolved.cacheRetention })
+    assert.deepEqual(body.prompt_cache_options, { ttl: '30m' })
+  }
+})
+
+test('plugin-owned cache capability stays off for older, foreign, and non-opted routes', () => {
+  const profile = { api: 'openai-responses', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY' }
+  const opted = responsesRouteFixture({ lcx: profile }, { supportsExplicitPromptCacheMode: true })
+  const older = resolveResponsesRouteConfig(opted.ctx, { provider: 'lcx', model: 'gpt-4.1' }, opted.fallback)
+  assert.notEqual(older?.responsesCompat?.supportsExplicitPromptCacheMode, true)
+
+  const unopted = responsesRouteFixture({ lcx: profile })
+  const current = resolveResponsesRouteConfig(unopted.ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, unopted.fallback)
+  assert.notEqual(current?.responsesCompat?.supportsExplicitPromptCacheMode, true)
+
+  const foreignProfile = { relay: { ...profile, baseURL: 'https://relay.example/v1' } }
+  const foreign = resolveResponsesRouteConfig({ settings: { get: () => ({ providers: foreignProfile }) } }, { provider: 'relay', model: 'gpt-5.6-sol' }, opted.fallback)
+  assert.notEqual(foreign?.responsesCompat?.supportsExplicitPromptCacheMode, true)
+})
+
+test('ordinary, Native compaction, and replay share current and legacy cache policy', () => {
+  const legacyCompact = buildNativeCompactionBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
+  const legacyReplay = replayBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
+  assert.equal(legacyCompact.prompt_cache_key, 'session-x')
+  assert.equal(legacyCompact.prompt_cache_retention, '24h')
+  assert.equal(legacyCompact.prompt_cache_options, undefined)
+  assert.equal(legacyReplay.prompt_cache_key, 'session-x')
+  assert.equal(legacyReplay.prompt_cache_retention, '24h')
+  assert.equal(legacyReplay.prompt_cache_options, undefined)
+
+  const descriptor = { id: 'gpt-5.6-sol', provider: 'lcx', reasoning: true, compat: { supportsExplicitPromptCacheMode: true } }
+  const currentOrdinary = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
+  const currentCompact = buildNativeCompactionBody({ model: descriptor.id, modelDescriptor: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
+  const currentReplay = replayBody({ model: descriptor.id, modelDescriptor: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
+  for (const body of [currentOrdinary, currentCompact, currentReplay]) {
+    assert.equal(body.prompt_cache_key, 'session-y')
+    assert.equal(body.prompt_cache_retention, undefined)
+    assert.deepEqual(body.prompt_cache_options, { ttl: '30m' })
+  }
 })
 
 function sseResponse(events) {
@@ -492,12 +544,54 @@ test('Alpha production parser rejects explicit continuation semantic failures ev
   }, { action: 'open', capability: 'command-capable', requestId: 'req-semantic', retrievedAt: '2026-08-24T00:00:00.000Z' }), (error) => error?.code === 'LCX_ALPHA_ACTION_FAILED')
 })
 
+test('Alpha parser rejects real Internal Error command envelopes for click and screenshot', () => {
+  for (const [action, output, results] of [
+    ['click', 'Internal Error ()\nUnable to resolve click call: target could not be resolved due to invalid arguments', [{ ref_id: 'turn0view-error', line_number: 8 }]],
+    ['screenshot', 'Internal Error ()\n\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Unable to resolve screenshot call: target content type is not application/pdf and web screenshot is not enabled', [{ ref_id: 'turn0pdf-error', page_number: 0 }]],
+  ]) assert.throws(
+    () => parseAlphaSearchResponse({ output, results }, { action, capability: 'command-capable', requestId: `req-${action}-internal-error`, retrievedAt: '2026-08-28T00:00:00.000Z' }),
+    (error) => error?.code === 'LCX_ALPHA_ACTION_FAILED',
+  )
+})
+
+test('Alpha probe cannot promote real Internal Error click evidence', async () => {
+  const result = await probeAlphaCapabilities({
+    schemaFingerprint: 'alpha-schema',
+    invoke: async (args) => {
+      if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
+        output: 'Search result\nciteturn0search0',
+        results: [{ ref_id: 'turn0search0' }],
+      })
+      if (args.action === 'open') return parseAlphaProbeFixture('open', {
+        output: 'Opened page\nciteturn0view0\n\uE200cite\uE2027\u2020Next\u2020example.com\uE201',
+        results: [{ ref_id: 'turn0view0' }],
+      })
+      if (args.action === 'find') { const error = new Error('not found'); error.status = 404; throw error }
+      if (args.action === 'click') return {
+        content: 'Internal Error ()\n\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Unable to resolve click call: target could not be resolved due to invalid arguments',
+        results: [{ ref_id: 'turn0destination-error', line_number: 8 }],
+        refs: ['turn0destination-error'],
+      }
+      throw new Error(`Unexpected action: ${args.action}`)
+    },
+  })
+  assert.equal(result.actions.click, 'unsupported')
+  assert.notEqual(result.classification, 'command-capable')
+  assert.equal(alphaCapabilityUsable(result), false)
+})
+
 test('Alpha semantic failure matcher does not reject successful content that quotes failure phrases', () => {
   for (const [action, output] of [
     ['open', 'Status guide (https://example.com/503)\nciteturn0view0\nL1: HTTP 503 means Service Unavailable.'],
     ['find', 'API errors (https://example.com/errors)\nciteturn0find0\nL12: The literal message is reference unavailable.'],
     ['open', 'Troubleshooting (https://example.com/help)\nciteturn0view1\nL3: Users may be unable to access requested content during maintenance.'],
+    ['click', 'Error handling guide (https://example.com/errors)\nciteturn0view2\nL7: A gateway may return Internal Error () followed by Unable to resolve click call: due to invalid arguments.'],
   ]) assert.doesNotThrow(() => parseAlphaSearchResponse({ output, results: [{ ref_id: 'turn0real', url: 'https://example.com/docs' }] }, { action, capability: 'command-capable', requestId: 'req-content', retrievedAt: '2026-08-24T00:00:00.000Z' }))
+
+  assert.doesNotThrow(() => parseAlphaSearchResponse({
+    output: 'Internal Error ()\nUnable to resolve screenshot call: unrelated action',
+    results: [{ ref_id: 'turn0view3' }],
+  }, { action: 'click', capability: 'command-capable', requestId: 'req-action-mismatch', retrievedAt: '2026-08-24T00:00:00.000Z' }))
 })
 
 test('Alpha probe rejects production-parsed HTTP-200 open prose failures', async () => {
@@ -745,10 +839,10 @@ test('Alpha probe rejects production-parsed HTTP-200 screenshot prose failures',
   assert.equal(result.classification, 'command-capable')
   assert.equal(result.actions.screenshot, 'unsupported')
 })
-test('Alpha capability store rejects older records after anchored semantic-evidence hardening moves the probe to v10', () => {
+test('Alpha capability store rejects older records after command-error hardening moves the probe to v11', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-'))
   try {
-    assert.equal(ALPHA_PROBE_VERSION, 10)
+    assert.equal(ALPHA_PROBE_VERSION, 11)
     const fingerprint = 'a'.repeat(64)
     const v7Record = {
       classification: 'command-capable',
@@ -762,9 +856,9 @@ test('Alpha capability store rejects older records after anchored semantic-evide
     writeFileSync(file, `${JSON.stringify({ version: 1, capabilities: { [fingerprint]: v7Record } })}\n`)
     const store = new AlphaCapabilityStore(file)
     assert.equal(store.get(fingerprint), undefined)
-    const v10Record = { ...v7Record, probeVersion: ALPHA_PROBE_VERSION }
-    store.put(fingerprint, v10Record)
-    assert.deepEqual(store.get(fingerprint), v10Record)
+    const v11Record = { ...v7Record, probeVersion: ALPHA_PROBE_VERSION }
+    store.put(fingerprint, v11Record)
+    assert.deepEqual(store.get(fingerprint), v11Record)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -827,9 +921,11 @@ test('Native replay requires response.completed', async () => {
     response: { id: 'resp_replay_done', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x' }] }] },
   }])
   try {
-    await assert.rejects(async () => {
-      for await (const _chunk of requestNativeReplay({ baseURL: 'https://example.invalid/v1', model: 'gpt-5.6-terra', input: [], headers: {}, maxAttempts: 1 })) { /* consume */ }
-    }, (error) => error?.code === 'LCX_RESPONSES_INCOMPLETE')
+    const chunks = []
+    for await (const chunk of requestNativeReplay({ baseURL: 'https://example.invalid/v1', model: 'gpt-5.6-terra', input: [], headers: {}, maxAttempts: 1 })) chunks.push(chunk)
+    const finish = chunks.find((chunk) => chunk.type === 'finish')
+    assert.equal(finish?.reason?.kind, 'error')
+    assert.equal(finish?.reason?.failure?.code, 'TRANSPORT')
   } finally {
     globalThis.fetch = originalFetch
   }

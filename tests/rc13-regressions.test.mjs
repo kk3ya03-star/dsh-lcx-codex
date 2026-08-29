@@ -257,6 +257,7 @@ test('normal_to_compact_preserves_canonical_prefix', async () => {
   const canonicalInput = convertResponsesMessages(model, context, new Set(['openai', 'openai-codex', 'opencode']), {
     includeSystemPrompt: true,
     deferredTools,
+    deferredToolsMode: 'tool-search',
     toolOptions: { supportsStrictMode: true, supportsOpenAIGrammarTools: false },
   })
   const canonicalTools = convertResponsesTools([LOOKUP_TOOL], { supportsStrictMode: true, supportsOpenAIGrammarTools: false })

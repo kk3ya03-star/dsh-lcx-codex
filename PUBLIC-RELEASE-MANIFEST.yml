@@ -1,18 +1,25 @@
-version: 0.4.1-pre.1
+version: 0.4.2-pre.1
+state: READY_FOR_MERGE
 private_source:
   repository: kk3ya03-star/dsh-lcx-codex-private
-  commit: bc87c9c4879cfbf4484154856e9f81a27b8da33d
-  candidate_branch: qa/0.4.1-pre.1
-  artifact_sha256: 1133644BB129EB190DCDC52E0FE917A7766A7466733EA92DA7A1B3EF67143B22
+  integrated_commit: 96092102b19b430939c1feb50cf766a01c1e8b26
+  integrated_tree: af38ddc6f2f1232c667bca3e39c689e2f9e16255
+  accepted_functional_input: 2d1d6314a848d03164bb0a07fd2d0393cb2940d2
+  final_qa_evidence_commit: 27a5ca6c774e0dca51aafc01a0656c19c44eeecc
+  candidate_branch: integration/0.4.2-pre.1
+  artifact_sha256: AA3F52945B5F3B2661AD63357C01056353CF0E837EE81A65D15EC856D034ECD8
 approval:
   product_owner: approved
-  reference: private issue #23, PRODUCT-OWNER RELEASE APPROVAL, 2026-08-25
+  date: 2026-08-29
+  reference: private issue #45 comment 5460875912
+  technical_lead_reference: private issue #45 comment 5460790105
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
-  base_commit: df5024e663b78a7fc38e47e056ff168c72fbbb3f
-  release_branch: release/0.4.1-pre.1
-  prerelease_tag: prelatest
-  release_tooling_commit: 748dd38fa673176e5b13d0319e0e94a7d48d936c
+  base_commit: 56e5cf959fec197e9ee5b3b1714e2208d3339901
+  release_branch: release/0.4.2-pre.1
+  version_tag: v0.4.2-pre.1
+  npm_dist_tag: prelatest
+  stable_latest_must_remain: 0.4.1
 included_candidate_paths:
   - .gitattributes
   - .gitignore
@@ -52,22 +59,38 @@ excluded_private_paths:
   - tools/**
   - .github/workflows/governance.yml
   - .github/workflows/upstream-watch.yml
-workflow_correction:
-  path: .github/workflows/publish.yml
-  change: prerelease npm dist-tag next to prelatest
-  source: public release tooling commit 748dd38fa673176e5b13d0319e0e94a7d48d936c
+release_invariants:
+  - curated public export only; private project dashboard/control plane must not be copied
+  - promoted runtime/source/config/test paths must be content-parity verified against the frozen private candidate
+  - no runtime/source functional change is authorized during promotion
+  - package version must remain exactly 0.4.2-pre.1
+  - DSH host Pi remains 0.82.1; plugin Pi remains 0.84.3
+  - npm latest remains 0.4.1; this prerelease publishes only to prelatest
 verification:
   exported_tree_gates:
-    npm_install_ignore_scripts_no_lockfile: pass
-    tests: 111/111 pass
-    schema: 4/4 pass
-    typecheck: TypeScript 7.0.2 pass
-    server_and_client_entry_smoke: pass
-    npm_pack_boundary: 28 files pass
-    private_path_and_credential_scan: pass
-    git_diff_check: pass
+    npm_install: PASS (159 packages; ignore-scripts, no audit/fund, no lockfile)
+    tests: PASS (134/134)
+    schema: PASS (4/4)
+    typecheck: PASS
+    server_and_client_entry_smoke: PASS (server import; browser loader registration contract)
+    npm_pack_boundary: PASS (30 entries; 219952 bytes; 464038 unpacked bytes)
+    private_path_and_credential_scan: PASS
+    git_diff_check: PASS
   parity:
-    status: pass
-    compared_paths: 32 runtime/source/config/test paths
-    method: SHA-256 equality against the frozen private candidate
-  commit_binding: public release commit and post-publish evidence are recorded in private issue #23
+    status: PASS (40/40 promoted files; preserved distribution paths unchanged)
+    method: SHA-256/content equality for every promoted runtime/source/config/test path
+  public_artifact:
+    filename: dsh-lcx-codex-0.4.2-pre.1.tgz
+    sha256: BAAE6B1B099DCF93C41A7A85BAC9200A74452125E1F133A7C1C0E959C03691DE
+    size_bytes: 219952
+    entry_count: 30
+    note: public artifact intentionally preserves public README and README_EN
+  probe_notes:
+    - plain Node import of lib/client.js is invalid because it is a browser loader bundle; the loader registration contract passed with a minimal window.__ModuleLoader__.load stub
+  post_publish:
+    public_commit_tree_tag: pending
+    trusted_publish_workflow: pending
+    npm_registry_and_dist_tags: pending
+    isolated_registry_install_smoke: pending
+    teardown: pending
+  authority: final release evidence is recorded in private issue #45
