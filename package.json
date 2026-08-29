@@ -1,6 +1,6 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.4.2-pre.1",
+  "version": "0.4.2",
   "description": "DSH GPT Responses lifecycle owner with Native V2 compaction/replay and Hosted/Alpha Search capabilities",
   "keywords": [
     "deepseek-harness",

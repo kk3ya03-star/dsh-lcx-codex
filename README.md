@@ -1,68 +1,105 @@
-<div align="center">
+# dsh-lcx-codex
 
-<img src="assets/dsh-lcx-codex-banner.png" alt="dsh-lcx-codex — 为 DSH 增加 GPT Hosted Search、Codex 风格网页操作与 Native V2 Compaction" width="100%" />
-
-[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=1677ff&label=npm%20latest)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?label=stable&color=1677ff)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
 ![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4ea8ff)
-![Node](https://img.shields.io/badge/Node-%3E%3D20-2f855a)
+![Node](https://img.shields.io/badge/Node-%5E22.19%20%7C%7C%20%3E%3D24-2f855a)
+![Plugin Pi](https://img.shields.io/badge/plugin%20Pi-0.84.3-111827)
 ![License](https://img.shields.io/badge/license-MIT-6b7280)
 
-**简体中文** · [English](README_EN.md) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
+**简体中文** · [English](README_EN.md) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md) · [Releases](https://github.com/kk3ya03-star/dsh-lcx-codex/releases)
 
-</div>
+> **让 DSH 的 GPT Responses 会话从第一轮普通请求开始，到工具调用、Native V2 Compact / Replay、重启恢复和 GPT 模型切换，始终保持同一个最终 Responses wire owner。**
 
-> **DSH 仍然是 host。LCX 只补齐 GPT Responses 路径缺失的原生能力，不修改 DSH 核心，也不替换 Agent / Session / Web / Compaction。**
+`dsh-lcx-codex` 不替换 DSH。DSH 仍负责 Agent、Session、模型选择、工具执行、附件和 compaction policy；当 **LCX ON** 时，LCX 接管当前 GPT Responses 会话的最终 request / SSE wire。
 
 ## 当前稳定版
 
-`0.4.1` 是当前稳定版，也是此前完成完整 Installed Candidate / Cross-feature QA 的 `0.4.1-pre.1` 的 **zero-functional-change stable promotion**。
+**`0.4.2`** 是当前稳定版，也是已完成真实 DSH + Sub2API 验收的 `0.4.2-pre.1` 的 **zero-functional-change stable promotion**。
 
 ```powershell
 dsh plugin --profile web add dsh-lcx-codex
 dsh web
 ```
 
-npm `latest` 指向 `0.4.1`。历史 `prelatest=0.4.1-pre.1` 与稳定版使用相同的已验收 runtime 基线；新用户直接使用 `latest` 即可。
+- npm dist-tag：`latest`
+- DSH：`0.1.1-rc.2`
+- Plugin Pi：`0.84.3`
+- Node.js：`^22.19.0 || >=24.0.0`
 
-## 它解决什么
+`0.4.2-pre.1` 保留为历史 prerelease；新用户直接安装 `latest` 即可。
 
-如果你的 DSH 已经有一个可工作的 GPT `openai-responses` route，`dsh-lcx-codex` 会在保持 DSH 原有入口和生命周期的前提下补齐 Responses 能力。
-
-| 场景 | DSH 原有入口 | LCX 增强后 |
-|---|---|---|
-| 普通联网搜索 | DSH `web_search` | **仍然使用同一个 `web_search`**，由 LCX SearchProvider 映射到当前 GPT Hosted Search |
-| Hosted Search 高级参数 | 普通搜索入口保持简洁 | 按需增加 `websearch_gpt_advanced`，提供域名过滤、近似位置、search context、图片搜索等 |
-| 连续网页 / PDF 浏览 | DSH 继续拥有 Web 生命周期 | 按需增加 Codex / Alpha Web Actions：`search → open → find/click → screenshot` |
-| 长会话压缩 | DSH 继续负责 pressure、事务与 recovery | 在现有 compaction seam 上优先请求 Responses Native V2 checkpoint |
-
-**目标不是再造一套 Agent，而是让 DSH 的 GPT route 用上它本来就应该拥有的原生能力。**
-
-## 三大能力
-
-### 1. GPT Hosted Search：普通搜索不换入口
-
-启用后，模型看到的普通搜索工具依然是 DSH 原生 `web_search`。LCX 替换的是 SearchProvider 路径，而不是再注册一个重复的普通搜索工具。
-
-需要更细控制时，再单独启用 `websearch_gpt_advanced`。
-
-### 2. Codex 风格 Web Actions
-
-`websearch_alpha` 面向连续浏览和结构化 Web action：
+## 产品约定
 
 ```text
-search → open → find / click → screenshot
+LCX OFF
+= 完全使用 DSH 原生 LLM 流程
+
+LCX ON
+= 当前 GPT Responses 会话从 ordinary turn 1 开始
+  由 LCX 持有最终 Responses request / SSE wire
 ```
 
-它默认关闭，并且只有当前 endpoint / provider / model / schema 通过 capability probe 后才注册。未知部署采用 **fail-closed**，不会被误报成“支持 Alpha”。
+切换 Claude、Gemini、DeepSeek 等非 GPT 模型前先关闭 LCX；模型切换本身不需要重启 DSH。
 
-`0.4.1` 已包含此前 prerelease 验收通过的 URL/stateful continuation 和 capability fail-closed 修复。
+## 为什么需要 LCX
 
-### 3. Native V2 Compaction
+DSH 原本已经拥有 Agent、Session、Tools 和 compaction lifecycle。LCX 解决的是 GPT Responses provider-native 路径的最后一层一致性：ordinary、tools、Native Compact、Replay、restart/resume 和 GPT route migration 不再在同一个会话中切换最终 wire owner。
 
-LCX 不创建第二套 compaction engine。DSH 仍然拥有 pressure、compactable range、`/compact`、durable session transaction、tool-result pruning 与 overflow recovery；LCX 只在已有 compaction LLM seam 上请求 Responses Native V2。
+```text
+                        DSH
+              Agent / Session / Tools
+                         │
+                 llm / stream seam
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+           LCX OFF               LCX ON
+              │                     │
+       native DSH adapter      LCX Responses Core
+                                    │
+                         ordinary turn 1
+                                    ↓
+                                 tools
+                                    ↓
+                         Native V2 Compact
+                                    ↓
+                                Replay
+                                    ↓
+                           Restart / Resume
+                                    ↓
+                         GPT Model Migration
+```
 
-默认自动策略：
+Compact 因此只改变 history representation，不再同时改变 request owner。
+
+## 核心能力
+
+### 1. Full GPT Responses lifecycle ownership
+
+LCX ON 后，ordinary、tool continuation、Native Compact、Native Replay、restart/resume 和 portable GPT migration 使用同一套 LCX Responses request builder / transport owner。
+
+DSH 仍是 canonical session/history owner；LCX 不创建第二套会话数据库，也不替换 DSH Tool Executor。
+
+### 2. GPT-5.6 Prompt Cache
+
+`0.4.2` 使用 GPT-5.6 当前 cache-options 路径，并保持同一会话的稳定 cache identity：
+
+- 默认使用 implicit caching；
+- 当前支持 route 发送 `prompt_cache_options.ttl = 30m`；
+- 普通连续 turn / tool-heavy workload 可以复用已 warm 前缀；
+- Native Compact 会按设计建立新的 history/cache epoch，旧未压缩前缀不会被承诺继续复用；
+- 真实长会话中，稳定 topology 下 warm request 多次观察到接近完整前缀复用。
+
+缓存命中由 provider、模型、请求前缀、工具 schema 和会话状态共同决定，不是固定性能承诺。
+
+一个已确认的边界：运行中激活 skill 若改变顶层 tool schema，会发生一次 cache reset；新 tool topology 稳定后下一请求即可重新 warm。当前支持 route 会拒绝 content-level `prompt_cache_breakpoint`，而 DSH `0.1.1-rc.2` 也没有可靠的 dynamic-tool provenance，因此 `0.4.2` 保留一次安全 reset，而不靠猜测重写工具历史。
+
+### 3. Native V2 Compact + Replay
+
+DSH 仍决定 **何时压缩、压缩范围、事务与 recovery**；LCX 只负责 provider-native Responses V2 wire。
+
+默认 pressure coordination：
 
 ```text
 0% ─────────────────── 90% ───── 95% ───── 100%
@@ -70,140 +107,156 @@ LCX 不创建第二套 compaction engine。DSH 仍然拥有 pressure、compactab
                          V2          DSH prune
 ```
 
-- **90%**：优先尝试 Native V2。
-- **95%**：才允许 emergency DSH prune。
-- provider-confirmed context overflow：继续使用 DSH 原有恢复逻辑。
-- 手动 `/compact`：继续使用 DSH 原生会话事务。
+- `90%`：优先 Native V2；
+- `95%`：允许 DSH emergency tool-result prune；
+- provider-confirmed overflow：继续交给 DSH recovery；
+- manual `/compact`：仍使用 DSH 原生 compaction transaction。
 
-同一 source session 可以继续复用自己的 Native checkpoint；fork 或模型/route migration 不会跨 session 发送 parent opaque state，而是走 portable migration；重启后从 DSH session log 恢复。
+Native checkpoint v5 会持久化 provider-native compaction state 与必要的可移植保留历史；同 session / compatible route 可 Native replay，不兼容 route 不会错误复用 opaque state。
 
-## 0.4.1 相比 0.4.0
+### 4. Restart / Resume + GPT 热切换
 
-`0.4.1` 将此前 `0.4.1-pre.1` 的已验收改动正式提升到 stable：
-
-- Alpha URL/stateful continuation 与 capability fail-closed 修复；
-- DSH compatibility seam 收敛；
-- route / Native V2 / checkpoint typed protocol core；
-- Native retention 与 portable migration 的统一保守 token budgeting；
-- 正式安装态 settings namespace / configuration card lifecycle 修复；
-- Installed Candidate + Cross-feature QA。
-
-该 stable promotion 不引入新的 runtime 行为。
-
-## 30 秒开始使用
-
-### 1. 安装
-
-```powershell
-dsh plugin --profile web add dsh-lcx-codex
-dsh web
-```
-
-需要固定版本时：
-
-```powershell
-dsh plugin --profile web add dsh-lcx-codex@0.4.1
-```
-
-升级时请使用 DSH 官方 plugin remove/add 路径；不要为了“清理”删除用户 session 或 `$DSH_HOME/storages/lcx-codex/`。
-
-### 2. 在 DSH Settings 启用
-
-第一次使用建议从最小配置开始：
-
-| 设置 | 建议 |
-|---|---:|
-| Enable plugin | **On** |
-| Use GPT Hosted Search | 需要 GPT Hosted Search 时 **On** |
-| Advanced Hosted Search | **Off**，需要高级参数再开 |
-| Alpha Search | **Off**，确认当前 route 支持后再开 |
-| Native V2 remote compaction | 上游实际支持 Native V2 时 **On** |
-| Native-first auto compaction | 使用 Native V2 时 **On** |
-
-**前提条件**
-
-- Node.js `>=20`
-- DSH 中已有可工作的 GPT `openai-responses` route
-- 上游 endpoint 实际支持你准备启用的 Hosted Search / Native V2 / Alpha 能力
-
-### 3. 确认它真的生效
-
-| 能力 | 应看到什么 |
-|---|---|
-| GPT Hosted Search | 普通工具入口仍是 DSH `web_search`，实际请求走当前 GPT Responses route |
-| Advanced Hosted | 启用后出现 `websearch_gpt_advanced` |
-| Alpha Web Actions | 只有 capability probe 通过时才出现 `websearch_alpha` |
-| Native V2 | compact 时出现 provider-native checkpoint 路径；普通 Basic Compaction 不会被伪装成 Native V2 成功 |
-
-## 搜索工具怎么选
-
-| 你要做什么 | 使用入口 | 适合场景 |
-|---|---|---|
-| 普通联网搜索 | DSH `web_search` | 找资料、查网页、一般检索 |
-| 控制 Hosted Search 参数 | `websearch_gpt_advanced` | 域名 allow/block、近似位置、search context、图片搜索等 |
-| 连续浏览网页或 PDF | `websearch_alpha` | `search/open/find/click/screenshot` 与结构化 Web actions |
-
-## 它如何接入 DSH
+同一个 DSH session 可以跨越：
 
 ```text
-DSH Agent / Session / Web
-├─ web_search ──────────> LCX SearchProvider ──> GPT Hosted Search
-├─ Advanced / Alpha ────> LCX Web tools ───────> GPT Web actions
-└─ compact / replay ────> LCX Native bridge ───> Responses Native V2
+Terra
+  → Compact
+  → Replay
+  → Restart DSH
+  → Resume same session
+  → Switch to Sol
+  → Continue
 ```
 
-**DSH 是 host，LCX 是兼容扩展层。** 插件优先复用当前 DSH route 的 `baseURL`、credential reference、headers、模型与 retry policy，而不是维护第二套账号配置。
+compatible route/model 可恢复 Native opaque state；不兼容的 GPT model / route 会丢弃不安全 opaque state并重建 portable history，但仍保持 LCX Responses transport ownership。
 
-checkpoint、canonical replay、Pi serializer、cache identity、fork safety 与 pressure coordination 等实现细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+### 5. Hosted Search + Stateful Web Actions
 
-## 兼容性
+普通联网搜索仍使用 DSH 原生 `web_search`。LCX 可以把 SearchProvider 映射到当前 GPT Hosted Search，而不是再给模型暴露第二个普通搜索工具。
 
-当前正式稳定组合：
+| 需求 | 使用入口 |
+|---|---|
+| 普通联网搜索 | DSH `web_search` |
+| Hosted Search 高级参数 | `websearch_gpt_advanced` |
+| 连续网页 / PDF 操作 | `websearch_alpha` |
 
-| Plugin | DSH | DSH host Pi | Plugin Pi | 状态 |
-|---|---|---|---|---|
-| `0.4.1` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | **VERIFIED STABLE** |
+Alpha 支持：
 
-`0.4.1` 的 runtime 来自完整 QA 通过的 `0.4.1-pre.1`，stable promotion 本身保持 zero-functional-change。新的 DSH 版本**不会自动视为兼容**；项目会先检查受影响 seam，再按风险运行对应测试。
+```text
+search → open → find / click → screenshot
+```
 
-<details>
-<summary><strong>完整推荐设置</strong></summary>
+Alpha 默认关闭；只有当前 endpoint / provider / model / schema 通过 capability probe 后才注册。未知部署 fail-closed。
+
+### 6. Pi 0.84.3 隔离升级
+
+插件独立使用 `@earendil-works/pi-ai 0.84.3`，不 override DSH host：
+
+```text
+DSH 0.1.1-rc.2
+└─ host Pi 0.82.1      ← 不改
+
+dsh-lcx-codex 0.4.2
+└─ plugin Pi 0.84.3    ← 插件隔离依赖
+```
+
+Pi 负责 canonical Responses message/tool serialization、reasoning、IDs、strict/grammar/custom tools、`additional_tools`、`tool_search`、namespace 和 stream semantics；LCX 不维护第二套通用 provider framework。
+
+## 30 秒配置
+
+### 前提条件
+
+- Node.js `^22.19.0 || >=24.0.0`
+- DSH `0.1.1-rc.2`
+- DSH 中已有可工作的 GPT Responses route
+- 上游 endpoint 实际支持准备启用的 Hosted Search / Native V2 / Alpha 能力
+
+### 推荐初始设置
 
 | 设置 | 推荐值 | 说明 |
 |---|---:|---|
-| Enable plugin | On | 启用插件 |
-| Use GPT Hosted Search | 按需 | 让 DSH `web_search` 走 GPT Hosted Search |
+| Enable LCX | **On** | 接管当前 GPT Responses 会话 |
+| Use GPT Hosted Search | 按需 | 让 DSH `web_search` 使用 GPT Hosted Search |
 | Advanced Hosted Search | Off | 需要高级 Hosted 参数时再开 |
-| Alpha Search | Off | capability 验证后再开 |
-| Native V2 remote compaction | On* | *上游 route 实际支持 Native V2 时 |
-| Native-first auto compaction | On | 启用自动 pressure 策略 |
-| Native threshold | 90% | 90% 开始优先 Native V2 |
-| Emergency DSH prune | 95% | 95% 才允许 emergency prune |
-| `web_search` timeout | 240 s | 避免长搜索被过早终止 |
+| Alpha Search | Off | capability probe 通过后再开 |
+| Native-first auto compaction | On | 使用 Native-first pressure coordination |
+| Native threshold | `90%` | 主动 Native V2 阈值 |
+| Emergency DSH prune | `95%` | 紧急 prune 阈值 |
+| Fallback to Basic Compaction | On | Native 首次失败时允许受控回退 |
+| `web_search` timeout | `240s` | 避免较慢 Hosted Search 被过早中断 |
 
-主要配置字段：`remoteCompaction`、`autoCompaction`、`fallbackToBasicCompaction`、`autoCompactionThresholdPercent`、`emergencyPruneThresholdPercent`、`webSearchTimeoutSeconds`、`advancedHostedSearch`、`alphaSearch`。
+### 如何确认生效
+
+| 能力 | 预期行为 |
+|---|---|
+| LCX ownership | LCX ON 后第一轮 GPT ordinary request 就进入 LCX Responses path |
+| Prompt Cache | 稳定 warm turn 可出现 provider `cached_tokens` |
+| Hosted Search | 普通入口仍是 DSH `web_search` |
+| Advanced Hosted | 开启后出现 `websearch_gpt_advanced` |
+| Alpha | capability probe 通过后才出现 `websearch_alpha` |
+| Native V2 | Compact 产生 provider-native checkpoint，而不是把 Basic Compaction 伪装成 Native |
+| Replay | Compact 后继续同一 DSH session；restart/resume 仍可续接 |
+
+## DSH 与 LCX 的责任边界
+
+| 组件 | 负责什么 |
+|---|---|
+| **DSH** | Agent loop、Session/history、GenerateOptions、模型/credential、工具执行、AttachmentStore、pressure policy、compaction transaction |
+| **DSH compatibility seam** | 把 DSH message / GenerateOptions 投影到 Pi Context，并把结果桥接回 DSH |
+| **Plugin Pi 0.84.3** | canonical Responses serialization / parser semantics |
+| **LCX** | ON/OFF ownership、最终 Responses body + HTTP/SSE wire、ordinary/compact/replay orchestration、Native opaque state、Search capabilities |
+
+更多 checkpoint、portable replay、cache identity、RefStore、pressure coordination 与 protocol 细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 兼容性
+
+| Plugin | DSH | DSH host Pi | Plugin Pi | 状态 |
+|---|---|---|---|---|
+| `0.4.2` | `0.1.1-rc.2` | `0.82.1` | `0.84.3` | **VERIFIED STABLE** |
+| `0.4.1` | `0.1.1-rc.2` | `0.82.1` | `0.82.1` | historical stable |
+
+DSH `0.1.2-alpha.1` 和更新的 Pi 版本目前不属于 `0.4.2` 的正式兼容性声明；后续会按受影响 seam 单独验证，而不是自动视为兼容。
+
+## 当前边界
+
+- 当前支持 route 使用 implicit Prompt Cache；content-level explicit breakpoint 在该 route 上会被拒绝，因此没有作为产品设置开放。
+- dynamic skill / plugin 若改变 top-level tool schema，可能触发一次 prompt-cache reset；功能不受影响，新 topology 会重新 warm。
+- `reasoning.context` / `reasoning.mode` 仍取决于 host/Pi 暴露能力，LCX 不额外造第二套控制面。
+- normal operational context 仍使用约 `262K` 级别配置；1.05M long context 不是默认开启项。
+- credentialed `ALPHA-004` runtime 仍为 `NOT_COVERED`，fail-closed 行为已有测试覆盖。
+- Programmatic Tool Calling 当前不作为已支持能力宣传。
+
+## 常见问题
+
+<details>
+<summary><strong>为什么切非 GPT 前要关闭 LCX？</strong></summary>
+
+LCX ON 是 GPT Responses lifecycle ownership switch，不是通用多模型代理层。非 GPT 模型继续走 DSH 原生 adapter。
 
 </details>
 
 <details>
-<summary><strong>常见情况</strong></summary>
+<summary><strong>为什么 web_search 还是同一个工具？</strong></summary>
 
-**`web_search` 没走 GPT Hosted Search**  
-确认插件和 Hosted Search 已启用，并且当前 Agent 能解析到兼容的 GPT `openai-responses` route。
-
-**`websearch_alpha` 没出现**  
-这是预期的 fail-closed 行为。Alpha 必须对当前 route/schema 完成可信 capability probe 后才注册。
-
-**Native V2 没有生效**  
-确认当前 GPT Responses endpoint 实际支持 `remote_compaction_v2`。插件不会把普通 Basic Compaction 假装成 Native V2 成功。
-
-**安装成功但配置卡不可见**  
-确认安装的是 `0.4.1` 或更高版本，并重启/刷新 DSH Web；`0.4.1` 已包含正式安装态 settings lifecycle 修复。
+这是刻意设计。LCX 改的是 DSH `web_search` 后面的 SearchProvider，不给模型重复暴露两个普通搜索工具。
 
 </details>
 
 <details>
-<summary><strong>开发</strong></summary>
+<summary><strong>为什么 Alpha 有时不出现？</strong></summary>
+
+这是 fail-closed 行为。当前 route/schema 没通过 capability probe 时，`websearch_alpha` 不注册。
+
+</details>
+
+<details>
+<summary><strong>为什么加载 skill 后有时缓存会重新 warm？</strong></summary>
+
+某些 skill 会动态注册新的顶层工具。工具 schema 属于可缓存 prompt prefix 的一部分，topology 改变时 provider 可能建立新的 cache epoch。`0.4.2` 优先保证工具定义正确，不通过猜测 provenance 来强行维持旧 cache。
+
+</details>
+
+## 开发与验证
 
 ```bash
 npm run typecheck
@@ -212,11 +265,10 @@ npm run test:schema
 npm pack --ignore-scripts
 ```
 
-- 设计与协议细节：[ARCHITECTURE.md](ARCHITECTURE.md)
-- 版本变化：[CHANGELOG.md](CHANGELOG.md)
+- 架构：[ARCHITECTURE.md](ARCHITECTURE.md)
+- 版本记录：[CHANGELOG.md](CHANGELOG.md)
+- GitHub Releases：[Releases](https://github.com/kk3ya03-star/dsh-lcx-codex/releases)
 - npm：[`dsh-lcx-codex`](https://www.npmjs.com/package/dsh-lcx-codex)
-
-</details>
 
 ## License
 
