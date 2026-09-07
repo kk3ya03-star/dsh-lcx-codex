@@ -4,172 +4,121 @@
 
 # LCX Codex
 
-**让 DeepSeek Harness 中的 GPT 会话支持原生压缩、联网搜索与连续网页操作。**
+**为 DeepSeek Harness 中的 GPT 会话提供远程原生压缩、联网搜索和图片搜索。**
 
-[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-16803c)](#兼容性与限制)
+[![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![DSH](https://img.shields.io/badge/DSH-0.1.3--alpha.2-16803c)](#安装)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
-**简体中文** · [English](README_EN.md) · [版本发布](https://github.com/kk3ya03-star/dsh-lcx-codex/releases) · [问题反馈](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
+**简体中文** · [English](README_EN.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
 
 </div>
 
-LCX Codex（`dsh-lcx-codex`）是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（DSH）的社区插件，为已配置好的 **GPT / OpenAI Responses 接口**扩展长会话和搜索能力，适用于兼容的 Sub2API、NewAPI 等通道。
+LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（DSH）的社区插件。它将 GPT 接口的远程压缩和搜索能力接入 DSH，让长对话在压缩后继续，也能在回复中展示搜索到的网页图片。
 
-你仍然在 DSH 中选择模型、管理会话和使用工具。开启 LCX 后，从普通对话到工具调用、上下文压缩和压缩后的续聊，都使用同一条 Responses 请求路径。
+模型、接口、凭据、会话和工具仍由 DSH 管理，不需要在插件里再配置一遍。插件面向 **GPT / OpenAI Responses**，可用于支持相应能力的 Sub2API、NewAPI 等通道。
 
-## 它能做什么
+## 安装
 
-| 你需要 | LCX 提供 |
-| --- | --- |
-| **长对话继续进行** | 接近上下文上限时优先使用 Native V2 原生压缩，支持压缩后续聊和重启恢复。 |
-| **在对话中查询网页** | 通过 DSH 原有的 `web_search` 使用 GPT Hosted Search，普通搜索跟随当前 Agent 的 GPT 模型。 |
-| **更细的搜索控制** | 按需启用域名过滤、位置、搜索上下文大小、图片搜索等 Hosted Search 参数。 |
-| **连续查阅网页** | 在支持的接口上使用 Alpha 工具，连续执行搜索、打开、查找、点击等操作。 |
-| **复用提示词缓存** | 在支持的 GPT-5.6 接口上保持稳定的缓存标识，让相同的请求前缀可以被重复利用。 |
+本页对应 **`0.4.3-pre.2` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
 
-> LCX 面向 GPT / OpenAI Responses。各项扩展能力取决于上游接口支持；能正常对话，不代表该通道同时支持原生压缩、Hosted Search 或 Alpha 网页操作。
-
-## 快速开始
-
-### DSH 0.1.3 用户：0.4.3-pre.2 预发布
-
-`0.4.3-pre.2` 面向 **DSH `0.1.3-alpha.2` / host 与插件 Pi `0.85.1`**，安装时明确选择预发布：
+安装前，请确认 DSH Web 能正常启动，且已配置可以对话的 GPT Responses 模型。Node.js 要求 `^22.19.0 || >=24.0.0`；Windows 启动出现 `fs-ext` 报错时，先看下方[故障排查](#故障排查)。
 
 ```sh
 dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.2
 dsh web
 ```
 
-也可使用 `dsh-lcx-codex@prelatest` 跟随预发布通道。稳定通道 `latest` 仍为 `0.4.2`，对应下面的旧版安装说明，不要混用 DSH 版本。
+以后升级预发布版，可执行 `dsh plugin --profile web add dsh-lcx-codex@prelatest`。不带版本或标签安装会得到稳定版，**不是本页介绍的新版本**。
 
-新版只保留 LCX、Hosted Search、高级 Hosted、Alpha 四个开关；`90%` / `95%` 压缩阈值及 `240` 秒搜索超时为固定策略。设置页语言跟随 DSH。旧版 `0.4.2` 插件配置与 v3/v4 压缩检查点不再迁移，请重新配置并新建会话；当前 v5 检查点仍支持重启续聊。
+**从 `0.4.2` 升级：** 旧插件配置和 v3/v4 压缩检查点不再兼容，请重新配置插件并新建会话。新版 v5 检查点仍支持重启续聊。
 
-**预发布限制：** Windows 上 DSH `0.1.3-alpha.2` 存在启动时加载 `fs-ext` 的宿主问题。本轮 Windows 实测使用了仅在非 Windows 加载 `fs-ext` 的本地修正，保留原 Win32 会话锁；插件安装不会自动修补 DSH，不能宣称未修正的 Windows 宿主开箱即用。Alpha 网页引用仍可能偶发失效，`screenshot` 尚未验证返回可显示的图片。代理 / `NO_PROXY`、更高并发与取消交错、后台可续聊子代理尚未测全。
+## 启用
 
-普通对话、缓存、基础 PNG/TXT 附件、Native 压缩与重启续聊、压缩后模型切换、普通搜索与 Hosted 搜图展示、双会话并发、前台子代理缓存已有有界实测；这不是全平台或所有附件格式的完整兼容保证。
+打开 DSH Web 的插件设置，展开 **Responses / Codex 能力**，按需打开开关并保存：
 
-### 1. 准备环境
-
-- DSH **`0.1.1-rc.2`**，且 Web 界面能够正常使用。
-- Node.js **22.19.0 及以上的 22.x，或 24.0.0 及以上版本**。
-- 已在 DSH 中配置好可正常对话的 **GPT Responses 接口、模型与凭据**。
-
-### 2. 安装插件
-
-在运行 DSH 的环境中执行：
-
-```sh
-dsh plugin --profile web add dsh-lcx-codex
-dsh web
-```
-
-插件通过 npm 安装，无需克隆仓库或手动下载源码。本 README 对应 **`0.4.2`**；可在 [npm](https://www.npmjs.com/package/dsh-lcx-codex) 查看发布版本，或查看 [v0.4.2 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.2)。
-
-### 3. 启用并保存
-
-1. 打开 DSH Web 的插件设置，展开 **Responses / Codex 能力**。
-2. 勾选 **启用 LCX（接管当前 GPT Responses 会话）**。
-3. 需要联网搜索时，再勾选 **使用 GPT Hosted Search 作为 DSH web_search 后端**。
-4. 保留默认压缩设置，点击 **保存**，使用已配置好的 GPT 模型开始对话。
-
-**LCX 和联网搜索默认关闭，安装后需要手动启用。** 高级搜索和 Alpha 可以在需要时再开。
-
-切换 Claude、Gemini、DeepSeek 等非 GPT 模型前，请先关闭 LCX 并保存。模型切换本身不需要重启 DSH。
-
-## 长会话如何继续
-
-LCX 使用上游的 **Native V2 原生压缩**处理长上下文，并将压缩结果接回 DSH 会话，供后续请求继续使用（Replay）。DSH 仍负责压缩时机、会话保存和工具执行。
-
-默认的 Native-first 自动压缩策略为：
-
-| 上下文压力 | 行为 |
+| 开关 | 什么时候开 |
 | --- | --- |
-| 低于 `90%` | 正常运行，避免过早裁剪工具结果。 |
-| 达到 `90%`、低于 `95%` | 优先尝试 Native V2 压缩。 |
-| 达到 `95%` | 允许 DSH 紧急裁剪工具结果，并按现有流程处理压缩。 |
+| 启用 LCX | 使用 GPT 远程原生压缩及下面的搜索能力时。 |
+| GPT Hosted Search | 需要让 DSH 联网查询时。 |
+| 高级 Hosted 工具 | 需要搜图、限定网站或使用其他搜索条件时。 |
+| Alpha | 需要连续打开、查找和点击网页内容时，属于实验功能。 |
 
-手动 `/compact` 仍通过 DSH 的压缩流程执行。首次建立压缩检查点时，符合条件的可恢复失败可以回退到 DSH 基础压缩；并非所有 Native 失败都会自动回退。
+**四个开关默认均关闭。** 日常联网使用打开前两项；需要图片搜索再打开第三项。模型、推理等级及图片输入能力在 DSH 的模型配置中设置。
 
-原生压缩状态只在兼容的同一会话与接口配置中复用。切换到不兼容的 GPT 模型或通道时，LCX 会改用可迁移的会话历史继续请求。
+切换到 Claude、Gemini、DeepSeek 等非 GPT 模型前，请先关闭 LCX。关闭后恢复 DSH 原生请求路径。
 
-## 搜索怎么选
+## 搜索与搜图
 
-日常查询从 `web_search` 开始即可。三种搜索工具的用途和启用条件如下：
+### 联网查询
 
-| 工具 | 用途 | 启用条件 |
-| --- | --- | --- |
-| `web_search` | 日常联网查询，使用 DSH 原有搜索入口。 | 开启 LCX 和 GPT Hosted Search。 |
-| `websearch_gpt_advanced` | 域名过滤、位置、搜索上下文大小、图片搜索等额外参数。 | 在上述基础上开启高级 Hosted 工具。 |
-| `websearch_alpha` | 连续执行 `search / open / find / click / screenshot` 等操作。 | 开启 Alpha，且当前接口通过能力探测。 |
+直接在对话里提出问题即可，例如：
 
-Alpha 默认关闭。即使打开开关，也只有当前接口通过能力探测后才会注册工具。
+> 查一下 Node.js 最新 LTS 版本，给我官方来源。
 
-### 可以直接让 DSH 搜图吗？
+普通查询使用 DSH 原有的 `web_search`；需要更细的条件时，模型可以调用高级工具 `websearch_gpt_advanced`：
 
-可以。开启 LCX、GPT Hosted Search 和高级 Hosted 工具后，直接说：
+> 只搜索 Python 官方文档，查找 asyncio.TaskGroup 的用法。
 
-> 搜索金门大桥的照片，选一张直接显示在回复里，并附上图片来源网页。
+### 搜索图片并显示
 
-通常不需要自己填写 JSON，模型负责选择 `websearch_gpt_advanced` 的图片搜索参数；若只返回文字，可以补充“请使用高级 Hosted 的图片搜索”。是否选择正确参数仍取决于模型，接口也必须支持图片搜索。
+开启高级 Hosted 工具后，可以这样说：
 
-工具返回的是现有网页图片的 URL、来源等信息，模型可用 Markdown 将图片显示在 DSH 中。`0.4.3-pre.2` 已实测图片结果解析及界面展示；这是**搜索已有图片，不是生成图片，也不等于模型已经看到了图片像素**。图片链接可能受原站权限或防盗链影响。Alpha 不必开启；Alpha 的网页操作发生在上游搜索服务，不会点击你的本机浏览器或 DSH 界面，其 `screenshot` 也不保证返回照片。
+> 搜索金门大桥的照片，选一张直接显示在回复里，并附上来源网页。
 
-## 缓存的使用预期
+**不需要自己填写 JSON 参数。** 模型负责选择图片搜索参数；如果只返回文字，可以补充“请使用高级 Hosted 的图片搜索，并把图片显示出来”。
 
-在支持的 GPT-5.6 接口上，LCX 使用 `prompt_cache_options` 并保持稳定的缓存标识。连续对话和工具任务的请求前缀保持一致时，可以复用提示词缓存；实际命中情况由上游决定。
+搜索工具提供图片链接与来源，DSH 用现有的 Markdown 渲染器显示图片。这是**搜索已有图片，不是生成图片**，也不代表模型已经读取了图片像素。图片能否显示还取决于原站链接是否可访问。
 
-原生压缩会改变历史内容。运行中加载 skill、plugin，或切换会改变工具列表的功能，也可能使缓存需要重新建立。新请求前缀稳定后可以再次复用缓存。
+### Alpha 网页操作
 
-## 设置参考
+`websearch_alpha` 支持 `search / open / find / click / screenshot` 等动作，用于连续查阅网页。它操作的是**上游搜索服务中的网页内容**，不会操作你的本机浏览器或 DSH 界面。
 
-下表为稳定版 `0.4.2`。`0.4.3-pre.2` 只提供前四项开关，其余为固定内部策略。
+Alpha 需要单独开启，且接口通过能力探测后才会出现。目前网页引用仍可能偶发失效，`screenshot` 尚未验证能返回可显示的图片。**日常搜索和搜图不需要开启 Alpha。**
 
-| 设置 | 默认值 | 建议 |
-| --- | --- | --- |
-| 启用 LCX | 关闭 | 使用 GPT Responses 时开启。 |
-| GPT Hosted Search | 关闭 | 需要联网查询时开启。 |
-| 高级 Hosted 工具 | 关闭 | 需要额外搜索参数时开启。 |
-| Alpha command | 关闭 | 在支持的接口上按需开启。 |
-| Native-first 自动压缩 | 开启 | 保持默认，需先启用 LCX。 |
-| Native 自动压缩阈值 | `90%` | 保持默认。 |
-| DSH 紧急裁剪阈值 | `95%` | 必须高于 Native 阈值。 |
-| Native 失败后回退 DSH basic compaction | 开启 | 保留符合回退条件时的基础压缩能力。 |
-| `web_search` 超时 | `240` 秒 | 搜索较慢时再调整。 |
+## 长对话与压缩
 
-## 常见问题
+开启 LCX 后，插件将 DSH 的压缩请求交给上游 GPT 接口执行 **Native V2 远程原生压缩**，再将结果接回当前会话。会话保存、工具执行和压缩事务仍由 DSH 负责。
+
+| 上下文占用 | 处理方式 |
+| --- | --- |
+| 低于 `90%` | 正常对话，不提前裁剪工具结果。 |
+| `90%` 至 `95%` | 优先尝试远程原生压缩。 |
+| 达到 `95%` | 允许 DSH 紧急裁剪工具结果，再按流程压缩。 |
+
+也可以输入 `/compact` 手动压缩。这些阈值是固定策略，不需要额外设置；实际能否压缩取决于是否有可压缩的历史以及接口支持情况。
+
+压缩后可以继续对话、重启恢复或切换 GPT 模型。遇到不兼容的模型或接口配置时，插件改用可迁移的历史，不会强行复用原生状态。首次建立检查点时，部分可恢复失败可以回退到 DSH 基础压缩；并非所有失败都会回退。
+
+## 缓存
+
+缓存由上游服务实现，插件负责保持兼容的缓存标识。相同请求前缀可以复用，**是否命中及缓存多久由接口决定**，不需要再开启一个“插件缓存”。
+
+插件跟随 Pi `0.85.1` 的缓存规则，支持显式模式的接口使用 `30m` 长保留参数。压缩、切换模型或改变工具列表后，缓存可能需要重新建立。子代理也可能命中公共前缀缓存，但命中缓存不等于继承了父会话的私有历史。
+
+## 故障排查
+
+**DSH 在 Windows 启动时报 `fs-ext` 错误？**
+
+DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使用它。当它的原生模块不可用时，DSH 会在启动阶段退出。这是 **DSH 的依赖加载问题，不是插件压缩或会话锁损坏**。
+
+本版 Windows 实测使用了一个最小 DSH 修正：仅在非 Windows 平台加载 `fs-ext`，保留原有 Win32 会话锁。插件不会自动修改 DSH；未经该修正的 Windows 环境不保证能启动。不要用关闭会话锁来绕过问题。
 
 **安装后没有变化？**
 
-确认插件安装到了启动 Web 使用的 `web` 配置中，再检查 LCX 是否已经勾选并保存。联网搜索有单独的开关。
+检查安装和启动是否使用同一个 `web` 配置，确认已打开 LCX 并保存。联网搜索和高级搜图各有独立开关。
 
-**能对话，但搜索或压缩报错？**
+**对话正常，但搜索或压缩失败？**
 
-检查当前通道是否支持对应能力，以及模型与凭据是否可用。Sub2API、NewAPI 的名称本身不代表其所有通道都支持相同功能。
+普通 Responses 对话可用，不代表接口同时支持 Native V2、Hosted Search 或 Alpha。请确认当前通道提供对应能力；Sub2API、NewAPI 的名称本身不是能力保证。
 
-**需要手动下载安装包吗？**
+## 版本与验证范围
 
-常规安装使用上面的 DSH 命令即可。需要留存发布包时，可下载 [v0.4.2 npm 包（.tgz）](https://registry.npmjs.org/dsh-lcx-codex/-/dsh-lcx-codex-0.4.2.tgz)。GitHub 的 **Code → Download ZIP** 提供源码，不能代替插件安装步骤。
+本版使用 DSH `0.1.3-alpha.2`、DSH host Pi `0.85.1` 和插件 Pi `0.85.1`。插件单独声明 Pi 依赖，不替换 DSH 的依赖。
 
-## 兼容性与限制
-
-| 组件 | `0.4.2` 对应版本 |
-| --- | --- |
-| DSH | `0.1.1-rc.2` |
-| DSH host Pi | `0.82.1` |
-| 插件 Pi | `0.84.3` |
-| Node.js | `^22.19.0 \|\| >=24.0.0` |
-
-插件单独使用 `@earendil-works/pi-ai@0.84.3`，不覆盖 DSH host 的 Pi 依赖。
-
-- DSH `0.1.2-alpha.1` 尚未列入此版本的正式兼容范围。
-- 1.05M 长上下文和 Programmatic Tool Calling 暂不作为正式支持项。
-- 显式 `prompt_cache_breakpoint` 设置未开放。
-- `reasoning.context` 和 `reasoning.mode` 是否可用，取决于 DSH / Pi 是否暴露相应字段。
+已实测长对话、压缩后续聊和重启恢复、压缩后切换模型、PNG/TXT 附件、搜索及图片展示、双会话并发和前台子代理缓存。Alpha 的上述限制仍存在；代理、高并发与取消交错、后台可续聊子代理和其他附件格式尚未全面验证。详细变更见 [v0.4.3-pre.2 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.2)。
 
 ## 开发与反馈
-
-在仓库中安装依赖并运行检查：
 
 ```sh
 npm ci --ignore-scripts
@@ -179,13 +128,10 @@ node scripts/check-generated.mjs
 npm run typecheck
 npm test
 npm run test:schema
-npm pack --ignore-scripts
 ```
 
-[架构说明](ARCHITECTURE.md)介绍请求生命周期、压缩检查点和 Replay 实现；[更新日志](CHANGELOG.md)记录版本变化。
-
-遇到问题可提交 [Issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)，附上插件、DSH、Node.js 版本、接口类型、复现步骤和已脱敏的报错信息。
+实现细节见[架构说明](ARCHITECTURE.md)。提交 [Issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues) 时，请附上插件、DSH、Node.js 版本及复现步骤，不要上传 API Key、完整请求或未脱敏的会话日志。
 
 ## 许可证
 
-[MIT](LICENSE)。本项目是独立社区插件，与 OpenAI、DeepSeek、Sub2API、NewAPI 无隶属或官方背书关系。DeepSeek 名称及鲸鱼标识归其权利人所有。
+[MIT](LICENSE)。独立社区插件，与 OpenAI、DeepSeek、Sub2API、NewAPI 无隶属或官方背书关系。DeepSeek 名称及标识归其权利人所有。
