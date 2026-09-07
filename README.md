@@ -1,140 +1,159 @@
 <div align="center">
 
-<img src="assets/dsh-lcx-codex-banner.svg" alt="dsh-lcx-codex" width="100%" />
+<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/dsh-lcx-codex-banner.svg" alt="LCX Codex" width="100%" />
 
-[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?color=4D6BFE&label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![CI](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml/badge.svg)](https://github.com/kk3ya03-star/dsh-lcx-codex/actions/workflows/publish.yml)
-![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4D6BFE)
-![License](https://img.shields.io/badge/license-MIT-4D6BFE)
+# LCX Codex
 
-**简体中文** · [English](README_EN.md) · [Architecture](ARCHITECTURE.md) · [Changelog](CHANGELOG.md)
+**让 DeepSeek Harness 中的 GPT 会话支持原生压缩、联网搜索与连续网页操作。**
+
+[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?label=npm)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-16803c)](#兼容性与限制)
+[![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
+
+**简体中文** · [English](README_EN.md) · [版本发布](https://github.com/kk3ya03-star/dsh-lcx-codex/releases) · [问题反馈](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
 
 </div>
 
-给 DeepSeek Harness 的 GPT / OpenAI Responses 路径补上 Native V2 Compact / Replay、Hosted Search、Prompt Cache 和连续网页操作。
+LCX Codex（`dsh-lcx-codex`）是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（DSH）的社区插件，为已配置好的 **GPT / OpenAI Responses 接口**扩展长会话和搜索能力，适用于兼容的 Sub2API、NewAPI 等通道。
 
-## Highlights
+你仍然在 DSH 中选择模型、管理会话和使用工具。开启 LCX 后，从普通对话到工具调用、上下文压缩和压缩后的续聊，都使用同一条 Responses 请求路径。
 
-- **完整的 GPT Responses 路径**：LCX 开启后，从第一轮普通请求开始接管 GPT Responses 请求；工具续接、Compact 和 Replay 不再中途换实现。
-- **Native V2 Compact / Replay**：长会话优先使用 provider-native compaction，支持 Replay、重启恢复和 GPT 模型切换。
-- **GPT Hosted Search**：保留 DSH 原生 `web_search` 入口，同时提供高级 Hosted Search 和连续网页操作。
-- **Prompt Cache**：GPT-5.6 兼容 route 使用 `prompt_cache_options`，稳定前缀可以持续复用缓存。
-- **不改 DSH host**：Agent、Session、工具执行和 compaction policy 仍由 DSH 管；插件自己的 Pi 版本与 DSH host 隔离。
+## 它能做什么
 
-## Installation
+| 你需要 | LCX 提供 |
+| --- | --- |
+| **长对话继续进行** | 接近上下文上限时优先使用 Native V2 原生压缩，支持压缩后续聊和重启恢复。 |
+| **在对话中查询网页** | 通过 DSH 原有的 `web_search` 使用 GPT Hosted Search，普通搜索跟随当前 Agent 的 GPT 模型。 |
+| **更细的搜索控制** | 按需启用域名过滤、位置、搜索上下文大小、图片搜索等 Hosted Search 参数。 |
+| **连续查阅网页** | 在支持的接口上使用 Alpha 工具，连续执行搜索、打开、查找、点击等操作。 |
+| **复用提示词缓存** | 在支持的 GPT-5.6 接口上保持稳定的缓存标识，让相同的请求前缀可以被重复利用。 |
 
-```powershell
+> LCX 面向 GPT / OpenAI Responses。各项扩展能力取决于上游接口支持；能正常对话，不代表该通道同时支持原生压缩、Hosted Search 或 Alpha 网页操作。
+
+## 快速开始
+
+### 1. 准备环境
+
+- DSH **`0.1.1-rc.2`**，且 Web 界面能够正常使用。
+- Node.js **22.19.0 及以上的 22.x，或 24.0.0 及以上版本**。
+- 已在 DSH 中配置好可正常对话的 **GPT Responses 接口、模型与凭据**。
+
+### 2. 安装插件
+
+在运行 DSH 的环境中执行：
+
+```sh
 dsh plugin --profile web add dsh-lcx-codex
 dsh web
 ```
 
-需要：
+插件通过 npm 安装，无需克隆仓库或手动下载源码。本 README 对应 **`0.4.2`**；可在 [npm](https://www.npmjs.com/package/dsh-lcx-codex) 查看发布版本，或查看 [v0.4.2 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.2)。
 
-- DSH `0.1.1-rc.2`
-- Node.js `^22.19.0 || >=24.0.0`
-- 一个已经能工作的 GPT Responses route
+### 3. 启用并保存
 
-当前稳定版是 **0.4.2**，npm `latest` 已指向该版本。
+1. 打开 DSH Web 的插件设置，展开 **Responses / Codex 能力**。
+2. 勾选 **启用 LCX（接管当前 GPT Responses 会话）**。
+3. 需要联网搜索时，再勾选 **使用 GPT Hosted Search 作为 DSH web_search 后端**。
+4. 保留默认压缩设置，点击 **保存**，使用已配置好的 GPT 模型开始对话。
 
-## Quick start
+**LCX 和联网搜索默认关闭，安装后需要手动启用。** 高级搜索和 Alpha 可以在需要时再开。
 
-安装后在 DSH Web 的插件设置里打开 **LCX**。
+切换 Claude、Gemini、DeepSeek 等非 GPT 模型前，请先关闭 LCX 并保存。模型切换本身不需要重启 DSH。
 
-```text
-LCX OFF  → 完全使用 DSH 原生 LLM 流程
-LCX ON   → 当前 GPT 会话从第一轮开始走 LCX Responses 路径
-```
+## 长会话如何继续
 
-LCX 只面向 GPT / OpenAI Responses。切换 Claude、Gemini、DeepSeek 等非 GPT 模型前先关掉 LCX；不需要重启 DSH。
+LCX 使用上游的 **Native V2 原生压缩**处理长上下文，并将压缩结果接回 DSH 会话，供后续请求继续使用（Replay）。DSH 仍负责压缩时机、会话保存和工具执行。
 
-## Native V2 Compact / Replay
+默认的 Native-first 自动压缩策略为：
 
-DSH 仍然决定什么时候压缩。LCX 只负责把压缩请求送到 Responses Native V2，并把结果接回现有 Session。
+| 上下文压力 | 行为 |
+| --- | --- |
+| 低于 `90%` | 正常运行，避免过早裁剪工具结果。 |
+| 达到 `90%`、低于 `95%` | 优先尝试 Native V2 压缩。 |
+| 达到 `95%` | 允许 DSH 紧急裁剪工具结果，并按现有流程处理压缩。 |
 
-默认 pressure 策略：
+手动 `/compact` 仍通过 DSH 的压缩流程执行。首次建立压缩检查点时，符合条件的可恢复失败可以回退到 DSH 基础压缩；并非所有 Native 失败都会自动回退。
 
-```text
-< 90%   正常运行
-90%     优先 Native V2 Compact
-95%     允许 DSH emergency prune
-```
+原生压缩状态只在兼容的同一会话与接口配置中复用。切换到不兼容的 GPT 模型或通道时，LCX 会改用可迁移的会话历史继续请求。
 
-手动 `/compact` 继续使用 DSH 自己的 compaction transaction。
+## 搜索怎么选
 
-Native state 只在兼容的同一会话 / route 上复用。切换到不兼容的 GPT route 时会自动改用 portable history，不会把旧 opaque state 硬塞过去。
+日常查询从 `web_search` 开始即可。三种搜索工具的用途和启用条件如下：
 
-## Prompt Cache
+| 工具 | 用途 | 启用条件 |
+| --- | --- | --- |
+| `web_search` | 日常联网查询，使用 DSH 原有搜索入口。 | 开启 LCX 和 GPT Hosted Search。 |
+| `websearch_gpt_advanced` | 域名过滤、位置、搜索上下文大小、图片搜索等额外参数。 | 在上述基础上开启高级 Hosted 工具。 |
+| `websearch_alpha` | 连续执行 `search / open / find / click / screenshot` 等操作。 | 开启 Alpha，且当前接口通过能力探测。 |
 
-在支持的 GPT-5.6 route 上，LCX 使用当前的 `prompt_cache_options` 并保持稳定的 cache identity。
+Alpha 默认关闭。即使打开开关，也只有当前接口通过能力探测后才会注册工具。
 
-普通连续对话和 tool-heavy 任务只要请求前缀不变，就可以持续命中缓存。以下情况会建立新的 cache epoch：
+## 缓存的使用预期
 
-- Native Compact 改写历史；
-- 运行中加载 skill / plugin，顶层 `tools` schema 发生变化。
+在支持的 GPT-5.6 接口上，LCX 使用 `prompt_cache_options` 并保持稳定的缓存标识。连续对话和工具任务的请求前缀保持一致时，可以复用提示词缓存；实际命中情况由上游决定。
 
-第二种情况目前会产生一次 cache miss，新的工具集合稳定后会重新 warm。0.4.2 优先保证工具定义正确，没有为了省这一轮缓存去猜 dynamic-tool provenance。
+原生压缩会改变历史内容。运行中加载 skill、plugin，或切换会改变工具列表的功能，也可能使缓存需要重新建立。新请求前缀稳定后可以再次复用缓存。
 
-## Search
+## 设置参考
 
-普通搜索仍然使用 DSH 的 `web_search`：
+| 设置 | 默认值 | 建议 |
+| --- | --- | --- |
+| 启用 LCX | 关闭 | 使用 GPT Responses 时开启。 |
+| GPT Hosted Search | 关闭 | 需要联网查询时开启。 |
+| 高级 Hosted 工具 | 关闭 | 需要额外搜索参数时开启。 |
+| Alpha command | 关闭 | 在支持的接口上按需开启。 |
+| Native-first 自动压缩 | 开启 | 保持默认，需先启用 LCX。 |
+| Native 自动压缩阈值 | `90%` | 保持默认。 |
+| DSH 紧急裁剪阈值 | `95%` | 必须高于 Native 阈值。 |
+| Native 失败后回退 DSH basic compaction | 开启 | 保留符合回退条件时的基础压缩能力。 |
+| `web_search` 超时 | `240` 秒 | 搜索较慢时再调整。 |
 
-```text
-DSH web_search → LCX SearchProvider → GPT Hosted Search
-```
+## 常见问题
 
-需要更多控制时，可以单独开启：
+**安装后没有变化？**
 
-- `websearch_gpt_advanced` — 域名过滤、位置、search context、图片搜索等 Hosted Search 参数
-- `websearch_alpha` — 连续 `search / open / find / click / screenshot`
+确认插件安装到了启动 Web 使用的 `web` 配置中，再检查 LCX 是否已经勾选并保存。联网搜索有单独的开关。
 
-Alpha 默认关闭，只有当前 route 的 capability probe 通过后才会注册。
+**能对话，但搜索或压缩报错？**
 
-## Settings
+检查当前通道是否支持对应能力，以及模型与凭据是否可用。Sub2API、NewAPI 的名称本身不代表其所有通道都支持相同功能。
 
-建议先用默认值，只改你真正需要的选项。
+**需要手动下载安装包吗？**
 
-| Setting | Default / 建议 |
-|---|---|
-| Enable LCX | GPT 会话时开启 |
-| Use GPT Hosted Search | 按需 |
-| Advanced Hosted Search | Off |
-| Alpha Search | Off |
-| Native-first auto compaction | On |
-| Native threshold | `90%` |
-| Emergency DSH prune | `95%` |
-| Fallback to Basic Compaction | On |
-| `web_search` timeout | `240s` |
+常规安装使用上面的 DSH 命令即可。需要留存发布包时，可下载 [v0.4.2 npm 包（.tgz）](https://registry.npmjs.org/dsh-lcx-codex/-/dsh-lcx-codex-0.4.2.tgz)。GitHub 的 **Code → Download ZIP** 提供源码，不能代替插件安装步骤。
 
-## Compatibility
+## 兼容性与限制
 
-| Plugin | DSH | DSH host Pi | Plugin Pi | Node.js |
-|---|---|---|---|---|
-| `0.4.2` | `0.1.1-rc.2` | `0.82.1` | `0.84.3` | `^22.19.0 || >=24` |
+| 组件 | `0.4.2` 对应版本 |
+| --- | --- |
+| DSH | `0.1.1-rc.2` |
+| DSH host Pi | `0.82.1` |
+| 插件 Pi | `0.84.3` |
+| Node.js | `^22.19.0 \|\| >=24.0.0` |
 
-`@earendil-works/pi-ai@0.84.3` 只由插件自己使用，不会通过 override 升级 DSH host 的 Pi。
+插件单独使用 `@earendil-works/pi-ai@0.84.3`，不覆盖 DSH host 的 Pi 依赖。
 
-DSH `0.1.2-alpha.1` 尚未列入 0.4.2 的正式兼容范围。
+- DSH `0.1.2-alpha.1` 尚未列入此版本的正式兼容范围。
+- 1.05M 长上下文和 Programmatic Tool Calling 暂不作为正式支持项。
+- 显式 `prompt_cache_breakpoint` 设置未开放。
+- `reasoning.context` 和 `reasoning.mode` 是否可用，取决于 DSH / Pi 是否暴露相应字段。
 
-## Known limitations
+## 开发与反馈
 
-- 当前常用 route 不接受 content-level `prompt_cache_breakpoint`，因此没有开放 explicit breakpoint 设置。
-- 动态 skill / plugin 改变顶层工具集合时，可能出现一次 Prompt Cache reset；工具功能不受影响。
-- `reasoning.context` / `reasoning.mode` 取决于 DSH / Pi 是否真正暴露这些字段。
-- 1.05M long context 和 Programmatic Tool Calling 暂不作为 0.4.2 的正式支持项。
+在仓库中安装依赖并运行检查：
 
-## Development
-
-```bash
+```sh
+npm install --ignore-scripts
 npm run typecheck
 npm test
 npm run test:schema
 npm pack --ignore-scripts
 ```
 
-更细的请求生命周期、checkpoint、Replay 和协议说明在 [ARCHITECTURE.md](ARCHITECTURE.md)。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+[架构说明](ARCHITECTURE.md)介绍请求生命周期、压缩检查点和 Replay 实现；[更新日志](CHANGELOG.md)记录版本变化。
 
-## License
+遇到问题可提交 [Issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)，附上插件、DSH、Node.js 版本、接口类型、复现步骤和已脱敏的报错信息。
 
-MIT
+## 许可证
 
-本项目是独立的社区插件，与 OpenAI、DeepSeek、Sub2API、NewAPI 无隶属或官方背书关系。DeepSeek 名称及鲸鱼标识归其权利人所有。
+[MIT](LICENSE)。本项目是独立社区插件，与 OpenAI、DeepSeek、Sub2API、NewAPI 无隶属或官方背书关系。DeepSeek 名称及鲸鱼标识归其权利人所有。
