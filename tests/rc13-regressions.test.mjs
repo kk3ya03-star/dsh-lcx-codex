@@ -3,13 +3,8 @@ import assert from 'node:assert/strict'
 
 import { buildNativeCompactionBody } from '../lib/compact-v2.js'
 import { persistNativeImageReferences, readDshPiReplayState, serializeDshMessages } from '../lib/dsh-responses.js'
-import { retainedConversationInput, stateRouteCompatible } from '../lib/native-checkpoint.js'
-import { replayBody, requestNativeReplay } from '../lib/responses-replay.js'
-import { baseURLFingerprint, generationControlsFromHeader, generationControlsFromSession, updateRequestHeaderCache } from '../lib/route.js'
-
-const { convertResponsesMessages, convertResponsesTools } = await import(
-  '@earendil-works/pi-ai/api/openai-responses-shared',
-)
+import { nativeCheckpointChunks, retainedConversationInput, stateRouteCompatible } from '../lib/native-checkpoint.js'
+import { baseURLFingerprint, generationControlsFromHeader, generationControlsFromSession, promptCacheSessionId } from '../lib/route.js'
 
 const MODEL_ID = 'gpt-5.6-fixture'
 const PROVIDER_ID = 'fixture-relay'
@@ -41,11 +36,6 @@ const PLAIN_TOOL = {
 
 function textMessage(role, text) {
   return { type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] }
-}
-
-function sseResponse(events) {
-  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
-  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
 function sessionContext() {
@@ -140,22 +130,6 @@ function richPiFixture() {
   return { dshMessages, model, context, deferredTools: new Map([[DEFERRED_TOOL.name, DEFERRED_TOOL]]) }
 }
 
-function fidelityShape(items) {
-  return items.flatMap((item) => {
-    if (item?.type === 'reasoning') return [{ type: 'reasoning', id: item.id }]
-    if (item?.type === 'message' && item.role === 'assistant') return [{ type: 'message', id: item.id, phase: item.phase }]
-    if (item?.type === 'function_call') return [{ type: 'function_call', id: item.id, call_id: item.call_id }]
-    if (item?.type === 'function_call_output') return [{ type: 'function_call_output', call_id: item.call_id }]
-    if (item?.type === 'tool_search_call') return [{ type: 'tool_search_call', call_id: item.call_id, execution: item.execution }]
-    if (item?.type === 'tool_search_output') return [{ type: 'tool_search_output', call_id: item.call_id, execution: item.execution }]
-    return []
-  })
-}
-
-function toolShape(tools) {
-  return tools.map((tool) => ({ type: tool.type, name: tool.name, strict: tool.strict, defer_loading: tool.defer_loading }))
-}
-
 test('parent_child_never_sends_opaque_native_state', () => {
   const ctx = sessionContext()
   const parentRoute = route('session-parent-fixture')
@@ -175,55 +149,6 @@ test('parent_child_never_sends_opaque_native_state', () => {
   assert.equal(childMayReplayNative ? state.nativeOutput : undefined, undefined, 'child request must omit parent native output')
 })
 
-test('replay_terminal_index_shift_deduplicates', async () => {
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => sseResponse([
-    { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'A' },
-    {
-      type: 'response.completed',
-      response: {
-        id: 'response-fixture',
-        status: 'completed',
-        output: [
-          { type: 'reasoning', id: 'rs-fixture', summary: [] },
-          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'A' }] },
-        ],
-      },
-    },
-  ])
-  try {
-    const chunks = []
-    for await (const chunk of requestNativeReplay({ baseURL: BASE_URL, model: MODEL_ID, input: [], headers: {}, maxAttempts: 1 })) chunks.push(chunk)
-    const textEnds = chunks.filter((chunk) => chunk.type === 'block-end' && chunk.block?.type === 'text')
-    const nonEmptyTextEnds = textEnds.filter((chunk) => chunk.block.text.length > 0)
-    assert.equal(textEnds.length, 1, 'terminal index drift must not create an extra text block')
-    assert.equal(nonEmptyTextEnds.length, 1)
-    assert.equal(nonEmptyTextEnds[0].block.text, 'A')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-
-
-test('replay_function_call_done_without_delta_has_balanced_block', async () => {
-  const originalFetch = globalThis.fetch
-  const call = { type: 'function_call', id: 'fc_done', call_id: 'call_done', name: 'lookup', arguments: '{"query":"Q"}' }
-  globalThis.fetch = async () => sseResponse([
-    { type: 'response.output_item.done', output_index: 0, item: call },
-    { type: 'response.completed', response: { id: 'response-done-fixture', status: 'completed', output: [call] } },
-  ])
-  try {
-    const chunks = []
-    for await (const chunk of requestNativeReplay({ baseURL: BASE_URL, model: MODEL_ID, input: [], headers: {}, maxAttempts: 1 })) chunks.push(chunk)
-    const starts = chunks.filter((chunk) => chunk.type === 'block-start' && chunk.blockType === 'tool-call')
-    const ends = chunks.filter((chunk) => chunk.type === 'block-end' && chunk.block?.type === 'tool-call')
-    assert.equal(starts.length, 1)
-    assert.equal(ends.length, 1)
-    assert.equal(ends[0].block.id, 'call_done|fc_done', 'Native replay tool ids must match normal Pi call_id|item_id identity')
-    assert.equal(ends[0].block.arguments, '{"query":"Q"}')
-  } finally { globalThis.fetch = originalFetch }
-})
-
 test('canonical_role_only_messages_remain_durable_and_image_safe', () => {
   const imageUrl = 'https://image.example.invalid/request-image'
   const attachment = { id: 'attachment-fixture', mediaType: 'image/png' }
@@ -238,8 +163,8 @@ test('canonical_role_only_messages_remain_durable_and_image_safe', () => {
   assert.equal(JSON.stringify(persisted).includes(imageUrl), false, 'checkpoint must not persist request image URLs/payloads')
 })
 
-test('normal_to_compact_preserves_canonical_prefix', async () => {
-  const { dshMessages, model, context, deferredTools } = richPiFixture()
+test('normal_to_compact_preserves_serialized_public_prefix', async () => {
+  const { dshMessages, model, context } = richPiFixture()
   const dshSerialized = await serializeDshMessages(dshMessages, undefined, {
     imageSupport: 'unsupported',
     route: { provider: PROVIDER_ID, model: MODEL_ID, baseURL: BASE_URL },
@@ -254,64 +179,25 @@ test('normal_to_compact_preserves_canonical_prefix', async () => {
     tools: dshSerialized.tools,
     promptCacheKey: SESSION_ID,
   })
-  const canonicalInput = convertResponsesMessages(model, context, new Set(['openai', 'openai-codex', 'opencode']), {
-    includeSystemPrompt: true,
-    deferredTools,
-    deferredToolsMode: 'tool-search',
-    toolOptions: { supportsStrictMode: true, supportsOpenAIGrammarTools: false },
-  })
-  const canonicalTools = convertResponsesTools([LOOKUP_TOOL], { supportsStrictMode: true, supportsOpenAIGrammarTools: false })
-
   assert.equal(nativeBody.input.filter((item) => item?.type === 'compaction_trigger').length, 1)
-  assert.equal(canonicalInput.filter((item) => item?.type === 'compaction_trigger').length, 0)
-  assert.deepEqual(nativeBody.input.slice(0, -1), canonicalInput, 'Native compact must preserve the full canonical normal-request prefix')
-  assert.deepEqual(nativeBody.tools, canonicalTools, 'Native compact tools must match canonical immediate tools')
   assert.deepEqual(
-    { input: fidelityShape(nativeBody.input), tools: toolShape(nativeBody.tools) },
-    { input: fidelityShape(canonicalInput), tools: toolShape(canonicalTools) },
-    'Native compact input/tools must preserve canonical reasoning/id/phase/linkage/strict/deferred shape',
+    nativeBody.input.slice(0, -1),
+    dshSerialized.input,
+    'Native compact must preserve the serialized DSH request prefix',
+  )
+  assert.deepEqual(
+    nativeBody.tools,
+    dshSerialized.tools,
+    'Native compact tools must match the serialized ordinary request tools',
+  )
+  assert.equal(
+    dshSerialized.input.some((item) => item?.type === 'tool_search_call' || item?.type === 'tool_search_output'),
+    false,
+    'payload-free DSH tool results must not infer dynamic-tool provenance',
   )
   assert.equal(nativeBody.instructions, undefined)
-  assert.equal(canonicalInput[0]?.role, 'developer')
+  assert.equal(dshSerialized.input[0]?.role, 'developer')
 })
-
-test('compact_to_replay1_starts_new_epoch', () => {
-  const normalInput = [textMessage('user', 'U')]
-  const compact = buildNativeCompactionBody({
-    model: MODEL_ID,
-    input: normalInput,
-    instructions: SYSTEM_PROMPT,
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-  })
-  assert.equal(compact.input.at(-1)?.type, 'compaction_trigger')
-
-  const replay1 = replayBody({
-    model: MODEL_ID,
-    input: [...compact.input.slice(0, -1), textMessage('user', 'R1')],
-    system: SYSTEM_PROMPT,
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-  })
-  assert.equal(replay1.stream, true)
-  assert.equal(replay1.store, false)
-  assert.equal(replay1.input.filter((item) => item?.type === 'compaction_trigger').length, 0, 'compaction trigger belongs to the compact epoch only')
-  assert.equal(replay1.input.at(-1)?.type, 'message')
-  assert.equal(replay1.instructions, SYSTEM_PROMPT)
-  assert.equal(replay1.prompt_cache_key, SESSION_ID)
-})
-
-test('replay1_to_replay2_is_append_only', () => {
-  const compact = buildNativeCompactionBody({ model: MODEL_ID, input: [textMessage('user', 'U')], tools: [PLAIN_TOOL], promptCacheKey: SESSION_ID })
-  const replay1 = replayBody({ model: MODEL_ID, input: [...compact.input.slice(0, -1), textMessage('assistant', 'R1')], promptCacheKey: SESSION_ID })
-  const replay2 = replayBody({ model: MODEL_ID, input: [...replay1.input, textMessage('user', 'R2')], promptCacheKey: SESSION_ID })
-  const stablePrefix = replay1.input.filter((item) => item?.type !== 'compaction_trigger')
-
-  assert.deepEqual(replay2.input.slice(0, stablePrefix.length), stablePrefix, 'replay2 must retain replay1 canonical prefix')
-  assert.equal(replay2.input.length, stablePrefix.length + 1)
-  assert.equal(replay2.prompt_cache_key, replay1.prompt_cache_key)
-})
-
 
 test('invalid_replay_state_degrades_without_reusing_signatures', async () => {
   const sentinel = 'msg_should_not_replay'
@@ -343,40 +229,6 @@ test('tool_search_defaults_off_without_trusted_compat', async () => {
   assert.equal(serialized.input.some((item) => item?.type === 'tool_search_call' || item?.type === 'tool_search_output'), false)
 })
 
-
-
-test('native_generation_envelope_matches_normal_pi_controls', () => {
-  const compact = buildNativeCompactionBody({
-    model: MODEL_ID,
-    input: [textMessage('user', 'U')],
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-    reasoningEffort: 'xhigh',
-    temperature: 0.25,
-    maxTokens: 1234,
-  })
-  const replay = replayBody({
-    model: MODEL_ID,
-    input: [textMessage('user', 'U')],
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-    reasoningEffort: 'xhigh',
-    temperature: 0.25,
-    maxTokens: 1234,
-  })
-  const expected = {
-    reasoning: { effort: 'xhigh', summary: 'auto' },
-    include: ['reasoning.encrypted_content'],
-    temperature: 0.25,
-    max_output_tokens: 1234,
-  }
-  for (const body of [compact, replay]) {
-    assert.deepEqual(body.reasoning, expected.reasoning)
-    assert.deepEqual(body.include, expected.include)
-    assert.equal(body.temperature, expected.temperature)
-    assert.equal(body.max_output_tokens, expected.max_output_tokens)
-  }
-})
 
 
 test('compaction_generation_controls_come_from_matching_session_header', () => {
@@ -420,124 +272,103 @@ test('compaction_generation_controls_come_from_matching_session_header', () => {
 })
 
 
-test('session_event_cache_refreshes_header_before_compaction', () => {
+test('Session.requestHeader is the sole generation-control authority', () => {
   const route = { provider: PROVIDER_ID, model: MODEL_ID, sessionId: SESSION_ID }
-  const first = { config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'high' }, adapterDefaults: {} }
-  const second = { config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'xhigh', temperature: 0.1, maxTokens: 32768 }, adapterDefaults: { reasoningEffort: true, maxTokens: true } }
-  let current = second
+  let current = {
+    config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'high', maxTokens: 1000 },
+  }
   const session = { id: SESSION_ID, requestHeader: () => current }
-  const cache = new Map()
-  assert.equal(updateRequestHeaderCache(cache, session, { type: 'request/header', data: { header: first } }), true)
-  assert.equal(cache.get(SESSION_ID), first)
-  assert.deepEqual(generationControlsFromHeader(cache.get(SESSION_ID), route), { reasoningEffort: 'high' })
-  assert.equal(updateRequestHeaderCache(cache, session, { type: 'compaction/start', data: {} }), true)
-  assert.equal(cache.get(SESSION_ID), second, 'compaction/start must synchronously refresh from live Session.requestHeader()')
-  assert.deepEqual(generationControlsFromHeader(cache.get(SESSION_ID), route), { reasoningEffort: 'xhigh', temperature: 0.1, maxTokens: 32768 })
-  current = undefined
-  assert.equal(updateRequestHeaderCache(cache, session, { type: 'compaction/start', data: {} }), false)
-  assert.equal(cache.get(SESSION_ID), second, 'a missing refresh must not destroy the last known good header')
+
+  assert.deepEqual(generationControlsFromSession(session, route), {
+    reasoningEffort: 'high', maxTokens: 1000,
+  })
+  current = {
+    config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'xhigh', temperature: 0.1, maxTokens: 2000 },
+  }
+  assert.deepEqual(generationControlsFromSession(session, route), {
+    reasoningEffort: 'xhigh', temperature: 0.1, maxTokens: 2000,
+  })
 })
 
-test('remote_v2_body_includes_explicit_tool_controls', () => {
-  const compact = buildNativeCompactionBody({
-    model: MODEL_ID,
-    input: [textMessage('user', 'U')],
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-    reasoningEffort: 'xhigh',
-  })
-  const replay = replayBody({
-    model: MODEL_ID,
-    input: [textMessage('user', 'U')],
-    tools: [PLAIN_TOOL],
-    promptCacheKey: SESSION_ID,
-    reasoningEffort: 'xhigh',
-  })
-  for (const body of [compact, replay]) {
-    assert.equal(body.tool_choice, 'auto', 'Remote Responses must explicitly keep automatic tool choice')
-    assert.equal(body.parallel_tool_calls, true, 'plain openai-responses Remote V2 must preserve the default parallel-tool capability explicitly')
-  }
+test('root and subagent request headers remain owner-scoped while sharing the parent cache identity', () => {
+  const root = { id: 'session-root-state', header: {} }
+  const child = { id: 'session-child-state', header: { origin: 'subagent', parentSession: root.id } }
+  const sessions = new Map([[root.id, root], [child.id, child]])
+  const ctx = { sessions: { get: id => sessions.get(id) } }
+  const rootRoute = { provider: PROVIDER_ID, model: MODEL_ID, sessionId: root.id }
+  const childRoute = { provider: PROVIDER_ID, model: MODEL_ID, sessionId: child.id }
+  const rootHeader = { config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'high', maxTokens: 1000 }, adapterDefaults: {} }
+  const childHeader = { config: { provider: PROVIDER_ID, model: MODEL_ID, reasoningEffort: 'xhigh', maxTokens: 3000 }, adapterDefaults: {} }
+  assert.deepEqual(generationControlsFromHeader(rootHeader, rootRoute), { reasoningEffort: 'high', maxTokens: 1000 })
+  assert.deepEqual(generationControlsFromHeader(childHeader, childRoute), { reasoningEffort: 'xhigh', maxTokens: 3000 })
+  assert.equal(promptCacheSessionId(rootRoute, { cacheRetention: 'long' }, ctx), root.id)
+  assert.equal(promptCacheSessionId(childRoute, { cacheRetention: 'long' }, ctx), root.id)
 })
-test('native_replay_finish_preserves_pi_replay_state', async () => {
-  const originalFetch = globalThis.fetch
-  const reasoning = {
-    type: 'reasoning',
-    id: 'rs_replay_fixture',
-    summary: [{ type: 'summary_text', text: 'R' }],
-    encrypted_content: 'encrypted-fixture',
-  }
-  const message = {
-    type: 'message',
-    id: 'msg_replay_fixture',
-    role: 'assistant',
-    status: 'completed',
-    phase: 'final_answer',
-    content: [{ type: 'output_text', text: 'A', annotations: [] }],
-  }
-  const call = {
-    type: 'function_call',
-    id: 'fc_replay_fixture',
-    call_id: 'call_replay_fixture',
-    name: 'lookup',
-    arguments: '{"query":"Q"}',
-    status: 'completed',
-  }
-  globalThis.fetch = async () => sseResponse([{
-    type: 'response.completed',
-    response: {
-      id: 'resp_replay_fixture',
-      model: 'gpt-5.6-response-fixture',
-      status: 'completed',
-      output: [reasoning, message, call],
-      usage: { input_tokens: 20, input_tokens_details: { cached_tokens: 4 }, output_tokens: 3 },
-    },
-  }])
-  try {
-    const chunks = []
-    for await (const chunk of requestNativeReplay({
-      baseURL: BASE_URL,
-      provider: PROVIDER_ID,
-      model: MODEL_ID,
-      input: [],
-      headers: {},
-      maxAttempts: 1,
-    })) chunks.push(chunk)
-    const finish = chunks.find((chunk) => chunk.type === 'finish')
-    assert.ok(finish?.replayState, 'successful Native replay must persist Pi replay metadata')
-    const state = readDshPiReplayState(finish.replayState)
-    assert.equal(state.response.kind, 'pi-ai')
-    assert.equal(state.response.version, 2)
-    assert.equal(state.response.api, 'openai-responses')
-    assert.equal(state.response.provider, PROVIDER_ID)
-    assert.equal(state.response.model, MODEL_ID)
-    assert.equal(state.response.responseModel, 'gpt-5.6-response-fixture')
-    assert.equal(state.response.responseId, 'resp_replay_fixture')
-    assert.equal(state.response.stopReason, 'toolUse')
-    const ends = chunks.filter((chunk) => chunk.type === 'block-end')
-    assert.equal(state.blocks.length, ends.length, 'replay metadata must align 1:1 with persisted DSH blocks')
-    assert.deepEqual(JSON.parse(state.blocks[0].thinkingSignature), reasoning)
-    assert.deepEqual(JSON.parse(state.blocks[1].textSignature), { v: 1, id: 'msg_replay_fixture', phase: 'final_answer' })
-    assert.deepEqual(state.blocks[2], { type: 'tool-call' })
-    assert.equal(ends[2].block.id, 'call_replay_fixture|fc_replay_fixture')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-test('replay_function_call_delta_preserves_full_pi_identity', async () => {
-  const originalFetch = globalThis.fetch
-  const call = { type: 'function_call', id: 'fc_delta', call_id: 'call_delta', name: 'lookup', arguments: '{"query":"Q"}', status: 'completed' }
-  globalThis.fetch = async () => sseResponse([
-    { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_delta', call_id: 'call_delta', name: 'lookup', delta: '{"query":"' },
-    { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_delta', call_id: 'call_delta', name: 'lookup', delta: 'Q"}' },
-    { type: 'response.completed', response: { id: 'resp_delta', status: 'completed', output: [call] } },
+
+async function projectedInput(messages) {
+  const serialized = await serializeDshMessages(messages, {
+    llm: { fileRequestText: ref => `[file:${ref.name}]` },
+  }, {
+    imageSupport: 'unsupported',
+    route: { provider: PROVIDER_ID, model: MODEL_ID, baseURL: BASE_URL },
+  })
+  return serialized.input
+}
+
+test('generic file-only user content remains model-visible', async () => {
+  const input = await projectedInput([
+    { role: 'user', content: [{ type: 'file', attachment: { name: 'only.txt' } }] },
   ])
-  try {
-    const chunks = []
-    for await (const chunk of requestNativeReplay({ baseURL: BASE_URL, provider: PROVIDER_ID, model: MODEL_ID, input: [], headers: {}, maxAttempts: 1 })) chunks.push(chunk)
-    const deltas = chunks.filter((chunk) => chunk.type === 'tool-call-delta')
-    const end = chunks.find((chunk) => chunk.type === 'block-end' && chunk.block?.type === 'tool-call')
-    assert.ok(deltas.length >= 2)
-    assert.ok(deltas.every((chunk) => chunk.id === 'call_delta|fc_delta'))
-    assert.equal(end?.block.id, 'call_delta|fc_delta')
-  } finally { globalThis.fetch = originalFetch }
+  assert.match(JSON.stringify(input), /\[file:only\.txt\]/u)
+})
+
+test('generic file projection preserves text, multiple files, and nested tool results', async () => {
+  const input = await projectedInput([
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'before' },
+        { type: 'file', attachment: { name: 'one.txt' } },
+        { type: 'file', attachment: { name: 'two.csv' } },
+        {
+          type: 'tool-result', toolCallId: 'call_files', toolName: 'read',
+          content: [
+            { type: 'text', text: 'nested' },
+            { type: 'file', attachment: { name: 'nested.json' } },
+          ],
+        },
+      ],
+    },
+  ])
+  const wire = JSON.stringify(input)
+  for (const expected of ['before', '[file:one.txt]', '[file:two.csv]', 'nested', '[file:nested.json]'])
+    assert.equal(wire.includes(expected), true, `wire output must include ${expected}`)
+})
+
+test('unrecognized DSH content fails closed rather than disappearing', async () => {
+  await assert.rejects(
+    projectedInput([{ role: 'user', content: [{ type: 'future-extension', value: 'unsafe' }] }]),
+    error => error?.code === 'LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT',
+  )
+})
+
+test('Session-v2 custom checkpoint is emitted as a DSH content block', () => {
+  const block = {
+    type: 'lcx-native-compaction-v5',
+    version: 5,
+    retentionPolicy: 'conversation-fidelity-v1',
+    compactionId: 'checkpoint-v2-fixture',
+    provider: PROVIDER_ID,
+    model: MODEL_ID,
+    baseURLFingerprint: 'f'.repeat(64),
+    sourceSessionId: SESSION_ID,
+    nativeOutput: [],
+  }
+  const chunks = nativeCheckpointChunks(block, undefined)
+  assert.deepEqual(chunks[3], {
+    type: 'block-start', index: 1, blockType: 'lcx-native-compaction-v5',
+  })
+  assert.deepEqual(chunks[4], {
+    type: 'block-end', index: 1, block,
+  })
 })

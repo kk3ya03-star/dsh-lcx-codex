@@ -16,6 +16,14 @@ import {
 } from '../lib/native-checkpoint.js'
 import { baseURLFingerprint } from '../lib/route.js'
 
+test('Compact budgeting charges images nested in tool results', () => {
+  const textOnly = estimateBudgetItem({ role:'user', content:[{ type:'tool-result', toolCallId:'call-1', toolName:'read_image', content:[{ type:'text', text:'ok' }] }] })
+  const withImage = estimateBudgetItem({ role:'user', content:[{ type:'tool-result', toolCallId:'call-1', toolName:'read_image', content:[{ type:'text', text:'ok' }, { type:'image', attachment:{ attachmentId:'sha256:test' } }] }] })
+  assert.equal(typeof textOnly, 'number')
+  assert.equal(typeof withImage, 'number')
+  assert.ok(withImage >= textOnly + 2_048)
+})
+
 const textMessage = (role, text) => ({
   type: 'message',
   role,
@@ -39,13 +47,18 @@ function checkpointSession(messages, id = 'checkpoint-fixture') {
     data: message.role === 'assistant' ? { message } : message.content?.[0]?.type === 'tool-result' ? { message } : message,
   }))
   events.push({ seq: events.length, type: 'compaction/summary', data: { compactionId: id, shadowedSeqs: messages.map((_, index) => index) } })
-  return { events }
+  return {
+    snapshotEvents: () => events,
+    eventAt: (seq) => events[Number(seq)],
+    deriveEventMessage: (event) => event.data?.message ?? event.data ?? null,
+  }
 }
 
 const route = { provider: 'lcx', model: 'gpt-5.6-sol', baseURL: 'https://example.invalid/v1', sessionId: 'session-fixture' }
 const compaction = { type: 'compaction', encrypted_content: 'opaque-fixture' }
 function activeCheckpointSession(id) {
-  return { events: [{ seq: 0, type: 'compaction/start', data: { compactionId: id } }] }
+  const events = [{ seq: 0, type: 'compaction/start', data: { compactionId: id } }]
+  return { snapshotEvents: () => events }
 }
 
 test('token fixture 1: English prose is deterministic and never cheaper than legacy /4', () => {
@@ -157,6 +170,72 @@ test('token fixture 9: native retention never overshoots its hard budget', () =>
   assert.ok(plan.estimatedTokens <= 100)
 })
 
+test('text-only retention keeps backfilling older items around an oversized message', () => {
+  const oldest = textMessage('user', 'oldest')
+  const oversized = textMessage('user', 'middle '.repeat(1_000))
+  const newest = textMessage('user', 'newest')
+  const budget = estimateBudgetItem(oldest) + estimateBudgetItem(newest)
+  const plan = retainedConversationPlan([oldest, oversized, newest], { tokenBudget: budget })
+  assert.deepEqual(plan.items, [oldest, newest])
+  assert.equal(plan.estimatedTokens, budget)
+})
+
+test('an image boundary stops older-history backfill and keeps the image group atomic', () => {
+  const oldest = textMessage('user', 'oldest text that would otherwise fit')
+  const imageGroup = {
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'durable image label' },
+      { type: 'image', attachment: { attachmentId: 'sha256:image-boundary', width: 1024, height: 1024 } },
+    ],
+  }
+  const newest = textMessage('user', 'newest')
+  const budget = estimateBudgetItem(newest) + 100
+  assert.ok(estimateBudgetItem(imageGroup) > budget)
+  const plan = retainedConversationPlan([oldest, imageGroup, newest], { tokenBudget: budget })
+  assert.deepEqual(plan.items, [newest])
+  assert.equal(plan.estimatedTokens, estimateBudgetItem(newest))
+})
+
+test('nested tool-result images remain attached and consume the conservative image budget', () => {
+  const nested = {
+    role: 'user',
+    content: [{
+      type: 'tool-result', toolCallId: 'call-image', toolName: 'read_image',
+      content: [
+        { type: 'text', text: 'image result label' },
+        { type: 'image', attachment: { attachmentId: 'sha256:tool-image', width: 800, height: 600 } },
+      ],
+    }],
+  }
+  const tokens = estimateBudgetItem(nested)
+  const plan = retainedConversationPlan([nested], { tokenBudget: tokens })
+  assert.deepEqual(plan.items, [nested])
+  assert.equal(plan.estimatedTokens, tokens)
+  assert.ok(tokens >= 2_048)
+})
+
+test('repeated Compact retains durable image references once without raw image data', () => {
+  const imageUrl = 'data:image/png;base64,AQID'
+  const attachment = { attachmentId: 'sha256:durable-image', mediaType: 'image/png', width: 1, height: 1, bytes: 3 }
+  const imageMap = new Map([[imageUrl, attachment]])
+  const source = { role: 'user', content: [{ type: 'input_image', detail: 'auto', image_url: imageUrl }] }
+  const first = createNativeCheckpointBlock({
+    session: activeCheckpointSession('compact-image-1'), route, result: { compaction }, input: [source], imageMap,
+  })
+  const second = createNativeCheckpointBlock({
+    session: activeCheckpointSession('compact-image-2'), route, result: { compaction }, input: first.nativeOutput,
+  })
+  const encoded = JSON.stringify(second)
+  const refs = second.nativeOutput.flatMap((item) => item?.content ?? []).filter((part) => part?.type === 'dsh_image_attachment')
+  assert.equal(refs.length, 1)
+  assert.deepEqual(refs[0].attachment, attachment)
+  assert.equal(encoded.includes('base64'), false)
+  assert.equal(encoded.includes('AQID'), false)
+  assert.equal(second.nativeOutput.filter((item) => item?.type === 'compaction').length, 1)
+  assert.ok(second.retainedEstimatedTokens >= 2_048)
+})
+
 test('token fixture 10: unknown and unserializable content fails conservative budgeting', () => {
   const cyclic = {}
   cyclic.self = cyclic
@@ -193,7 +272,7 @@ test('token fixture 14: newest oversized portable group fails closed at char or 
   assert.throws(() => portableMessagesForCheckpoint(tokenSession, 'checkpoint-fixture', { maxChars: 1_000 }), (error) => error?.code === 'LCX_PORTABLE_BUDGET_EXCEEDED')
 })
 
-test('token fixture 15: v5/v4 checkpoint readability and route safety remain unchanged', () => {
+test('token fixture 15: only current v5 checkpoints are readable and route-compatible', () => {
   const route = { provider: 'fixture', model: 'fixture-model', baseURL: 'https://example.test/v1', sessionId: 'session-a' }
   const base = {
     compactionId: 'checkpoint-fixture',
@@ -205,8 +284,8 @@ test('token fixture 15: v5/v4 checkpoint readability and route safety remain unc
   }
   for (const [type, version] of [['lcx-native-compaction-v5', 5], ['lcx-native-compaction-v4', 4]]) {
     const state = stateFromSummaryEvent({ type: 'compaction/summary', data: { compactionId: 'checkpoint-fixture', rawOutput: [{ ...base, type, version }] } })
-    assert.equal(state?.version, version)
-    assert.equal(stateRouteCompatible(state, route, { sessions: { get: () => ({ id: route.sessionId }) } }), true)
+    assert.equal(state?.version, version === 5 ? 5 : undefined)
+    assert.equal(stateRouteCompatible(state, route, { sessions: { get: () => ({ id: route.sessionId }) } }), version === 5)
   }
 })
 

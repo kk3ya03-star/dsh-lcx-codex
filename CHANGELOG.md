@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.3-pre.2 - 2026-09-07
+
+- Target DSH 0.1.3-alpha.2 and Pi 0.85.1, with strict TypeScript source and generated host/client artifacts.
+- Remove 0.4.2 configuration fallback and v3/v4 checkpoint readers. Keep DSH as the single route, attachment, session and compaction-transaction owner.
+- Follow Pi's explicit-mode long cache retention of 30m; preserve session/fork identity and current v5 replay/model migration.
+- Bound response reads incrementally; use atomic DSH settings updates with visible save errors and native locale selection.
+- Harden Native checkpoint validation, portable-history traversal, Hosted completion checks and Alpha error reporting.
+- Document Hosted image search and inline DSH image display without adding a downloader or browser-control layer.
+- Bounded live validation covers long dialogue, Native compaction/restart/model switching, uploaded PNG/TXT, two-session concurrency, foreground subagent caches, and automatic pressure bands. 156 regression tests pass.
+- Prerelease on `prelatest`; stable `latest` remains 0.4.2. Windows DSH tests require the documented minimal host loading correction. Alpha intermittent references and screenshot delivery, proxy behavior, and broader concurrency/cancellation remain limitations, not verified fixes.
+
 ## 0.4.2-pre.1 - candidate under runtime acceptance
 
 ### Architecture

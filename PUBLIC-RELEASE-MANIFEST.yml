@@ -1,43 +1,53 @@
-version: 0.4.2-pre.1
-state: READY_FOR_MERGE
+version: 0.4.3-pre.2
+state: APPROVED_PRERELEASE
 private_source:
-  repository: kk3ya03-star/dsh-lcx-codex-private
-  integrated_commit: 96092102b19b430939c1feb50cf766a01c1e8b26
-  integrated_tree: af38ddc6f2f1232c667bca3e39c689e2f9e16255
-  accepted_functional_input: 2d1d6314a848d03164bb0a07fd2d0393cb2940d2
-  final_qa_evidence_commit: 27a5ca6c774e0dca51aafc01a0656c19c44eeecc
-  candidate_branch: integration/0.4.2-pre.1
-  artifact_sha256: AA3F52945B5F3B2661AD63357C01056353CF0E837EE81A65D15EC856D034ECD8
+  commit: c4fb86da49286fdf2fc835e9165172aef69a7e3a
+  tree: 363014a93d3aada9631066090bad1c716dd5dc25
+  engineering_artifact_sha256: e2a5b7faee1b64c4427ed88c85f64f31c84ecff0ba975ec0b4605753f78c0fea
 approval:
-  product_owner: approved
-  date: 2026-08-29
-  reference: private issue #45 comment 5460875912
-  technical_lead_reference: private issue #45 comment 5460790105
+  product_owner: explicit_release_instruction_in_local_task
+  date: 2026-09-07
+  reference: private Issue 56 comment 5573948953
+  scope: prerelease_with_disclosed_limitations_not_blanket_compatibility_acceptance
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
-  base_commit: 56e5cf959fec197e9ee5b3b1714e2208d3339901
-  release_branch: release/0.4.2-pre.1
-  version_tag: v0.4.2-pre.1
+  base_commit: ef2749afd7f6fa7585c5f330eb185c26085b53ab
+  branch: main
+  release_branch: release/0.4.3-pre.2
+  tag: v0.4.3-pre.2
   npm_dist_tag: prelatest
-  stable_latest_must_remain: 0.4.1
+  stable_latest_must_remain: 0.4.2
 included_candidate_paths:
-  - .gitattributes
-  - .gitignore
-  - cordis.patch.yml
-  - package.json
-  - tsconfig.typed-core.json
+  - src/**
   - lib/**
-  - scripts/**
+  - scripts/build-client.mjs
+  - scripts/probe-alpha.mjs
+  - scripts/validate-dsh-schema.mjs
   - tests/**
-  - CHANGELOG.md
-  - ARCHITECTURE.md
-  - LICENSE
+  - package.json
+  - package-lock.json
+  - cordis.patch.yml
+  - tsconfig.json
+  - tsconfig.client.json
+explicit_build_helper_mappings:
+  - tools/check-generated.mjs -> scripts/check-generated.mjs
+  - tools/link-dsh-runtime.mjs -> scripts/link-dsh-runtime.mjs
+  - qa/runtime-alpha2/package.json -> scripts/runtime-alpha2/package.json
+  - qa/runtime-alpha2/package-lock.json -> scripts/runtime-alpha2/package-lock.json
 preserved_distribution_paths:
-  - README.md
-  - README_EN.md
   - assets/**
-  - .github/workflows/publish.yml
+  - LICENSE
+  - .gitignore
+  - .gitattributes
+updated_distribution_paths:
+  - README.md (preserve Chinese structure; add prerelease and image-search guidance)
+  - README_EN.md (matching English additions)
+  - CHANGELOG.md (prepend new version; preserve public history)
+  - ARCHITECTURE.md (current source ownership; remove private-document link)
+  - .github/workflows/publish.yml (locked exact-source gates; approved tag only; prelatest)
+  - PUBLIC-RELEASE-MANIFEST.yml
 excluded_private_paths:
+  - private root README.md
   - AGENTS.md
   - AI-MANIFEST.yml
   - GOVERNANCE.md
@@ -45,52 +55,28 @@ excluded_private_paths:
   - STATUS.md
   - ROADMAP.md
   - ACCEPTANCE.md
-  - DESIGN.md
-  - DEVELOPMENT-PLAN.md
   - ERRORS.md
   - RESEARCH.md
-  - docs/governance/**
-  - docs/decisions/**
-  - docs/handoff/**
-  - docs/templates/**
+  - DESIGN.md
+  - DEVELOPMENT-PLAN.md
+  - docs/**
   - qa/**
   - releases/**
   - compatibility/**
   - tools/**
-  - .github/workflows/governance.yml
-  - .github/workflows/upstream-watch.yml
-release_invariants:
-  - curated public export only; private project dashboard/control plane must not be copied
-  - promoted runtime/source/config/test paths must be content-parity verified against the frozen private candidate
-  - no runtime/source functional change is authorized during promotion
-  - package version must remain exactly 0.4.2-pre.1
-  - DSH host Pi remains 0.82.1; plugin Pi remains 0.84.3
-  - npm latest remains 0.4.1; this prerelease publishes only to prelatest
+  - private workflows
+  - credentials, raw provider state, image fixtures and local logs
 verification:
-  exported_tree_gates:
-    npm_install: PASS (159 packages; ignore-scripts, no audit/fund, no lockfile)
-    tests: PASS (134/134)
-    schema: PASS (4/4)
-    typecheck: PASS
-    server_and_client_entry_smoke: PASS (server import; browser loader registration contract)
-    npm_pack_boundary: PASS (30 entries; 219952 bytes; 464038 unpacked bytes)
-    private_path_and_credential_scan: PASS
-    git_diff_check: PASS
-  parity:
-    status: PASS (40/40 promoted files; preserved distribution paths unchanged)
-    method: SHA-256/content equality for every promoted runtime/source/config/test path
-  public_artifact:
-    filename: dsh-lcx-codex-0.4.2-pre.1.tgz
-    sha256: BAAE6B1B099DCF93C41A7A85BAC9200A74452125E1F133A7C1C0E959C03691DE
-    size_bytes: 219952
-    entry_count: 30
-    note: public artifact intentionally preserves public README and README_EN
-  probe_notes:
-    - plain Node import of lib/client.js is invalid because it is a browser loader bundle; the loader registration contract passed with a minimal window.__ModuleLoader__.load stub
-  post_publish:
-    public_commit_tree_tag: pending
-    trusted_publish_workflow: pending
-    npm_registry_and_dist_tags: pending
-    isolated_registry_install_smoke: pending
-    teardown: pending
-  authority: final release evidence is recorded in private issue #45
+  clean_generated_build: 36 files match
+  strict_types: PASS
+  regression_tests: 156/156 PASS
+  schemas: 4/4 PASS
+  runtime_source_policy: byte-identical frozen product source, no behavior change
+  artifact_policy: build final npm artifact from public tree, not private README tarball
+runtime_basis:
+  dsh: 0.1.3-alpha.2
+  host_pi: 0.85.1
+  plugin_pi: 0.85.1
+  qualification: bounded_live_tests_on_Windows_with_approved_host_loading_correction
+  remaining: Alpha intermittent references and screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation and background continuable subagents
+  legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained

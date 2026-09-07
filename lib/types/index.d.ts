@@ -1,0 +1,83 @@
+import z from "@deepseek-ai/schemastery";
+import type { Context } from "@deepseek-ai/cordis";
+import "@deepseek-ai/dsh-agent";
+import "@deepseek-ai/dsh-tools";
+import "@deepseek-ai/dsh-web";
+export declare const name = "lcx-codex";
+export declare const inject: string[];
+type ConfigInput = {
+    supportsLongCacheRetention?: unknown;
+    supportsExplicitPromptCacheMode?: unknown;
+    alphaCapabilityPath?: unknown;
+    alphaRefPath?: unknown;
+    alphaProfile?: unknown;
+    alphaGroup?: unknown;
+    alphaMaxOutputTokens?: unknown;
+    webSearchProvider?: unknown;
+    webMaxResults?: unknown;
+    timeoutMs?: unknown;
+    maxResponseBytes?: unknown;
+    maxAttempts?: unknown;
+    maxRequestImageBytes?: unknown;
+    requestImagePixelBudget?: unknown;
+    requestImageMaxBytes?: unknown;
+    portableReplayMaxChars?: unknown;
+    nativeRetentionTokenBudget?: unknown;
+    assistantRetentionTokenReserve?: unknown;
+    assistantRetentionPerMessageTokenCap?: unknown;
+};
+type HostContext = Context;
+export declare const Config: z<Schemastery.ObjectS<{
+    supportsLongCacheRetention: z<boolean, boolean>;
+    supportsExplicitPromptCacheMode: z<boolean, boolean>;
+    alphaCapabilityPath: z<string, string>;
+    alphaRefPath: z<string, string>;
+    alphaProfile: z<string, string>;
+    alphaGroup: z<string, string>;
+    alphaMaxOutputTokens: z<number, number>;
+    webSearchProvider: z<string, string>;
+    webMaxResults: z<number, number>;
+    timeoutMs: z<number, number>;
+    maxResponseBytes: z<number, number>;
+    maxAttempts: z<number, number>;
+    maxRequestImageBytes: z<number, number>;
+    requestImagePixelBudget: z<number, number>;
+    requestImageMaxBytes: z<number, number>;
+    portableReplayMaxChars: z<number, number>;
+    nativeRetentionTokenBudget: z<number, number>;
+    assistantRetentionTokenReserve: z<number, number>;
+    assistantRetentionPerMessageTokenCap: z<number, number>;
+}>, Schemastery.ObjectT<{
+    supportsLongCacheRetention: z<boolean, boolean>;
+    supportsExplicitPromptCacheMode: z<boolean, boolean>;
+    alphaCapabilityPath: z<string, string>;
+    alphaRefPath: z<string, string>;
+    alphaProfile: z<string, string>;
+    alphaGroup: z<string, string>;
+    alphaMaxOutputTokens: z<number, number>;
+    webSearchProvider: z<string, string>;
+    webMaxResults: z<number, number>;
+    timeoutMs: z<number, number>;
+    maxResponseBytes: z<number, number>;
+    maxAttempts: z<number, number>;
+    maxRequestImageBytes: z<number, number>;
+    requestImagePixelBudget: z<number, number>;
+    requestImageMaxBytes: z<number, number>;
+    portableReplayMaxChars: z<number, number>;
+    nativeRetentionTokenBudget: z<number, number>;
+    assistantRetentionTokenReserve: z<number, number>;
+    assistantRetentionPerMessageTokenCap: z<number, number>;
+}>>;
+export declare function compactionPressureBand(totalTokens: number, contextWindow: number, policy: {
+    auto: number;
+    emergency: number;
+}): {
+    ratioPercent: number;
+    band: string;
+};
+export declare function apply(ctx: HostContext, configInput?: ConfigInput): void;
+export declare namespace apply {
+    export { inject };
+    export { Config };
+}
+export default apply;

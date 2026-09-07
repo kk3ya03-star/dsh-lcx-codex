@@ -32,6 +32,23 @@ LCX Codex（`dsh-lcx-codex`）是 [DeepSeek Harness](https://github.com/deepseek
 
 ## 快速开始
 
+### DSH 0.1.3 用户：0.4.3-pre.2 预发布
+
+`0.4.3-pre.2` 面向 **DSH `0.1.3-alpha.2` / host 与插件 Pi `0.85.1`**，安装时明确选择预发布：
+
+```sh
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.2
+dsh web
+```
+
+也可使用 `dsh-lcx-codex@prelatest` 跟随预发布通道。稳定通道 `latest` 仍为 `0.4.2`，对应下面的旧版安装说明，不要混用 DSH 版本。
+
+新版只保留 LCX、Hosted Search、高级 Hosted、Alpha 四个开关；`90%` / `95%` 压缩阈值及 `240` 秒搜索超时为固定策略。设置页语言跟随 DSH。旧版 `0.4.2` 插件配置与 v3/v4 压缩检查点不再迁移，请重新配置并新建会话；当前 v5 检查点仍支持重启续聊。
+
+**预发布限制：** Windows 上 DSH `0.1.3-alpha.2` 存在启动时加载 `fs-ext` 的宿主问题。本轮 Windows 实测使用了仅在非 Windows 加载 `fs-ext` 的本地修正，保留原 Win32 会话锁；插件安装不会自动修补 DSH，不能宣称未修正的 Windows 宿主开箱即用。Alpha 网页引用仍可能偶发失效，`screenshot` 尚未验证返回可显示的图片。代理 / `NO_PROXY`、更高并发与取消交错、后台可续聊子代理尚未测全。
+
+普通对话、缓存、基础 PNG/TXT 附件、Native 压缩与重启续聊、压缩后模型切换、普通搜索与 Hosted 搜图展示、双会话并发、前台子代理缓存已有有界实测；这不是全平台或所有附件格式的完整兼容保证。
+
 ### 1. 准备环境
 
 - DSH **`0.1.1-rc.2`**，且 Web 界面能够正常使用。
@@ -88,6 +105,16 @@ LCX 使用上游的 **Native V2 原生压缩**处理长上下文，并将压缩�
 
 Alpha 默认关闭。即使打开开关，也只有当前接口通过能力探测后才会注册工具。
 
+### 可以直接让 DSH 搜图吗？
+
+可以。开启 LCX、GPT Hosted Search 和高级 Hosted 工具后，直接说：
+
+> 搜索金门大桥的照片，选一张直接显示在回复里，并附上图片来源网页。
+
+通常不需要自己填写 JSON，模型负责选择 `websearch_gpt_advanced` 的图片搜索参数；若只返回文字，可以补充“请使用高级 Hosted 的图片搜索”。是否选择正确参数仍取决于模型，接口也必须支持图片搜索。
+
+工具返回的是现有网页图片的 URL、来源等信息，模型可用 Markdown 将图片显示在 DSH 中。`0.4.3-pre.2` 已实测图片结果解析及界面展示；这是**搜索已有图片，不是生成图片，也不等于模型已经看到了图片像素**。图片链接可能受原站权限或防盗链影响。Alpha 不必开启；Alpha 的网页操作发生在上游搜索服务，不会点击你的本机浏览器或 DSH 界面，其 `screenshot` 也不保证返回照片。
+
 ## 缓存的使用预期
 
 在支持的 GPT-5.6 接口上，LCX 使用 `prompt_cache_options` 并保持稳定的缓存标识。连续对话和工具任务的请求前缀保持一致时，可以复用提示词缓存；实际命中情况由上游决定。
@@ -95,6 +122,8 @@ Alpha 默认关闭。即使打开开关，也只有当前接口通过能力探�
 原生压缩会改变历史内容。运行中加载 skill、plugin，或切换会改变工具列表的功能，也可能使缓存需要重新建立。新请求前缀稳定后可以再次复用缓存。
 
 ## 设置参考
+
+下表为稳定版 `0.4.2`。`0.4.3-pre.2` 只提供前四项开关，其余为固定内部策略。
 
 | 设置 | 默认值 | 建议 |
 | --- | --- | --- |
@@ -143,7 +172,10 @@ Alpha 默认关闭。即使打开开关，也只有当前接口通过能力探�
 在仓库中安装依赖并运行检查：
 
 ```sh
-npm install --ignore-scripts
+npm ci --ignore-scripts
+npm ci --prefix scripts/runtime-alpha2 --ignore-scripts
+node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+node scripts/check-generated.mjs
 npm run typecheck
 npm test
 npm run test:schema

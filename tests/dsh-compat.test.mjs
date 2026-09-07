@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { symbols as cordisSymbols } from '@deepseek-ai/cordis'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { ServiceMutex } from '../lib/service-mutex.js'
 import {
   agentSessionId,
   compactionConfigState,
@@ -21,32 +23,53 @@ import {
   restoreCompactionPatches,
   restoreToolResultPruner,
   restoreVisibleWebSearchTimeouts,
+  scopedToolRuntime,
   sessionFor,
   sessionsService,
   toolResultPrunerState,
   writeWebSearchProvider,
 } from '../lib/dsh-compat.js'
 
-test('agent route and Sessions access preserve the DSH rc.2 shape', () => {
-  const requestConfig = { provider: 'header-provider', model: 'header-model' }
-  const options = { provider: 'selected-provider', model: 'selected-model' }
-  const session = { id: 'session-compat', requestHeader: () => ({ config: requestConfig }) }
-  const agent = { options, session }
-  assert.deepEqual(readAgentRouteState(agent), { requestConfig, options, sessionId: session.id })
-  assert.equal(agentSessionId(agent), session.id)
-  assert.equal(agentSessionId(undefined), '')
-
-  const records = new Map([[session.id, session]])
-  const service = { get: id => records.get(id), list: () => [...records.values()] }
-  const propertyContext = { sessions: service }
-  const getterContext = { get: name => name === 'sessions' ? service : undefined }
-  assert.equal(sessionsService(propertyContext), service)
-  assert.equal(sessionsService(getterContext), service)
-  assert.equal(sessionFor(getterContext, session.id), session)
-  assert.equal(sessionFor(getterContext, ''), undefined)
+test('scoped tool registration preserves the DSH service receiver and disposer', () => {
+  const definitions = new Set()
+  const tools = {
+    register(definition) {
+      assert.equal(this, tools)
+      definitions.add(definition)
+      return () => definitions.delete(definition)
+    },
+  }
+  const agent = { ctx: { get: name => name === 'tools' ? tools : undefined } }
+  const definition = { name: 'alpha-fixture' }
+  const dispose = scopedToolRuntime(agent).register(definition)
+  assert.equal(definitions.has(definition), true)
+  dispose()
+  assert.equal(definitions.size, 0)
+  assert.equal(scopedToolRuntime({ ctx: {} }), undefined)
 })
 
-test('service resolution prefers AgentPresets and keeps scoped/root fallbacks fail-safe', () => {
+test('agent route and Sessions access use the DSH 0.1.3 public shape', () => {
+  const requestConfig = { provider: 'header-provider', model: 'header-model' }
+  const options = { provider: 'selected-provider', model: 'selected-model' }
+  const agentSession = { id: 'session-compat', requestHeader: () => ({ config: requestConfig }) }
+  const agent = { options, session: agentSession }
+  assert.deepEqual(readAgentRouteState(agent), { requestConfig, options, sessionId: agentSession.id })
+  assert.equal(agentSessionId(agent), agentSession.id)
+  assert.equal(agentSessionId(undefined), '')
+
+  const session = Session.create(SessionId(agentSession.id))
+  const records = new Map([[session.id, session]])
+  const service = { get: id => records.get(id) }
+  const propertyContext = { sessions: service }
+  const getterContext = { get: name => name === 'sessions' ? service : undefined }
+  assert.equal(typeof sessionsService(propertyContext)?.get, 'function')
+  assert.equal(typeof sessionsService(getterContext)?.get, 'function')
+  assert.equal(sessionFor(getterContext, session.id), session)
+  assert.equal(sessionFor(getterContext, ''), undefined)
+  assert.equal(sessionFor({ sessions: { get: () => agentSession } }, session.id), undefined)
+})
+
+test('agent service resolution uses the official AgentPresets service resolver', () => {
   const presetService = { kind: 'preset' }
   const scopedService = { kind: 'scoped' }
   const agent = { ctx: { get: name => name === 'compaction' ? scopedService : undefined } }
@@ -62,7 +85,7 @@ test('service resolution prefers AgentPresets and keeps scoped/root fallbacks fa
   assert.equal(resolveAgentService(ctx, agent, 'missing'), undefined)
 
   ctx.agentPresets.serviceFor = () => { throw new Error('preset unavailable') }
-  assert.equal(resolveAgentService(ctx, agent, 'compaction'), scopedService)
+  assert.equal(resolveAgentService(ctx, agent, 'compaction'), undefined)
   const unavailable = { rootOnly: ctx.rootOnly, get: () => { throw new Error('context unavailable') } }
   assert.throws(() => contextService(unavailable, 'rootOnly'), /context unavailable/u)
   assert.equal(resolveContextService(unavailable, 'rootOnly'), undefined)
@@ -81,27 +104,44 @@ test('web provider selection is reversible and fails closed on inaccessible host
   assert.equal(writeWebSearchProvider({}, 'lcx-responses'), false)
 })
 
-test('compaction patches deduplicate by concrete identity and restore only their own wrapper', () => {
-  const original = function original() { return 'original' }
+test('compaction patches deduplicate by concrete identity and restore only their own wrapper', async () => {
+  const original = async function original() { return 'original' }
   const concrete = { compactIfNeeded: original }
   const proxy = { [cordisSymbols.original]: concrete }
   const records = new Map()
   assert.equal(concreteService(proxy), concrete)
 
   const candidate = compactionPatchCandidate(proxy, records)
-  const wrapper = function wrapper() { return 'wrapper' }
-  const record = { ...candidate, wrapper }
-  assert.equal(installCompactionPatch(records, record), true)
-  assert.equal(concrete.compactIfNeeded, wrapper)
+  assert.ok(candidate)
+  assert.equal(
+    installCompactionPatch(
+      records,
+      candidate,
+      new ServiceMutex(),
+      new AbortController(),
+      async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+    ),
+    true,
+  )
+  const wrapper = concrete.compactIfNeeded
+  assert.notEqual(wrapper, original)
+  assert.equal(await wrapper({}, 'test', new AbortController().signal), 'original')
   assert.equal(compactionPatchCandidate(proxy, records), undefined)
   restoreCompactionPatches(records)
   assert.equal(concrete.compactIfNeeded, original)
   assert.equal(records.size, 0)
 
   const secondRecords = new Map()
-  const second = { ...compactionPatchCandidate(proxy, secondRecords), wrapper }
-  installCompactionPatch(secondRecords, second)
-  const external = () => 'external'
+  const second = compactionPatchCandidate(proxy, secondRecords)
+  assert.ok(second)
+  installCompactionPatch(
+    secondRecords,
+    second,
+    new ServiceMutex(),
+    new AbortController(),
+    async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+  )
+  const external = async () => 'external'
   concrete.compactIfNeeded = external
   restoreCompactionPatches(secondRecords)
   assert.equal(concrete.compactIfNeeded, external)
@@ -113,7 +153,17 @@ test('compatibility patch points fail safe when optional host writes are rejecte
   Object.defineProperty(readOnlyCompaction, 'compactIfNeeded', { value: original, writable: false })
   const records = new Map()
   const candidate = compactionPatchCandidate(readOnlyCompaction, records)
-  assert.equal(installCompactionPatch(records, { ...candidate, wrapper: () => 'wrapper' }), false)
+  assert.ok(candidate)
+  assert.equal(
+    installCompactionPatch(
+      records,
+      candidate,
+      new ServiceMutex(),
+      new AbortController(),
+      async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+    ),
+    false,
+  )
   assert.equal(readOnlyCompaction.compactIfNeeded, original)
   assert.equal(records.size, 0)
 

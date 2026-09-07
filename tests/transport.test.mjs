@@ -2,6 +2,69 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { fetchJsonWithRetry, fetchSseWithRetry } from '../lib/transport.js'
 
+for (const [name, transport, status, limit] of [
+  ['JSON success', fetchJsonWithRetry, 200, 4],
+  ['JSON error', fetchJsonWithRetry, 500, 4],
+  ['SSE error', fetchSseWithRetry, 500, 4],
+  ['JSON error default cap', fetchJsonWithRetry, 500, undefined],
+  ['SSE error default cap', fetchSseWithRetry, 500, undefined],
+]) {
+  test(`${name} cancels oversized bodies before draining and does not retry`, async (t) => {
+    let pulls = 0, cancellations = 0, requests = 0, response
+    t.mock.method(globalThis, 'fetch', async () => {
+      requests++
+      response = new Response(new ReadableStream({
+        pull(controller) {
+          pulls++
+          if (pulls === 100) return controller.close()
+          controller.enqueue(new Uint8Array(limit === undefined ? 256 * 1024 : 3))
+        },
+        cancel() { cancellations++ },
+      }, { highWaterMark: 0 }), { status, headers: { 'content-length': '1' } })
+      return response
+    })
+    await assert.rejects(
+      transport('https://example.invalid', {}, {}, undefined, 1000, { maxResponseBytes: limit }),
+      (error) => error.code === 'LCX_RESPONSE_TOO_LARGE' && error.status === status,
+    )
+    assert.equal(pulls, limit === undefined ? 3 : 2)
+    assert.equal(cancellations, 1)
+    assert.equal(requests, 1)
+    assert.equal(response.body.locked, false)
+  })
+}
+
+test('JSON byte limit accepts exact-size UTF-8 split across chunks and an empty body', async (t) => {
+  const bytes = new TextEncoder().encode('{"text":"\u4e2d\ud83d\ude00"}')
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    start(controller) {
+      for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+      controller.close()
+    },
+  })))
+  assert.deepEqual(await fetchJsonWithRetry('https://example.invalid', {}, {}, undefined, 1000,
+    { maxResponseBytes: bytes.length }), { text: '\u4e2d\ud83d\ude00' })
+  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
+  assert.deepEqual(await fetchJsonWithRetry('https://example.invalid', {}, {}, undefined), {})
+})
+
+test('JSON stream read errors and cancellation cleanup preserve the original error', async (t) => {
+  const failure = new Error('synthetic read failure')
+  let response
+  t.mock.method(globalThis, 'fetch', async () => {
+    response = new Response(new ReadableStream({ pull(controller) { controller.error(failure) } }))
+    return response
+  })
+  await assert.rejects(fetchJsonWithRetry('https://example.invalid', {}, {}, undefined), error => error === failure)
+  assert.equal(response.body.locked, false)
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(8)) },
+    cancel() { throw new Error('cleanup failure') },
+  })))
+  await assert.rejects(fetchJsonWithRetry('https://example.invalid', {}, {}, undefined, 1000,
+    { maxResponseBytes: 4 }), error => error.code === 'LCX_RESPONSE_TOO_LARGE')
+})
+
 function errorResponse(status, sentinel) {
   return new Response(JSON.stringify({ error: { message: sentinel } }), {
     status,
