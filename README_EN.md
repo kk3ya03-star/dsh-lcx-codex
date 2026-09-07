@@ -32,6 +32,23 @@ You continue selecting models, managing sessions, and using tools in DSH. With L
 
 ## Quick start
 
+### DSH 0.1.3 users: 0.4.3-pre.2 prerelease
+
+`0.4.3-pre.2` targets **DSH `0.1.3-alpha.2` / host and plugin Pi `0.85.1`**. Select the prerelease explicitly:
+
+```sh
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.2
+dsh web
+```
+
+Use `dsh-lcx-codex@prelatest` to follow prereleases. Stable `latest` remains `0.4.2`, covered by the older installation instructions below; do not mix DSH versions.
+
+The new version keeps only four switches: LCX, Hosted Search, advanced Hosted, and Alpha. The `90%` / `95%` thresholds and `240`-second search timeout are fixed policy. Settings follow DSH's selected language. Old `0.4.2` plugin configuration and v3/v4 checkpoints are not migrated: reconfigure and start a new session. Current v5 checkpoints still support restart/resume.
+
+**Prerelease limitations:** DSH `0.1.3-alpha.2` loads `fs-ext` during Windows startup. Windows runtime tests used a local host correction that loads it only on non-Windows platforms while retaining the original Win32 session lock. Installing this plugin does not patch DSH; unmodified Windows startup is not claimed. Alpha references may fail intermittently, and screenshot delivery as a displayable image is not verified. Proxy / `NO_PROXY`, higher concurrency and cancellation interleaving, and background continuable subagents remain incompletely tested.
+
+Bounded live tests cover ordinary dialogue, caches, basic PNG/TXT attachments, Native compaction and restart/resume, post-compaction model switching, ordinary search and Hosted image display, two-session concurrency, and foreground subagent caches. This is not complete cross-platform or all-format acceptance.
+
 ### 1. Check your environment
 
 - DSH **`0.1.1-rc.2`** with a working Web interface.
@@ -88,6 +105,16 @@ Start with `web_search` for everyday queries. The three tools serve different ne
 
 Alpha is off by default. Even with its switch enabled, the tool is registered only after the active route passes its capability probe.
 
+### Can I just ask DSH for images?
+
+Yes. Enable LCX, GPT Hosted Search, and the advanced Hosted tool, then ask:
+
+> Search for photos of the Golden Gate Bridge, display one directly in your reply, and include its source page.
+
+You normally do not need to enter JSON: the model selects image-search parameters for `websearch_gpt_advanced`. If it returns only text, ask it to use advanced Hosted image search explicitly. Correct parameter selection still depends on the model, and the route must support image search.
+
+The tool returns existing web-image URLs and source information; the assistant can display them through DSH's Markdown renderer. Image-result parsing and actual display were tested with `0.4.3-pre.2`. This **searches existing images, does not generate images, and does not establish that the model received image pixels**. Source-site permissions or hotlink protection can prevent display. Alpha is not required. Alpha actions run in the upstream search service, not your local browser or DSH UI, and its `screenshot` action does not guarantee a returned picture.
+
 ## What to expect from caching
 
 On supported GPT-5.6 routes, LCX uses `prompt_cache_options` and maintains a stable cache identity. Consecutive turns and tool tasks can reuse prompt caches when their request prefixes stay unchanged; actual cache hits depend on the upstream provider.
@@ -95,6 +122,8 @@ On supported GPT-5.6 routes, LCX uses `prompt_cache_options` and maintains a sta
 Native compaction changes conversation history. Loading skills or plugins at runtime, or toggling features that change the tool list, can also require the cache to warm again. Reuse can resume once the new request prefix stabilizes.
 
 ## Settings
+
+This table describes stable `0.4.2`. In `0.4.3-pre.2`, only the first four switches are configurable; the remaining entries are fixed internal policy.
 
 | Setting | Default | Recommendation |
 | --- | --- | --- |
@@ -143,7 +172,10 @@ The plugin uses its own `@earendil-works/pi-ai@0.84.3` dependency without overri
 Install dependencies and run the checks from the repository:
 
 ```sh
-npm install --ignore-scripts
+npm ci --ignore-scripts
+npm ci --prefix scripts/runtime-alpha2 --ignore-scripts
+node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+node scripts/check-generated.mjs
 npm run typecheck
 npm test
 npm run test:schema

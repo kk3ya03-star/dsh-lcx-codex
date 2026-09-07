@@ -26,13 +26,14 @@ class SettingsFixture extends Service {
     this.registerCalls = 0
   }
 
-  register(namespace) {
+  installSection(_owner, namespace, _schema, entry, hooks) {
     this.registerCalls += 1
     this.ctx.effect(() => {
       this.namespaces.add(namespace)
+      hooks.setSource(() => entry)
+      hooks.onChange()
       return () => this.namespaces.delete(namespace)
     })
-    return { get: () => ({}), watch: () => () => {} }
   }
 }
 
@@ -41,7 +42,6 @@ async function settlePlugins(ctx) {
 }
 
 const listenerEvents = [
-  'session/created',
   'session/disposed',
   'session/event',
   'tools/execute',
@@ -56,24 +56,32 @@ function assertListenerCounts(ctx, expected) {
   }
 }
 
-test('plugin dependencies initialize once, cleanly re-enable, and late-mount settings', async () => {
+test('plugin waits for required services, initializes once and cleanly re-enables', async () => {
   const ctx = new Context()
-  ctx.provide('llm', {})
-  const web = new WebFixture(ctx)
-  ctx.provide('sessions', { list: () => [] })
-  ctx.provide('tools', { register: () => {} })
+  // Real hosts provide services from sibling plugins, not the root fiber.
+  let web
+  await ctx.plugin((services) => {
+    services.provide('llm', {})
+    web = new WebFixture(services)
+    services.provide('sessions', { list: () => [] })
+    services.provide('tools', { register: () => {} })
+    services.provide('credentials', { resolve: async () => undefined })
+    services.provide('attachments', {})
+    services.provide('fs', {})
+  })
 
   const first = ctx.plugin(apply)
+  assert.equal(web.registerCalls, 0, 'plugin waits for its route settings service')
+  let settings
+  await ctx.plugin((services) => { settings = new SettingsFixture(services) })
   await first
   await settlePlugins(ctx)
 
-  assert.equal(web.registerCalls, 1, 'plugin-level llm/web/sessions dependencies initialize once')
+  assert.equal(web.registerCalls, 1, 'required service dependencies initialize once')
   assert.equal(web.providers.size, 1)
   assertListenerCounts(ctx, 1)
 
-  const settings = new SettingsFixture(ctx)
-  await settlePlugins(ctx)
-  assert.equal(settings.registerCalls, 1, 'settings provider mounts after the plugin is active')
+  assert.equal(settings.registerCalls, 1, 'settings section mounts after the required provider is available')
   assert.deepEqual([...settings.namespaces], ['lcx-codex'])
 
   await first.dispose()

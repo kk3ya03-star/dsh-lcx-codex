@@ -2,160 +2,48 @@ name: Publish to npm
 
 on:
   push:
-    tags:
-      - "v*"
-    branches:
-      - "main"
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
-  statuses: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Release pipeline
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -uo pipefail
-          mark() {
-            local context="$1" state="$2" description="$3"
-            curl -sS -X POST \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-              -d "{\"state\":\"${state}\",\"context\":\"npm/${context}\",\"description\":\"${description}\"}" >/dev/null || true
-          }
-
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-
-          # One-shot stable-promotion path. Future main pushes are inert unless a
-          # later release explicitly updates this version guard.
-          if [[ "$GITHUB_REF" == "refs/heads/main" && "$PACKAGE_VERSION" != "0.4.2" ]]; then
-            echo "main promotion trigger is restricted to package version 0.4.2"
-            exit 0
-          fi
-
-          mark install pending "installing dependencies"
-          if ! npm install --ignore-scripts --no-audit --no-fund; then
-            mark install failure "npm install failed"
-            exit 1
-          fi
-          mark install success "dependencies installed"
-
-          mark tests pending "running release gates"
-          if ! npm run typecheck; then
-            mark tests failure "typecheck failed"
-            exit 1
-          fi
-          if ! npm test; then
-            mark tests failure "npm test failed"
-            exit 1
-          fi
-          if ! npm run test:schema; then
-            mark tests failure "schema validation failed"
-            exit 1
-          fi
-          if ! npm pack --ignore-scripts --dry-run >/dev/null; then
-            mark tests failure "package dry-run failed"
-            exit 1
-          fi
-          mark tests success "typecheck tests schema package passed"
-
-          if [[ "$GITHUB_REF" == "refs/heads/main" && "$PACKAGE_VERSION" == "0.4.2" ]]; then
-            git fetch --force --tags
-            if ! git rev-parse -q --verify refs/tags/v0.4.2-pre.1 >/dev/null; then
-              mark tests failure "v0.4.2-pre.1 baseline tag missing"
-              exit 1
-            fi
-            if ! git diff --quiet v0.4.2-pre.1 -- lib scripts tests cordis.patch.yml tsconfig.typed-core.json; then
-              mark tests failure "runtime/source differs from accepted prerelease"
-              git diff --stat v0.4.2-pre.1 -- lib scripts tests cordis.patch.yml tsconfig.typed-core.json
-              exit 1
-            fi
-          fi
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            TAG_VERSION="${GITHUB_REF_NAME#v}"
-            if [[ "$PACKAGE_VERSION" != "$TAG_VERSION" ]]; then
-              mark publish failure "tag does not match package version"
-              exit 1
-            fi
-          fi
-
-          mark registry pending "checking npm registry"
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            mark registry success "version already exists on npm"
-            mark published success "npm version verified"
-            exit 0
-          fi
-          mark registry success "version not present; publishing"
-
-          mark publish pending "publishing with trusted publishing"
-          if ! npm install --global npm@latest; then
-            mark publish failure "npm CLI upgrade failed"
-            exit 1
-          fi
-          if [[ "$PACKAGE_VERSION" == *-* ]]; then
-            if ! npm publish --provenance --tag prelatest; then
-              mark publish failure "npm publish failed"
-              exit 1
-            fi
-          else
-            if ! npm publish --provenance --tag latest; then
-              mark publish failure "npm publish failed"
-              exit 1
-            fi
-          fi
-          mark publish success "npm publish completed"
-          mark published success "npm version published"
-
-      - name: Finalize v0.4.2 stable tag and release
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Require approved prerelease tag
         shell: bash
         run: |
           set -euo pipefail
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [[ "$PACKAGE_VERSION" != "0.4.2" ]]; then
-            exit 0
-          fi
-
-          git fetch --force --tags
-          if git rev-parse -q --verify refs/tags/v0.4.2 >/dev/null; then
-            TARGET="$(git rev-list -n 1 v0.4.2)"
-            if [[ "$TARGET" != "$GITHUB_SHA" ]]; then
-              echo "existing v0.4.2 points to $TARGET, expected $GITHUB_SHA" >&2
-              exit 1
-            fi
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a v0.4.2 "$GITHUB_SHA" -m "dsh-lcx-codex v0.4.2"
-            git push origin refs/tags/v0.4.2
-          fi
-
-          if ! gh release view v0.4.2 >/dev/null 2>&1; then
-            gh release create v0.4.2 \
-              --title "v0.4.2" \
-              --notes "Stable zero-functional-change promotion of the fully validated 0.4.2-pre.1 runtime. LCX ON owns the GPT Responses final wire from ordinary turn 1 through tools, Native V2 Compact/Replay, restart/resume, and GPT model migration. npm latest: dsh-lcx-codex@0.4.2."
-          fi
+          test "$GITHUB_REF" = refs/tags/v0.4.3-pre.2
+          test "$(node -p "require('./package.json').version")" = 0.4.3-pre.2
+      - name: Install locked build and host dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix scripts/runtime-alpha2 --ignore-scripts --no-audit --no-fund
+          node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+      - name: Verify exact generated source and package
+        run: |
+          node scripts/check-generated.mjs
+          npm run typecheck
+          npm test
+          npm run test:schema
+          git diff --exit-code
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-public-package
+          path: ${{ runner.temp }}/dsh-lcx-codex-0.4.3-pre.2.tgz
+          if-no-files-found: error
+      - name: Publish verified artifact with provenance
+        run: |
+          npm install --global npm@latest
+          npm publish "$RUNNER_TEMP/dsh-lcx-codex-0.4.3-pre.2.tgz" --provenance --tag prelatest --ignore-scripts

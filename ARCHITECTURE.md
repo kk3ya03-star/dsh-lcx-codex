@@ -1,4 +1,4 @@
-# GPT Responses full-lifecycle ownership — 0.4.2-pre.1
+# GPT Responses full-lifecycle ownership — 0.4.3-pre.2 prerelease
 
 ## Product contract
 
@@ -7,9 +7,41 @@
 ## Responsibility boundary
 
 - **DSH** remains the Agent, Session, request assembly, model/settings/credential, tool-execution, attachment, pressure-policy and compaction-transaction owner.
-- **The rc.2 compatibility seam** projects DSH `GenerateOptions` and durable replay content into Pi's provider-neutral `Context`. It exists only because DSH 0.1.1-rc.2 does not publish `toPiContext()` / `toStreamChunks()` as stable package APIs.
-- **Plugin Pi 0.84.3** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing.
+- **The DSH adapter bridge** projects current DSH `GenerateOptions` and durable replay content into Pi's provider-neutral `Context`, reusing DSH attachment/file APIs and Pi's public serializers. It does not support older plugin configuration or checkpoints.
+- **Plugin Pi 0.85.1** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing. DSH 0.1.3-alpha.2 has bounded runtime evidence; see the README for the Windows host correction and remaining prerelease limitations.
 - **LCX** owns the final body, HTTP/SSE wire, safe error normalization, ordinary/compact/replay orchestration, Remote V2 opaque state and checkpoint compatibility.
+
+## Remote compaction implementation audit
+
+The September 7 audit compares exact DSH 0.1.3 source, installed Pi 0.85.1,
+OpenAI's public compaction guide, and OpenAI Codex commit
+`f3f53ee949eeaa9b6050699a783b94fe4ee8ff0d`. The protocol distinctions below
+describe the implementation rather than a guarantee for every compatible gateway.
+
+- LCX implements the Codex Remote V2 protocol: `/responses` plus a trailing
+  `compaction_trigger`, with retained client history before the opaque result.
+  Codex itself sets a 64,000-token retained-message budget. LCX's 24,000-token
+  assistant reserve / 3,000-token per-answer cap are additional fidelity policy,
+  not OpenAI requirements; these remain unchanged pending runtime measurements.
+- Do not confuse this with the public `/responses/compact` endpoint, which remains
+  supported by OpenAI and returns a canonical window that must be reused as-is,
+  or public `context_management` server-triggered inline compaction. Neither is
+  a drop-in substitute for the configured V2 route. LCX does not implement them.
+- Pi's public `stream`/`onPayload` can send a V2 trigger, but a deterministic test
+  confirms its normalized assistant result does not preserve opaque compaction
+  output. Keep the Native parser/replay bridge; do not wrap Pi with a second SSE
+  reader just to claim full reuse.
+- DSH retains compaction service/transaction ownership. The current integration
+  consumes the stock summarizer's `purpose: 'compaction'` call and identifies its
+  final directive by DSH `Message.source`, never by matching user prompt text.
+  Subclassing Basic would require replacing the profile's engine, not merely
+  registering another summarizer, so it is not adopted for an optional plugin.
+
+Settings use DSH's atomic namespace `mutate()` and confirm the resulting snapshot;
+the plugin does not implement rollback or a second settings persistence layer.
+JSON responses are incrementally bounded at 8 MiB by default; JSON/SSE error
+bodies use the smaller of the configured bound and 512 KiB. Oversized bodies are
+cancelled without retries. These are transport limits, not context-token budgets.
 
 ## Unified request path
 
@@ -43,13 +75,13 @@ Agent presets may isolate `compaction` and `toolResultPruner` inside entry-local
 
 ## rc.11 Native cache identity
 
-Native compaction and same-route replay reuse the active DSH/Pi conversation cache identity: the clamped session id is the `prompt_cache_key`, provider `cacheRetention` is respected, and `long` may emit `prompt_cache_retention: 24h` when supported. `cacheRetention: none` omits Native prompt-cache/session affinity. Ordinary Hosted Search remains intentionally isolated under `dsh-lcx-search:<route hash>` so search traffic cannot share the main conversation request/cache namespace.
+Native compaction and same-route replay reuse the active DSH/Pi conversation cache identity. Pi 0.85.1 explicit-mode routes use `prompt_cache_options: { ttl: "30m" }` for supported long retention, no cache-options field for short, and `{ mode: "explicit" }` without a key for none. Non-explicit routes may emit supported `prompt_cache_retention: "24h"`. Ordinary Hosted Search remains isolated under `dsh-lcx-search:<route hash>`.
 
 ## Design invariants
 
 1. **DSH owns compaction policy.** LCX never independently decides threshold, compact range, pruning, transaction boundaries or overflow retries.
 2. **Native success performs one compaction model request.** Basic summary is a failure fallback, not a parallel portable-copy generator.
-3. **DSH session log is the new checkpoint source of truth.** Opaque Native V2 state lives in `compaction/summary.rawOutput`; v3 sidecar access is legacy read-only.
+3. **DSH session log is the only checkpoint source of truth.** Opaque Native V2 state lives in `compaction/summary.rawOutput` as v5. There is no sidecar reader or old-format migration.
 4. **Opaque state is same-session only.** Provider, model, base URL and exact `sourceSessionId === currentSessionId` gate Native opaque replay. Verified parent/child ancestry authorizes portable migration only; a fork never sends the parent's opaque checkpoint state.
 5. **Route migration is transparent and transient.** Reconstruct shadowed DSH messages and hand them to the normal adapter; do not persist a second portable history copy.
 6. **Ordinary search has one model tool.** `web_search` is ordinary search; `websearch_gpt_advanced` exists only for parameters absent from `WebSearchRequest`; Alpha remains its own stateful protocol.
@@ -100,11 +132,7 @@ The fidelity prefix is capped at an estimated 64k tokens total. Up to 24k is res
 
 The DSH surface still stores only the short checkpoint marker. The retained wire items and opaque compaction state remain log-only in `compaction/summary.rawOutput`, so they do not inflate DSH's visible token-meter surface. They do, intentionally, increase the post-compaction provider request relative to an opaque-only checkpoint; the total explicit retention ceiling prevents this protection from defeating compaction.
 
-Compatibility:
-
-- `0.4.0-rc.3`: v4 checkpoint could contain only the opaque item.
-- `0.4.0-rc.4`: v4 checkpoint retained client messages but not assistant-visible answers.
-- `0.4.0-rc.5`: writes `lcx-native-compaction-v5`; when replaying a v4 checkpoint it reconstructs the shadowed DSH transcript and derives the v5 fidelity prefix before reusing the original opaque state.
+Supported checkpoint contract: `lcx-native-compaction-v5` only. Unknown, older and invalid LCX checkpoint formats fail closed. Portable reconstruction is reserved for current-format route/session changes, not old-format migration.
 
 
 
@@ -112,6 +140,6 @@ Compatibility:
 
 DSH intentionally keeps `SearchProvider.search()` small: the provider receives the normalized search request and cancellation signal, not the calling Agent. Ordinary Hosted Search still needs the exact active GPT Responses route, especially when a user switches between Sol/Luna or multiple proxy routes.
 
-rc.7 therefore captures route identity at the model-facing `tools/execute` boundary for `web_search` and propagates it through Node `AsyncLocalStorage` only for the lifetime of that tool execution. `LcxResponsesSearchProvider.search()` resolves the route from that async context and falls back to the plugin-configured route only when no compatible active Agent route exists. No fields are added to the DSH `web_search` schema.
+Route identity is captured at the model-facing `tools/execute` boundary for `web_search` and propagated through Node `AsyncLocalStorage` only for that execution. Provider availability and search both require that selected DSH GPT Responses route; there is no plugin-configured fallback. No fields are added to the DSH `web_search` schema.
 
 Hosted Search uses a dedicated stable cache namespace (`dsh-lcx-search:<route fingerprint>`) rather than the Native replay namespace (`dsh-lcx:<route fingerprint>`). The two requests have different prefixes and should not be intentionally co-routed under one prompt-cache key.

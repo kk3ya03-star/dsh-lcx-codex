@@ -26,9 +26,13 @@ import {
 import { AlphaCapabilityStore, alphaCapabilityFingerprint, alphaCapabilityUsable } from '../lib/web-search-capability.js'
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
-import { authenticatedHeaders, promptCacheKey, promptCacheRetention, resolveResponsesRouteConfig } from '../lib/route.js'
+import { authenticatedHeaders, promptCacheKey, promptCacheRetention, promptCacheSessionId, resolveResponsesRouteConfig } from '../lib/route.js'
 import { buildResponsesBody } from '../lib/responses-request.js'
-import { replayBody, requestNativeReplay } from '../lib/responses-replay.js'
+
+function sseResponse(events, status = 200) {
+  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
+  return new Response(body, { status, headers: { 'content-type': 'text/event-stream' } })
+}
 
 test('Native cache namespace matches the DSH/Pi session cache identity', async () => {
   const sessionId = 'session-19104ea5-757f-4d2f-8c02-3601a6b8de31'
@@ -36,6 +40,7 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'none' }), undefined)
   assert.equal(promptCacheKey({ sessionId: 'x'.repeat(80) }, { cacheRetention: 'short' }), 'x'.repeat(64))
   assert.equal(promptCacheRetention({ cacheRetention: 'long', supportsLongCacheRetention: true }), '24h')
+  assert.equal(promptCacheRetention({ cacheRetention: 'long' }), undefined)
   assert.equal(promptCacheRetention({ cacheRetention: 'short' }), undefined)
 
   const envName = 'LCX_TEST_CACHE_HEADER_KEY'
@@ -60,28 +65,207 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   }
 })
 
+test('root and authoritative DSH subagents share cache identity without sharing correlation identity', async () => {
+  const root = { id: 'session-root', header: {} }
+  const child = { id: 'session-child', header: { origin: 'subagent', parentSession: root.id } }
+  const grandchild = { id: 'session-grandchild', header: { origin: 'subagent', parentSession: child.id } }
+  const ordinaryFork = { id: 'session-fork', header: { parentSession: root.id } }
+  const records = new Map([root, child, grandchild, ordinaryFork].map((session) => [session.id, session]))
+  const ctx = { sessions: { get: (id) => records.get(id) } }
+  const config = { cacheRetention: 'short' }
+
+  assert.equal(promptCacheSessionId({ sessionId: root.id }, config, ctx), root.id)
+  assert.equal(promptCacheSessionId({ sessionId: child.id }, config, ctx), root.id)
+  assert.equal(promptCacheSessionId({ sessionId: grandchild.id }, config, ctx), root.id)
+  assert.equal(promptCacheSessionId({ sessionId: ordinaryFork.id }, config, ctx), ordinaryFork.id)
+  assert.equal(promptCacheKey({ sessionId: child.id }, config, ctx), root.id)
+
+  const envName = 'LCX_TEST_CHILD_CORRELATION_KEY'
+  const previous = process.env[envName]
+  process.env[envName] = 'redacted-test-value'
+  try {
+    const headers = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, root.id, child.id)
+    assert.equal(headers.session_id, root.id)
+    assert.equal(headers['x-client-request-id'], child.id)
+  } finally {
+    if (previous === undefined) delete process.env[envName]
+    else process.env[envName] = previous
+  }
+})
+
+test('invalid or incomplete subagent lineage falls back to the child cache identity', () => {
+  const missing = { id: 'missing-child', header: { origin: 'subagent', parentSession: 'absent' } }
+  const loopA = { id: 'loop-a', header: { origin: 'subagent', parentSession: 'loop-b' } }
+  const loopB = { id: 'loop-b', header: { origin: 'subagent', parentSession: 'loop-a' } }
+  const records = new Map([missing, loopA, loopB].map((session) => [session.id, session]))
+  const ctx = { sessions: { get: (id) => records.get(id) } }
+  assert.equal(promptCacheSessionId({ sessionId: missing.id }, { cacheRetention: 'short' }, ctx), missing.id)
+  assert.equal(promptCacheSessionId({ sessionId: loopA.id }, { cacheRetention: 'short' }, ctx), loopA.id)
+})
+
 function responsesRouteFixture(providers, fallbackOverrides = {}) {
   return {
     ctx: { settings: { get: () => ({ providers }) } },
     fallback: {
-      provider: 'lcx', model: 'gpt-5.6-sol', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY',
       timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 1, requestImagePixelBudget: 1, requestImageMaxBytes: 1,
       ...fallbackOverrides,
     },
   }
 }
 
-test('legal host custom-provider profile receives plugin-owned GPT-5.6 cache capability', () => {
+test('DSH provider profiles are the sole route authority; old plugin fields cannot supply a route', () => {
+  const { ctx, fallback } = responsesRouteFixture({
+    lcx: {
+      api: 'openai-responses',
+      baseURL: 'https://dsh-profile.example/v1',
+      apiKeyEnv: 'DSH_PROFILE_KEY',
+      headers: { 'x-profile-owner': 'dsh' },
+    },
+  }, {
+    baseURL: 'https://legacy-lcx.example/v1',
+    apiKeyEnv: 'LCX_FALLBACK_KEY',
+    headers: { 'x-fallback-owner': 'lcx' },
+  })
+  const profileRoute = resolveResponsesRouteConfig(ctx, {
+    provider: 'lcx', model: 'gpt-5.6-sol',
+  }, fallback)
+  assert.deepEqual(
+    {
+      api: profileRoute?.api,
+      baseURL: profileRoute?.baseURL,
+      apiKeyEnv: profileRoute?.apiKeyEnv,
+      headers: profileRoute?.headers,
+    },
+    {
+      api: 'openai-responses',
+      baseURL: 'https://dsh-profile.example/v1',
+      apiKeyEnv: 'DSH_PROFILE_KEY',
+      headers: { 'x-profile-owner': 'dsh' },
+    },
+    'a selected DSH profile must replace every route and credential fallback field',
+  )
+
+  const noHeaders = responsesRouteFixture({
+    lcx: {
+      api: 'openai-responses',
+      baseURL: 'https://dsh-profile.example/v1',
+      apiKeyEnv: 'DSH_PROFILE_KEY',
+    },
+  }, {
+    headers: { 'x-fallback-owner': 'lcx' },
+  })
+  assert.deepEqual(
+    resolveResponsesRouteConfig(noHeaders.ctx, {
+      provider: 'lcx', model: 'gpt-5.6-sol',
+    }, noHeaders.fallback)?.headers,
+    {},
+    'a selected DSH profile without headers must not inherit LCX fallback headers',
+  )
+
+  const legacy = responsesRouteFixture({}, {
+    provider: 'lcx', model: 'gpt-5.6-sol', baseURL: 'https://old.example/v1', apiKeyEnv: 'OLD_KEY',
+  })
+  const compatibilityRoute = resolveResponsesRouteConfig(legacy.ctx, {
+    provider: legacy.fallback.provider, model: legacy.fallback.model,
+  }, legacy.fallback)
+  assert.equal(compatibilityRoute, undefined)
+
+  assert.equal(
+    resolveResponsesRouteConfig(legacy.ctx, {
+      provider: 'other-provider', model: legacy.fallback.model,
+    }, legacy.fallback),
+    undefined,
+    'an unconfigured provider must not become the LCX fallback route',
+  )
+  assert.equal(
+    resolveResponsesRouteConfig(legacy.ctx, {
+      provider: legacy.fallback.provider, model: 'gpt-other-model',
+    }, legacy.fallback),
+    undefined,
+    'no legacy provider/model pair may supply an unconfigured route',
+  )
+
+  const nonResponses = responsesRouteFixture({
+    lcx: {
+      api: 'anthropic-messages',
+      baseURL: 'https://non-responses.example/v1',
+      apiKeyEnv: 'NON_RESPONSES_KEY',
+    },
+  })
+  assert.equal(
+    resolveResponsesRouteConfig(nonResponses.ctx, {
+      provider: 'lcx', model: 'gpt-5.6-sol',
+    }, nonResponses.fallback),
+    undefined,
+    'a selected non-Responses DSH profile must fail closed instead of falling back',
+  )
+
+  const nonGptFallback = responsesRouteFixture({}, { model: 'claude-legacy' })
+  assert.equal(
+    resolveResponsesRouteConfig(nonGptFallback.ctx, {
+      provider: nonGptFallback.fallback.provider,
+      model: nonGptFallback.fallback.model,
+    }, nonGptFallback.fallback),
+    undefined,
+    'a non-GPT route cannot activate the LCX compatibility fallback',
+  )
+})
+
+test('legal host custom-provider profile uses Pi 0.85.1 long cache semantics for GPT-5.6 routes', () => {
   const profile = { api: 'openai-responses', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY' }
-  const { ctx, fallback } = responsesRouteFixture({ lcx: profile }, { supportsExplicitPromptCacheMode: true })
+  const { ctx, fallback } = responsesRouteFixture({ lcx: profile }, { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true })
   for (const model of ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']) {
     const resolved = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model }, fallback)
     assert.equal(resolved?.responsesCompat?.supportsExplicitPromptCacheMode, true)
+    assert.equal(resolved?.cacheRetention, 'long')
 
     const descriptor = { id: resolved.model, provider: resolved.provider, reasoning: true, compat: resolved.responsesCompat }
-    const body = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-route', cacheRetention: resolved.cacheRetention })
+    const body = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-route', promptCacheRetention: promptCacheRetention(resolved), cacheRetention: resolved.cacheRetention })
+    assert.equal(body.prompt_cache_retention, undefined)
     assert.deepEqual(body.prompt_cache_options, { ttl: '30m' })
   }
+})
+
+test('explicit cache overrides win and unsupported long retention defaults to short', () => {
+  const base = { api: 'openai-responses', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY' }
+  for (const cacheRetention of ['short', 'none']) {
+    const { ctx, fallback } = responsesRouteFixture(
+      { lcx: { ...base, cacheRetention } },
+      { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true },
+    )
+    const resolved = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, fallback)
+    assert.equal(resolved?.cacheRetention, cacheRetention)
+    const descriptor = { id: resolved.model, provider: resolved.provider, reasoning: true, compat: resolved.responsesCompat }
+    const body = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-explicit', promptCacheRetention: promptCacheRetention(resolved), cacheRetention: resolved.cacheRetention })
+    assert.equal(body.prompt_cache_retention, undefined)
+    assert.equal(body.prompt_cache_key, cacheRetention === 'none' ? undefined : 'session-explicit')
+    assert.deepEqual(body.prompt_cache_options, cacheRetention === 'none' ? { mode: 'explicit' } : undefined)
+  }
+
+  for (const profile of [base, { ...base, cacheRetention: 'long' }]) {
+    const unsupported = responsesRouteFixture(
+      { lcx: profile },
+      { supportsLongCacheRetention: false, supportsExplicitPromptCacheMode: true, responsesCompat: { supportsLongCacheRetention: false } },
+    )
+    const resolved = resolveResponsesRouteConfig(unsupported.ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, unsupported.fallback)
+    assert.equal(resolved?.supportsLongCacheRetention, false)
+    assert.equal(resolved?.cacheRetention, 'short')
+    assert.equal(promptCacheRetention(resolved), undefined)
+    const descriptor = { id: resolved.model, provider: resolved.provider, reasoning: true, compat: resolved.responsesCompat }
+    const body = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-unsupported', cacheRetention: resolved.cacheRetention })
+    assert.equal(body.prompt_cache_retention, undefined)
+    assert.equal(body.prompt_cache_key, 'session-unsupported')
+    assert.equal(body.prompt_cache_options, undefined)
+  }
+})
+
+test('unknown long-cache capability stays on the conservative short path', () => {
+  const profile = { api: 'openai-responses', baseURL: 'https://relay.example/v1', apiKeyEnv: 'LCX_API_KEY' }
+  const { ctx, fallback } = responsesRouteFixture({ relay: profile })
+  const resolved = resolveResponsesRouteConfig(ctx, { provider: 'relay', model: 'gpt-unknown-without-metadata' }, fallback)
+  assert.equal(resolved?.supportsLongCacheRetention, false)
+  assert.equal(resolved?.cacheRetention, 'short')
+  assert.equal(promptCacheRetention(resolved), undefined)
 })
 
 test('plugin-owned cache capability stays off for older, foreign, and non-opted routes', () => {
@@ -99,37 +283,10 @@ test('plugin-owned cache capability stays off for older, foreign, and non-opted 
   assert.notEqual(foreign?.responsesCompat?.supportsExplicitPromptCacheMode, true)
 })
 
-test('ordinary, Native compaction, and replay share current and legacy cache policy', () => {
-  const legacyCompact = buildNativeCompactionBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
-  const legacyReplay = replayBody({ model: 'gpt-5.6-luna', input: [], promptCacheKey: 'session-x', promptCacheRetention: '24h' })
-  assert.equal(legacyCompact.prompt_cache_key, 'session-x')
-  assert.equal(legacyCompact.prompt_cache_retention, '24h')
-  assert.equal(legacyCompact.prompt_cache_options, undefined)
-  assert.equal(legacyReplay.prompt_cache_key, 'session-x')
-  assert.equal(legacyReplay.prompt_cache_retention, '24h')
-  assert.equal(legacyReplay.prompt_cache_options, undefined)
-
-  const descriptor = { id: 'gpt-5.6-sol', provider: 'lcx', reasoning: true, compat: { supportsExplicitPromptCacheMode: true } }
-  const currentOrdinary = buildResponsesBody({ model: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
-  const currentCompact = buildNativeCompactionBody({ model: descriptor.id, modelDescriptor: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
-  const currentReplay = replayBody({ model: descriptor.id, modelDescriptor: descriptor, input: [], promptCacheKey: 'session-y', cacheRetention: 'short' })
-  for (const body of [currentOrdinary, currentCompact, currentReplay]) {
-    assert.equal(body.prompt_cache_key, 'session-y')
-    assert.equal(body.prompt_cache_retention, undefined)
-    assert.deepEqual(body.prompt_cache_options, { ttl: '30m' })
-  }
-})
-
-function sseResponse(events) {
-  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
-  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
-}
-
 test('Native V2 body appends exactly one compaction trigger and preserves request envelope', () => {
   const body = buildNativeCompactionBody({
     model: 'gpt-5.6-sol',
     input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
-    instructions: 'system',
     tools: [{ name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }],
     promptCacheKey: 'cache-key',
   })
@@ -138,7 +295,7 @@ test('Native V2 body appends exactly one compaction trigger and preserves reques
   assert.equal(body.store, false)
   assert.equal(body.input.filter((item) => item.type === 'compaction_trigger').length, 1)
   assert.deepEqual(body.input.at(-1), { type: 'compaction_trigger' })
-  assert.equal(body.instructions, 'system')
+  assert.equal(body.instructions, undefined)
   assert.equal(body.prompt_cache_key, 'cache-key')
   assert.equal(body.tools[0].type, 'function')
 })
@@ -248,12 +405,13 @@ test('Alpha response parser strips encrypted fields and keeps refs', () => {
   assert.equal(parsed.sources[0].url, 'https://example.com/')
 })
 
-test('DSH 0.1.1 request-image projection is used for Native serialization', async () => {
+test('DSH 0.1.3 request-image projection covers user and tool-result images', async () => {
   let policy
   let readImageCalls = 0
   const ref = { attachmentId: 'sha256:test', mediaType: 'image/png', bytes: 2_000_000, width: 2048, height: 2048 }
   const ctx = {
     attachments: {
+      imageHostPath(input) { assert.equal(input, ref); return 'F:/dsh/attachments/object.png' },
       async readImageRequest(input, nextPolicy) {
         assert.equal(input, ref)
         policy = nextPolicy
@@ -264,14 +422,35 @@ test('DSH 0.1.1 request-image projection is used for Native serialization', asyn
       },
       async readImage() { readImageCalls += 1; throw new Error('legacy readImage must not be used') },
     },
+    fs: { processPathFromHostPath(path) { assert.equal(path, 'F:/dsh/attachments/object.png'); return '/sandbox/attachments/object.png' } },
     get(name) { return this[name] },
   }
-  const result = await serializeDshMessages([{ role:'user', content:[{ type:'image', attachment:ref }] }], ctx, {
+  const result = await serializeDshMessages([
+    {
+      role: 'assistant',
+      source: { kind: 'model', provider: 'fixture', model: 'fixture-model' },
+      content: [{ type: 'tool-call', id: 'call-image', name: 'read_image', arguments: '{}' }],
+    },
+    { role:'user', content:[
+      { type:'image', attachment:ref },
+      { type:'tool-result', toolCallId:'call-image', toolName:'read_image', content:[{ type:'image', attachment:ref }] },
+    ] },
+  ], ctx, {
     imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:20*1024*1024,
   })
   assert.deepEqual(policy, { maxPixels:123456, maxBytes:654321 })
   assert.equal(readImageCalls, 0)
-  assert.equal(result.input[0].content[0].type, 'input_image')
+  assert.equal(result.input.some(item => item?.content?.some?.(part => part.type === 'input_image')), true)
+  assert.equal(result.input.some(item => item?.type === 'function_call_output' && item.output?.some?.(part => part.type === 'input_image')), true)
+  assert.equal(JSON.stringify(result.input).includes('request preview 10x10px'), true)
+  assert.equal(JSON.stringify(result.input).includes('/sandbox/attachments/object.png'), true)
+  assert.equal(result.imageMap.size, 1)
+
+  const offloaded = await serializeDshMessages([{ role:'user', content:[{ type:'image', attachment:ref }] }], ctx, {
+    imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:1,
+  })
+  assert.equal(JSON.stringify(offloaded.input).includes('image omitted to fit request image limits'), true)
+  assert.equal(JSON.stringify(offloaded.input).includes('/sandbox/attachments/object.png'), true)
 })
 
 
@@ -839,26 +1018,26 @@ test('Alpha probe rejects production-parsed HTTP-200 screenshot prose failures',
   assert.equal(result.classification, 'command-capable')
   assert.equal(result.actions.screenshot, 'unsupported')
 })
-test('Alpha capability store rejects older records after command-error hardening moves the probe to v11', () => {
+test('Alpha capability store requires a new probe after reference-error hardening', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-'))
   try {
-    assert.equal(ALPHA_PROBE_VERSION, 11)
+    assert.equal(ALPHA_PROBE_VERSION, 12)
     const fingerprint = 'a'.repeat(64)
-    const v7Record = {
+    const previousRecord = {
       classification: 'command-capable',
       actions: { search_query: 'supported', open: 'supported', find: 'supported' },
       probedAt: '2026-08-22T00:00:00.000Z',
       schemaFingerprint: 'alpha-schema',
-      probeVersion: 7,
+      probeVersion: 11,
       provenance: 'unavailable',
     }
     const file = join(directory, 'capabilities.json')
-    writeFileSync(file, `${JSON.stringify({ version: 1, capabilities: { [fingerprint]: v7Record } })}\n`)
+    writeFileSync(file, `${JSON.stringify({ version: 1, capabilities: { [fingerprint]: previousRecord } })}\n`)
     const store = new AlphaCapabilityStore(file)
     assert.equal(store.get(fingerprint), undefined)
-    const v11Record = { ...v7Record, probeVersion: ALPHA_PROBE_VERSION }
-    store.put(fingerprint, v11Record)
-    assert.deepEqual(store.get(fingerprint), v11Record)
+    const currentRecord = { ...previousRecord, probeVersion: ALPHA_PROBE_VERSION }
+    store.put(fingerprint, currentRecord)
+    assert.deepEqual(store.get(fingerprint), currentRecord)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -912,23 +1091,6 @@ test('Native compaction rejects orphan function_call_output', async () => {
     },
   }])
   await assert.rejects(parseNativeCompactionSse(response), (error) => error?.code === 'LCX_COMPACT_INVALID_RESPONSE')
-})
-
-test('Native replay requires response.completed', async () => {
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => sseResponse([{
-    type: 'response.done',
-    response: { id: 'resp_replay_done', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x' }] }] },
-  }])
-  try {
-    const chunks = []
-    for await (const chunk of requestNativeReplay({ baseURL: 'https://example.invalid/v1', model: 'gpt-5.6-terra', input: [], headers: {}, maxAttempts: 1 })) chunks.push(chunk)
-    const finish = chunks.find((chunk) => chunk.type === 'finish')
-    assert.equal(finish?.reason?.kind, 'error')
-    assert.equal(finish?.reason?.failure?.code, 'TRANSPORT')
-  } finally {
-    globalThis.fetch = originalFetch
-  }
 })
 
 test('Native compaction exposes only safe upstream machine fields', async () => {
