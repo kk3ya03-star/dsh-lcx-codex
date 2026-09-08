@@ -3,11 +3,10 @@ name: Publish to npm
 on:
   push:
     tags: ['v*']
-    branches: ['release-trigger/0.4.3-pre.3']
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 jobs:
@@ -16,9 +15,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: v0.4.3-pre.3
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -27,9 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = a11f63fb836797985737784d6687ba17aaa3ea4e
+          test "$GITHUB_REF" = refs/tags/v0.4.3-pre.3
           test "$(node -p "require('./package.json').version")" = 0.4.3-pre.3
-          test "$(git rev-list -n1 v0.4.3-pre.3)" = a11f63fb836797985737784d6687ba17aaa3ea4e
       - name: Install locked build and host dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -52,6 +47,3 @@ jobs:
         run: |
           npm install --global npm@latest
           npm publish "$RUNNER_TEMP/dsh-lcx-codex-0.4.3-pre.3.tgz" --provenance --tag prelatest --ignore-scripts
-      - name: Remove one-time release trigger branch
-        if: success()
-        run: git push origin --delete release-trigger/0.4.3-pre.3 || true
