@@ -40,7 +40,7 @@ export declare function readAgentRouteState(agent: unknown): {
     options: unknown;
     sessionId: string;
 };
-export declare function scopedToolRuntime(agent: unknown): Pick<ToolRuntime, "register"> | undefined;
+export declare function scopedToolRuntime(agent: unknown): (Pick<ToolRuntime, "register"> & Partial<Pick<ToolRuntime, "get">>) | undefined;
 export declare function tokenMeterTotal(value: unknown, session: Session): number | undefined;
 export declare function sessionsService(ctx: unknown): Pick<SessionStore, "get"> | undefined;
 export declare function sessionFor(ctx: unknown, sessionId: string): Session | undefined;

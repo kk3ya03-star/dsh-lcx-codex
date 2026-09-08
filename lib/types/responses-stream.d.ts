@@ -1,5 +1,6 @@
 import { type Model as PiModel } from "@earendil-works/pi-ai";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
+import { type GrokNativeReplayRoute } from "./grok-native-search.js";
 type UnknownRecord = Record<string, unknown>;
 type PiResponsesModel = PiModel<"openai-responses">;
 type ManagedFailure = {
@@ -10,6 +11,11 @@ type ManagedFailure = {
     providerRetryAfterMs?: number;
 };
 type AbortLike = Pick<AbortSignal, "aborted" | "reason">;
+export type ServerToolUsage = {
+    webSearchCalls: number;
+    xSearchCalls: number;
+    total: number;
+};
 type StreamRequestOptions = {
     baseURL: string;
     provider: string;
@@ -20,8 +26,13 @@ type StreamRequestOptions = {
     headers?: Record<string, string>;
     signal?: AbortSignal;
     timeoutMs?: number;
+    applyDefaultTimeout?: boolean;
+    streamIdleTimeoutMs?: number;
     maxAttempts?: number;
     maxResponseBytes?: number;
+    serverToolTypes?: ReadonlySet<string>;
+    nativeReplayRoute?: GrokNativeReplayRoute;
+    onServerToolUsage?: (usage: ServerToolUsage) => void;
 };
 /**
  * Provider bodies/messages are deliberately not surfaced. Only a stable class and safe facts leave the wire boundary.
@@ -46,6 +57,8 @@ export declare function managedFailureChunk(error: unknown, signal?: AbortLike):
  * @param {number} [options.timeoutMs]
  * @param {number} [options.maxAttempts]
  * @param {number} [options.maxResponseBytes]
+ * @param {ReadonlySet<string>} [options.serverToolTypes]
+ * @param {(usage: ServerToolUsage) => void} [options.onServerToolUsage]
  */
-export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, maxAttempts, maxResponseBytes, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, any>;
+export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, applyDefaultTimeout, streamIdleTimeoutMs, maxAttempts, maxResponseBytes, serverToolTypes, nativeReplayRoute, onServerToolUsage, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, unknown>;
 export {};

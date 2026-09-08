@@ -7,7 +7,14 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
   let client, injection, snapshot, listener, render
   const dictionaries = new Map(), disposers = []
   let localeNamespace
-  const values = { enabled: false, webSearch: false, advancedHostedSearch: false, alphaSearch: false }
+  const values = {
+    enabled: false,
+    webSearch: false,
+    advancedHostedSearch: false,
+    alphaSearch: false,
+    grokNativeWebSearch: false,
+    grokNativeXSearch: false,
+  }
   const writes = []
   const scope = {
     status: 'ready', writable: true,
@@ -92,6 +99,24 @@ test('client saves changed fields in one DSH atomic mutation', async () => {
   assert.equal(f.values.webSearch, true)
   assert.equal(f.state().dirty, false)
   assert.equal(f.state().saveError, false)
+})
+
+test('Grok native search settings are independent of the GPT lifecycle switch', async () => {
+  const f = fixture()
+  const tree = JSON.stringify(f.render())
+  assert.match(tree, /Grok native search/)
+  assert.match(tree, /native Web Search/)
+  assert.match(tree, /native X Search/)
+  f.injection.edit('grokNativeWebSearch', true)
+  f.injection.edit('grokNativeXSearch', true)
+  await f.save()
+  assert.deepEqual(f.writes, [[
+    { op: 'set', path: ['grokNativeWebSearch'], value: true },
+    { op: 'set', path: ['grokNativeXSearch'], value: true },
+  ]])
+  assert.equal(f.values.enabled, false)
+  assert.equal(f.values.grokNativeWebSearch, true)
+  assert.equal(f.values.grokNativeXSearch, true)
 })
 
 test('client contains rejected saves, keeps draft and renders a safe retryable error', async () => {

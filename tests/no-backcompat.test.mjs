@@ -37,7 +37,7 @@ test('remote compaction trusts DSH directive provenance, never matching user pro
 
 function harness({ profiles = { fixture: profile }, enabled = true, session, config = {}, settings = {} } = {}) {
   const handlers = new Map()
-  let webProvider, schema, entry, onChange
+  let schema, entry, onChange
   const imageOptions = []
   const ctx = {
     logger: { info() {}, warn() {} },
@@ -54,7 +54,7 @@ function harness({ profiles = { fixture: profile }, enabled = true, session, con
         return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/png', attachment: ref, bytes: 3, width: 1, height: 1 }
       },
     },
-    web: { searchProviderId: 'native', registerSearchProvider(provider) { webProvider = provider } },
+    web: { searchProviderId: 'native', registerSearchProvider() { throw new Error('global provider registration is forbidden') } },
     tools: { register: () => () => {} },
     settings: {
       get: () => ({ providers: profiles }),
@@ -72,7 +72,7 @@ function harness({ profiles = { fixture: profile }, enabled = true, session, con
     effect() {},
   }
   apply(ctx, config)
-  return { ctx, handlers, webProvider, schema, entry, imageOptions, change() { onChange() } }
+  return { ctx, handlers, schema, entry, imageOptions, change() { onChange() } }
 }
 
 test('removed config and stored settings fields are absent, not migration aliases', () => {
@@ -81,7 +81,7 @@ test('removed config and stored settings fields are absent, not migration aliase
     assert.equal(Object.hasOwn(fields, field), false, field)
   }
   const h = harness()
-  assert.deepEqual(Object.keys(h.schema.dict).sort(), ['advancedHostedSearch', 'alphaSearch', 'enabled', 'webSearch'])
+  assert.deepEqual(Object.keys(h.schema.dict).sort(), ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'webSearch'])
   for (const path of ['src/legacy-v3.ts', 'lib/legacy-v3.js', 'lib/types/legacy-v3.d.ts']) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, path)
   }
@@ -97,8 +97,8 @@ test('missing, incomplete, malformed, and non-GPT DSH routes fail closed despite
     assert.equal(resolveResponsesRouteConfig(h.ctx, selected, old), undefined)
     const chunks = await collect(h.handlers.get('llm/stream')({ ...selected, messages: [user('hello')] }, () => { throw new Error('native path must not run') }))
     assert.equal(chunks.at(-1).reason.failure.code, 'NO_ADAPTER')
-    assert.equal(h.webProvider.available(), false)
-    await assert.rejects(h.webProvider.search({ query: 'hello' }), { code: 'LCX_WEB_ROUTE_UNAVAILABLE' })
+    assert.equal(h.ctx.web.searchProviderId, 'native')
+    assert.equal(h.handlers.has('tools/execute'), false)
   }
   const h = harness()
   for (const route of [{}, { provider: 'fixture' }, { model: 'gpt-fixture' }, { ...selected, model: 'claude-fixture' }]) {
@@ -112,20 +112,22 @@ test('LCX OFF delegates the original stream without inspecting unsupported old h
   assert.equal(h.handlers.get('llm/stream')({ messages: [user('[dsh-lcx-codex-v3-checkpoint:synthetic]')] }, () => native), native)
 })
 
-test('Hosted provider availability is bound to the current DSH tool execution route', async () => {
+test('LCX ON still delegates unknown and non-GPT model routes to DSH', () => {
+  const h = harness({ enabled: true })
+  for (const options of [
+    { messages: [user('unknown')] },
+    { provider: 'anthropic', model: 'claude-fixture', messages: [user('claude')] },
+    { provider: 'xai', model: 'grok-4.6', messages: [user('grok')] },
+  ]) {
+    const native = { options }
+    assert.equal(h.handlers.get('llm/stream')(options, () => native), native)
+  }
+})
+
+test('Hosted search does not install a global provider or execution wrapper', () => {
   const h = harness()
-  const execute = h.handlers.get('tools/execute')
-  assert.equal(h.webProvider.available(), false)
-  await execute({ name: 'web_search', agent: { options: selected } }, async () => {
-    assert.equal(h.webProvider.available(), true)
-    await Promise.resolve()
-    assert.equal(h.webProvider.available(), true)
-  })
-  assert.equal(h.webProvider.available(), false)
-  await execute({ name: 'web_search', agent: { options: { ...selected, model: 'claude-fixture' } } }, async () => {
-    assert.equal(h.webProvider.available(), false)
-    await assert.rejects(h.webProvider.search({ query: 'hello' }), { code: 'LCX_WEB_ROUTE_UNAVAILABLE' })
-  })
+  assert.equal(h.ctx.web.searchProviderId, 'native')
+  assert.equal(h.handlers.has('tools/execute'), false)
 })
 
 test('old marker-only checkpoints are rejected before network access', async () => {

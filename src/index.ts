@@ -9,10 +9,15 @@ import type {
 } from "@deepseek-ai/dsh-llm";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type {
+  ToolDefinition,
   ToolDispatchExecution,
-  ToolExecutionResult,
+  ToolRunContext,
 } from "@deepseek-ai/dsh-tools";
 import type { WebSearchRequest, WebSearchResult } from "@deepseek-ai/dsh-web";
+import {
+  WEB_SEARCH_MAX_QUERIES,
+  applyWebSearchTool,
+} from "@deepseek-ai/dsh-tool-web";
 import "@deepseek-ai/dsh-agent";
 import "@deepseek-ai/dsh-tools";
 import "@deepseek-ai/dsh-web";
@@ -20,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { fetchJsonWithRetry } from "./transport.js";
 import {
   agentSessionId,
@@ -30,33 +36,31 @@ import {
   installCompactionPatch,
   patchCompactionConfig,
   patchToolResultPruner,
-  patchVisibleWebSearchTimeout,
   readAgentRouteState,
-  readWebSearchProvider,
-  refreshVisibleWebSearchTimeouts,
   resolveAgentService,
   resolveContextService,
   resolveScopedService,
   restoreCompactionConfig,
   restoreCompactionPatches,
   restoreToolResultPruner,
-  restoreVisibleWebSearchTimeouts,
   sessionFor,
   sessionFromAgent,
   sessionsService,
   scopedToolRuntime,
   tokenMeterTotal,
   toolResultPrunerState,
-  writeWebSearchProvider,
 } from "./dsh-compat.js";
 import type { CompactionPatchRecords } from "./dsh-compat.js";
 import {
+  authenticatedGrokHeaders,
   authenticatedHeaders,
   currentRoute,
   generationControlsFromSession,
+  grokPromptCacheSessionId,
   promptCacheKey,
   promptCacheRetention,
   promptCacheSessionId,
+  resolveGrokResponsesRouteConfig,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
@@ -112,6 +116,15 @@ import {
 } from "./web-search-capability.js";
 import { AlphaRefStore } from "./web-search-ref-store.js";
 import { ServiceMutex } from "./service-mutex.js";
+import {
+  GROK_NATIVE_SERVER_TOOL_TYPES,
+  grokNativeSearchEnabled,
+  grokVisibleFunctionTools,
+  grokWireTools,
+  restoreGrokNativeReplay,
+  type GrokNativeReplayRoute,
+  type GrokNativeSearchState,
+} from "./grok-native-search.js";
 
 export const name = "lcx-codex";
 export const inject = ["llm", "web", "sessions", "tools", "settings", "credentials", "attachments", "fs"];
@@ -222,6 +235,17 @@ function routeWithPolicies(
   };
 }
 
+function grokReplayRoute(
+  route: { provider: string; model: string; baseURL: string; sessionId: string },
+  config: Pick<ResponsesRouteConfig, "apiKeyEnv" | "headers">,
+): GrokNativeReplayRoute {
+  return {
+    ...route,
+    apiKeyEnv: config.apiKeyEnv,
+    headers: config.headers,
+  };
+}
+
 type HostAgent = Agent;
 type HostExecution = ToolDispatchExecution;
 type HostContext = Context;
@@ -237,11 +261,18 @@ type AlphaToolRegistration = {
 };
 
 type AlphaToolRegistry = Map<object, AlphaToolRegistration>;
+type GptToolRegistration = {
+  fingerprint: string;
+  dispose: () => void;
+};
+type GptToolRegistry = Map<object, GptToolRegistration>;
 type SettingsState = {
   enabled: boolean;
   webSearch: boolean;
   advancedHostedSearch: boolean;
   alphaSearch: boolean;
+  grokNativeWebSearch: boolean;
+  grokNativeXSearch: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -312,6 +343,8 @@ const SettingsSchema = z.object({
   webSearch: z.boolean().default(false),
   advancedHostedSearch: z.boolean().default(false),
   alphaSearch: z.boolean().default(false),
+  grokNativeWebSearch: z.boolean().default(false),
+  grokNativeXSearch: z.boolean().default(false),
 });
 
 function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
@@ -396,13 +429,13 @@ function selectedAgentRoute(agent: HostAgent): RouteRequest {
   const route = readAgentRouteState(agent);
   return {
     provider: stringValue(
-      routeConfigValue(route.options, "provider") ??
-        routeConfigValue(route.requestConfig, "provider"),
+      routeConfigValue(route.requestConfig, "provider") ??
+        routeConfigValue(route.options, "provider"),
       "",
     ),
     model: stringValue(
-      routeConfigValue(route.options, "model") ??
-        routeConfigValue(route.requestConfig, "model"),
+      routeConfigValue(route.requestConfig, "model") ??
+        routeConfigValue(route.options, "model"),
       "",
     ),
     sessionId: route.sessionId,
@@ -539,6 +572,57 @@ class LcxResponsesSearchProvider {
   }
 }
 
+function createScopedGptWebSearchTool(
+  ctx: HostContext,
+  state: SettingsState,
+  getConfig: () => NormalizedConfig,
+  provider: LcxResponsesSearchProvider,
+  fetchEnabled: boolean,
+): ToolDefinition {
+  let definition: ToolDefinition | undefined;
+  const composition = {
+    web: {
+      search: (request: WebSearchRequest, signal?: AbortSignal) =>
+        provider.search(request, signal),
+    },
+    tools: {
+      register(candidate: ToolDefinition) {
+        definition = candidate;
+        return () => {};
+      },
+    },
+    systemPrompt: {
+      getSectionOrder: () => 0,
+      section: () => () => {},
+    },
+  };
+  applyWebSearchTool(
+    composition as unknown as HostContext,
+    getConfig().webMaxResults,
+    WEB_SEARCH_MAX_QUERIES,
+    WEB_SEARCH_TIMEOUT_MS,
+    fetchEnabled,
+  );
+  if (!definition)
+    throw new Error("DSH web_search composition did not register a tool");
+  const execute = definition.execute.bind(definition);
+  return {
+    ...definition,
+    async execute(args: unknown, exec: ToolRunContext) {
+      if (!state.enabled || !state.webSearch)
+        throw webError("web_search GPT Hosted Search is disabled", "LCX_WEB_DISABLED");
+      const active = activeAgentRoute(exec);
+      const route = resolveResponsesRouteConfig(ctx, active, getConfig());
+      if (!route)
+        throw webError(
+          "GPT Hosted Search requires the active GPT openai-responses route",
+          "LCX_WEB_ROUTE_UNAVAILABLE",
+        );
+      return hostedSearchRouteContext.run(active, () => execute(args, exec));
+    },
+  };
+}
+
 function createAdvancedHostedTool(
   ctx: HostContext,
   state: {
@@ -582,6 +666,81 @@ function createAdvancedHostedTool(
       );
     },
   };
+}
+
+function disposeGptToolsForAgent(
+  agent: object,
+  registrations: GptToolRegistry,
+) {
+  const registration = registrations.get(agent);
+  if (!registration) return;
+  registration.dispose();
+  registrations.delete(agent);
+}
+
+function syncGptToolsForAgent(
+  ctx: HostContext,
+  agent: object & HostAgent,
+  state: SettingsState,
+  getConfig: () => NormalizedConfig,
+  provider: LcxResponsesSearchProvider,
+  registrations: GptToolRegistry,
+) {
+  const config = getConfig();
+  const active = selectedAgentRoute(agent);
+  const route = resolveResponsesRouteConfig(ctx, active, config);
+  const webSearch = state.enabled && state.webSearch && Boolean(route);
+  const advanced = webSearch && state.advancedHostedSearch;
+  if (!webSearch && !advanced) {
+    disposeGptToolsForAgent(agent, registrations);
+    return false;
+  }
+  const fingerprint = JSON.stringify({
+    provider: route?.provider,
+    model: route?.model,
+    baseURL: route?.baseURL,
+    webSearch,
+    advanced,
+    webMaxResults: config.webMaxResults,
+  });
+  if (registrations.get(agent)?.fingerprint === fingerprint) return true;
+  disposeGptToolsForAgent(agent, registrations);
+  const scopedTools = scopedToolRuntime(agent);
+  if (!scopedTools) return false;
+  const disposers: Array<() => void> = [];
+  try {
+    if (webSearch) {
+      const fetchEnabled = Boolean(scopedTools.get?.("web_fetch", agent));
+      disposers.push(
+        scopedTools.register(
+          createScopedGptWebSearchTool(
+            ctx,
+            state,
+            getConfig,
+            provider,
+            fetchEnabled,
+          ),
+        ),
+      );
+    }
+    if (advanced)
+      disposers.push(
+        scopedTools.register(createAdvancedHostedTool(ctx, state, getConfig)),
+      );
+    registrations.set(agent, {
+      fingerprint,
+      dispose() {
+        for (const dispose of disposers.reverse()) dispose();
+      },
+    });
+    return true;
+  } catch (error) {
+    for (const dispose of disposers.reverse()) dispose();
+    ctx.logger?.warn?.(
+      `[lcx-codex] GPT search tool composition unavailable: ${errorDetails(error).message ?? String(error)}`,
+    );
+    return false;
+  }
 }
 
 function alphaCapabilityFor(
@@ -862,7 +1021,9 @@ async function serializeNativeAware(
   route: { provider: string; model: string; baseURL: string; sessionId: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
-  options: Pick<GenerateOptions, "signal" | "system" | "tools">,
+  options: Pick<GenerateOptions, "signal" | "system" | "tools"> & {
+    grokNativeReplayRoute?: GrokNativeReplayRoute;
+  },
 ) {
   const session = sessionFor(ctx, route.sessionId);
   const imageSupport = await resolveModelImageSupport(
@@ -907,8 +1068,10 @@ async function serializeNativeAware(
   grammarToolInputProperties = prelude.grammarToolInputProperties;
   const flush = async () => {
     if (!normal.length) return;
+    const batch = normal;
+    normal = [];
     const serialized = await serializeDshMessages(
-      normal,
+      batch,
       ctx,
       serializeOptions(),
     );
@@ -916,9 +1079,12 @@ async function serializeNativeAware(
     nativeModel = serialized.model ?? nativeModel;
     grammarToolInputProperties =
       serialized.grammarToolInputProperties ?? grammarToolInputProperties;
-    input.push(...serialized.input);
+    input.push(...restoreGrokNativeReplay(
+      serialized.input,
+      batch,
+      options.grokNativeReplayRoute,
+    ) as SerializedDshMessages["input"]);
     mergeMap(imageMap, serialized.imageMap);
-    normal = [];
   };
   for (const message of messages ?? []) {
     assertSupportedCheckpointMessage(message);
@@ -1265,15 +1431,6 @@ async function restoreCompactionPressure(records: CompactionPatchRecords) {
   restoreCompactionPatches(records, entries);
 }
 
-function visibleWebSearchTimeout(state: {
-  enabled: unknown;
-  webSearch: unknown;
-  advancedHostedSearch?: boolean;
-  alphaSearch?: boolean;
-}) {
-  return state.enabled && state.webSearch ? WEB_SEARCH_TIMEOUT_MS : undefined;
-}
-
 function messagesContainNativeCheckpoint(
   messages: readonly Message[],
   session: Session | undefined,
@@ -1348,6 +1505,106 @@ async function* managedResponsesStream(
   }
 }
 
+async function* managedGrokNativeSearchStream(
+  options: GenerateOptions,
+  routeConfig: ResponsesRouteConfig,
+  nativeSearch: GrokNativeSearchState,
+  ctx: HostContext,
+): AsyncGenerator<StreamChunk> {
+  const route = currentRoute(options, routeConfig);
+  const nativeReplayRoute = grokReplayRoute(route, routeConfig);
+  try {
+    if (options.stop !== undefined)
+      throw Object.assign(
+        new Error("LCX Responses does not support GenerateOptions.stop"),
+        { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+      );
+    const visibleTools = grokVisibleFunctionTools(options.tools, nativeSearch);
+    const prepared = await serializeNativeAware(
+      options.messages,
+      route,
+      routeConfig,
+      ctx,
+      {
+        signal: options.signal,
+        system: options.system,
+        tools: visibleTools,
+        grokNativeReplayRoute: nativeReplayRoute,
+      },
+    );
+    const cacheSessionId = grokPromptCacheSessionId(route, routeConfig);
+    const headers = await authenticatedGrokHeaders(
+      ctx,
+      routeConfig,
+      cacheSessionId,
+    );
+    const model = {
+      ...prepared.model,
+      ...routeConfig.modelDefaults,
+      ...routeConfig.modelControls,
+      id: route.model,
+      provider: route.provider,
+      baseUrl: routeConfig.baseURL,
+      api: "openai-responses" as const,
+    };
+    const effectiveReasoning = options.reasoningEffort ?? routeConfig.profileReasoning;
+    if (
+      effectiveReasoning !== undefined &&
+      !getSupportedThinkingLevels(model).some((level) => level === effectiveReasoning)
+    )
+      throw Object.assign(
+        new Error(
+          `Grok route does not support reasoning effort "${String(effectiveReasoning)}"`,
+        ),
+        { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+      );
+    const body = buildResponsesBody({
+      model,
+      input: prepared.input,
+      tools: grokWireTools(prepared.tools ?? visibleTools, nativeSearch),
+      sessionId: cacheSessionId,
+      promptCacheRetention: promptCacheRetention(routeConfig),
+      cacheRetention: routeConfig.cacheRetention,
+      reasoningEffort: effectiveReasoning,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+    });
+    if (nativeSearch.web) {
+      const include = new Set(Array.isArray(body.include) ? body.include : []);
+      include.add("web_search_call.action.sources");
+      body.include = [...include];
+    }
+    yield* streamResponsesRequest({
+      baseURL: routeConfig.baseURL,
+      provider: route.provider,
+      model: route.model,
+      piModel: model,
+      body,
+      grammarToolInputProperties: prepared.grammarToolInputProperties,
+      headers,
+      signal: options.signal,
+      timeoutMs: routeConfig.timeoutMs,
+      applyDefaultTimeout: false,
+      streamIdleTimeoutMs: routeConfig.streamIdleTimeoutMs,
+      maxAttempts: 1,
+      maxResponseBytes: routeConfig.maxResponseBytes,
+      serverToolTypes: GROK_NATIVE_SERVER_TOOL_TYPES,
+      nativeReplayRoute,
+      onServerToolUsage(usage) {
+        ctx.logger?.info?.(
+          `[lcx-codex] Grok native search used ${usage.total} server-side tool call(s) (web=${usage.webSearchCalls}, x=${usage.xSearchCalls})`,
+        );
+      },
+    });
+  } catch (error) {
+    yield managedFailureChunk(error, options.signal);
+  }
+}
+
+function isGptLifecycleTarget(options: Pick<GenerateOptions, "model">): boolean {
+  return /^gpt-/iu.test(String(options.model ?? ""));
+}
+
 async function* unavailableManagedRouteStream(
   options: GenerateOptions,
 ): AsyncGenerator<StreamChunk> {
@@ -1368,37 +1625,59 @@ function installInjected(
 ) {
   const baseConfig = normalizeConfig(configInput);
   let runtimeConfig = baseConfig;
-  const state = {
+  const state: SettingsState = {
     enabled: false,
     webSearch: false,
     advancedHostedSearch: false,
     alphaSearch: false,
+    grokNativeWebSearch: false,
+    grokNativeXSearch: false,
   };
-  const originalSearchProvider = readWebSearchProvider(ctx);
-  let warnedWebSelection = false;
   const provider = new LcxResponsesSearchProvider(
     ctx,
     () => runtimeConfig,
     () => state.enabled && state.webSearch,
   );
-  ctx.web.registerSearchProvider(provider);
-  const tools = ctx.tools;
-  let disposeAdvanced: (() => void) | undefined;
   const capabilityStore = new AlphaCapabilityStore(
     baseConfig.alphaCapabilityPath,
   );
   const refStore = new AlphaRefStore(baseConfig.alphaRefPath);
-  const alphaAgents = new Set<object & HostAgent>();
+  const managedAgents = new Set<object & HostAgent>();
+  const gptToolRegistrations: GptToolRegistry = new Map();
   const alphaToolRegistrations: AlphaToolRegistry = new Map();
   const compactionPatchRecords: CompactionPatchRecords = new Map();
-  const patchedWebSearchDefinitions = new Map();
+
+  const syncAgentTools = (agent: object & HostAgent) => {
+    syncGptToolsForAgent(
+      ctx,
+      agent,
+      state,
+      () => runtimeConfig,
+      provider,
+      gptToolRegistrations,
+    );
+    syncAlphaToolForAgent(
+      ctx,
+      agent,
+      state,
+      () => runtimeConfig,
+      capabilityStore,
+      refStore,
+      alphaToolRegistrations,
+    );
+  };
+  const refreshTools = () => {
+    for (const agent of managedAgents) syncAgentTools(agent);
+  };
+
   ctx.on(
     "session/disposed",
     (session: Session) => {
-      for (const agent of alphaAgents)
+      for (const agent of managedAgents)
         if (agentUsesSession(agent, session)) {
+          disposeGptToolsForAgent(agent, gptToolRegistrations);
           disposeAlphaToolForAgent(agent, alphaToolRegistrations);
-          alphaAgents.delete(agent);
+          managedAgents.delete(agent);
         }
     },
     { global: true },
@@ -1407,75 +1686,19 @@ function installInjected(
     "session/event",
     (session: Session, event: SessionEvent) => {
       if (event.type === "request/header")
-        for (const agent of alphaAgents)
-          if (agentUsesSession(agent, session)) {
-            syncAlphaToolForAgent(
-              ctx,
-              agent,
-              state,
-              () => runtimeConfig,
-              capabilityStore,
-              refStore,
-              alphaToolRegistrations,
-            );
-          }
+        for (const agent of managedAgents)
+          if (agentUsesSession(agent, session)) syncAgentTools(agent);
     },
     { global: true },
   );
-
-  const refreshTools = () => {
-    if (
-      state.enabled &&
-      state.webSearch &&
-      state.advancedHostedSearch &&
-      !disposeAdvanced &&
-      tools?.register
-    )
-      disposeAdvanced = tools.register(
-        createAdvancedHostedTool(ctx, state, () => runtimeConfig),
-      );
-    if (
-      (!state.enabled || !state.webSearch || !state.advancedHostedSearch) &&
-      disposeAdvanced
-    ) {
-      disposeAdvanced();
-      disposeAdvanced = undefined;
-    }
-    for (const agent of alphaAgents)
-      syncAlphaToolForAgent(
-        ctx,
-        agent,
-        state,
-        () => runtimeConfig,
-        capabilityStore,
-        refStore,
-        alphaToolRegistrations,
-      );
-    if (ctx.web) {
-      const target =
-        state.enabled && state.webSearch
-          ? runtimeConfig.webSearchProvider
-          : originalSearchProvider;
-      const selected = writeWebSearchProvider(ctx, target);
-      if (
-        !selected &&
-        state.enabled &&
-        state.webSearch &&
-        !warnedWebSelection
-      ) {
-        warnedWebSelection = true;
-        ctx.logger?.warn?.(
-          "[lcx-codex] DSH web provider selection could not be changed at runtime; websearch_gpt_advanced still works, but DSH web_search may remain on its configured provider. Pin web.searchProvider=lcx-responses in a profile overlay if this DSH version removes the runtime compatibility field.",
-        );
-      }
-    }
-  };
 
   const settingsEntry: SettingsState = {
     enabled: false,
     webSearch: false,
     advancedHostedSearch: false,
     alphaSearch: false,
+    grokNativeWebSearch: false,
+    grokNativeXSearch: false,
   };
   let source: () => SettingsState = () => settingsEntry;
   ctx.settings.installSection(
@@ -1493,12 +1716,10 @@ function installInjected(
         state.webSearch = value.webSearch;
         state.advancedHostedSearch = value.advancedHostedSearch;
         state.alphaSearch = value.alphaSearch;
+        state.grokNativeWebSearch = value.grokNativeWebSearch;
+        state.grokNativeXSearch = value.grokNativeXSearch;
         runtimeConfig = baseConfig;
         refreshTools();
-        refreshVisibleWebSearchTimeouts(
-          patchedWebSearchDefinitions,
-          visibleWebSearchTimeout(state),
-        );
       },
     },
   );
@@ -1509,6 +1730,8 @@ function installInjected(
       webSearch: Boolean(value.webSearch),
       advancedHostedSearch: Boolean(value.advancedHostedSearch),
       alphaSearch: Boolean(value.alphaSearch),
+      grokNativeWebSearch: Boolean(value.grokNativeWebSearch),
+      grokNativeXSearch: Boolean(value.grokNativeXSearch),
     });
     runtimeConfig = baseConfig;
   } catch {}
@@ -1524,32 +1747,11 @@ function installInjected(
   });
 
   ctx.on(
-    "tools/execute",
-    async (
-      exec: ToolDispatchExecution,
-      next: () => Promise<ToolExecutionResult>,
-    ): Promise<ToolExecutionResult> => {
-      if (!state.enabled || !state.webSearch || exec.name !== "web_search")
-        return next();
-      const active = activeAgentRoute(exec);
-      return hostedSearchRouteContext.run(active, () => next());
-    },
-  );
-
-  ctx.on(
     "agent/created",
     ({ agent }) => {
       if (agent === null || typeof agent !== "object") return;
-      alphaAgents.add(agent);
-      syncAlphaToolForAgent(
-        ctx,
-        agent,
-        state,
-        () => runtimeConfig,
-        capabilityStore,
-        refStore,
-        alphaToolRegistrations,
-      );
+      managedAgents.add(agent);
+      syncAgentTools(agent);
       const installed = patchCompactionPressureForAgent(
         agent,
         state,
@@ -1574,16 +1776,8 @@ function installInjected(
         typeof agent !== "object"
       )
         return;
-      alphaAgents.add(agent);
-      syncAlphaToolForAgent(
-        ctx,
-        agent,
-        state,
-        () => runtimeConfig,
-        capabilityStore,
-        refStore,
-        alphaToolRegistrations,
-      );
+      managedAgents.add(agent);
+      syncAgentTools(agent);
       const installed = patchCompactionPressureForAgent(
         agent,
         state,
@@ -1595,11 +1789,6 @@ function installInjected(
         ctx.logger?.info?.(
           "[lcx-codex] pressure coordination installed through AgentPresets service resolver",
         );
-      patchVisibleWebSearchTimeout(
-        agent,
-        () => visibleWebSearchTimeout(state),
-        patchedWebSearchDefinitions,
-      );
     },
     { global: true },
   );
@@ -1610,12 +1799,31 @@ function installInjected(
       options: GenerateOptions,
       next: () => AsyncIterable<StreamChunk>,
     ): AsyncIterable<StreamChunk> => {
-      if (!state.enabled || options.purpose === "session-title") return next();
-    const routeConfig = resolveResponsesRouteConfig(
-      ctx,
-      options,
-      runtimeConfig,
-    );
+      if (options.purpose === "session-title") return next();
+      const grokNativeSearch: GrokNativeSearchState = {
+        web: state.grokNativeWebSearch,
+        x: state.grokNativeXSearch,
+      };
+      if (options.purpose === undefined && grokNativeSearchEnabled(grokNativeSearch)) {
+        const grokRoute = resolveGrokResponsesRouteConfig(
+          ctx,
+          options,
+          runtimeConfig,
+        );
+        if (grokRoute)
+          return managedGrokNativeSearchStream(
+            options,
+            routeWithPolicies(grokRoute, runtimeConfig),
+            grokNativeSearch,
+            ctx,
+          );
+      }
+      if (!state.enabled || !isGptLifecycleTarget(options)) return next();
+      const routeConfig = resolveResponsesRouteConfig(
+        ctx,
+        options,
+        runtimeConfig,
+      );
       if (options.purpose === "compaction") {
         if (!routeConfig) return unavailableManagedRouteStream(options);
         return remoteCompactionStream(
@@ -1636,13 +1844,12 @@ function installInjected(
 
   ctx.effect?.(
     () => async () => {
-      disposeAdvanced?.();
-      for (const agent of alphaAgents)
+      for (const agent of managedAgents) {
+        disposeGptToolsForAgent(agent, gptToolRegistrations);
         disposeAlphaToolForAgent(agent, alphaToolRegistrations);
-      alphaAgents.clear();
+      }
+      managedAgents.clear();
       await restoreCompactionPressure(compactionPatchRecords);
-      restoreVisibleWebSearchTimeouts(patchedWebSearchDefinitions);
-      writeWebSearchProvider(ctx, originalSearchProvider);
     },
     "lcx-codex cleanup",
   );

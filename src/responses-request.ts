@@ -18,6 +18,7 @@ type PiResponsesModel = {
   provider: string;
   reasoning?: boolean;
   thinkingLevelMap?: Record<string, string | null>;
+  includeEncryptedReasoning?: boolean;
   compat?: ResponsesCompat;
 };
 type GenerationControls = {
@@ -88,6 +89,11 @@ export function responsesGenerationEnvelope({
   const descriptor = modelRecord(model);
   const result: UnknownRecord = {};
   if (descriptor.reasoning !== false) {
+    if (
+      descriptor.provider === "xai" ||
+      descriptor.includeEncryptedReasoning === true
+    )
+      result.include = ["reasoning.encrypted_content"];
     if (reasoningEffort !== undefined && reasoningEffort !== "off") {
       const requested = String(reasoningEffort);
       const wire = descriptor.thinkingLevelMap?.[requested] ?? requested;

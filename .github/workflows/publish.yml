@@ -23,8 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/tags/v0.4.3-pre.2
-          test "$(node -p "require('./package.json').version")" = 0.4.3-pre.2
+          test "$GITHUB_REF" = refs/tags/v0.4.3-pre.3
+          test "$(node -p "require('./package.json').version")" = 0.4.3-pre.3
       - name: Install locked build and host dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
@@ -41,9 +41,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: verified-public-package
-          path: ${{ runner.temp }}/dsh-lcx-codex-0.4.3-pre.2.tgz
+          path: ${{ runner.temp }}/dsh-lcx-codex-0.4.3-pre.3.tgz
           if-no-files-found: error
       - name: Publish verified artifact with provenance
         run: |
           npm install --global npm@latest
-          npm publish "$RUNNER_TEMP/dsh-lcx-codex-0.4.3-pre.2.tgz" --provenance --tag prelatest --ignore-scripts
+          npm publish "$RUNNER_TEMP/dsh-lcx-codex-0.4.3-pre.3.tgz" --provenance --tag prelatest --ignore-scripts
