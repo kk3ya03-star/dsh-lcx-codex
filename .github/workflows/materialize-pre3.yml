@@ -1,4 +1,4 @@
-name: Temporary materialize pre3
+name: Temporary finalize pre3 changelog
 
 on:
   push:
@@ -8,40 +8,40 @@ permissions:
   contents: write
 
 jobs:
-  materialize:
-    if: "${{ github.event.head_commit.message == 'ci: materialize approved pre3 source' }}"
+  finalize:
+    if: "${{ github.event.head_commit.message == 'ci: finalize pre3 changelog' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: release/0.4.3-pre.3
-      - name: Import reviewed private-CI public source snapshot
-        env:
-          SOURCE_URL: 'https://sdmntprwestus.oaiusercontent.com/files/00000000-6dac-8230-ab94-95b5a9274199/raw?se=2026-09-08T19%3A30%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=ace6220a-cf07-593b-8044-6de6c6498232&skoid=b869bb08-96ac-4184-ab38-9c45e2890c4c&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-08T12%3A31%3A41Z&ske=2026-09-09T12%3A31%3A41Z&sks=b&skv=2026-02-06&sig=oAoTfIGJ%2BmTzTJ6HQbyqQd3ywY%2B0Z6dY413%2B4Aox0J8%3D'
+      - name: Prepend pre3 release notes
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('CHANGELOG.md')
+          text = p.read_text()
+          heading = '## 0.4.3-pre.3 - 2026-09-09'
+          if heading not in text:
+              entry = '''## 0.4.3-pre.3 - 2026-09-09
+
+          - Add model-scoped ownership: GPT keeps the existing LCX Responses/Native V2/Hosted/Alpha path; Grok gains independent xAI-native Web/X Search; other models remain on native DSH behavior.
+          - Inject xAI Responses `{type:"web_search"}` and `{type:"x_search"}` for Grok and suppress DSH `web_search` only on Grok native-search requests; keep `web_fetch` and unrelated DSH/MCP tools.
+          - Preserve ordered provider-native Grok output across native search → local function → function result continuation and cold/restart replay without exposing server-side search as fake local tool calls.
+          - Match DSH 0.1.3-alpha.2 / Pi 0.85.1 reasoning, cache/session identity, header authority, cancellation and idle-timeout semantics, including independent Grok subagent session identity while preserving GPT parent-shared cache policy.
+          - Separate user-visible citation fallback from opaque provider replay; support compatible gateways that represent X search through encrypted reasoning/usage without an explicit `x_search_call` item.
+          - Validate 237/237 tests, strict host/client types, four schemas, real Grok Web/X + local-tool workflows, parent/child isolation, GPT regressions and native DSH DeepSeek search regression.
+          - Publish as prerelease `prelatest`; stable `latest` remains `0.4.2`. API-key/API-gateway Grok routes are supported; xAI OAuth/SuperGrok login remains out of scope and citation rendering can remain gateway-dependent.
+
+          '''
+              text = text.replace('# Changelog\n\n', '# Changelog\n\n' + entry, 1)
+              p.write_text(text)
+      - name: Commit changelog
         run: |
           set -euo pipefail
-          curl -fL --retry 3 "$SOURCE_URL" -o "$RUNNER_TEMP/public-source.zip"
-          mkdir "$RUNNER_TEMP/source"
-          unzip -q "$RUNNER_TEMP/public-source.zip" -d "$RUNNER_TEMP/source"
-          rm -rf src lib tests
-          cp -a "$RUNNER_TEMP/source/src" src
-          cp -a "$RUNNER_TEMP/source/lib" lib
-          cp -a "$RUNNER_TEMP/source/tests" tests
-          cp "$RUNNER_TEMP/source/package.json" package.json
-          cp "$RUNNER_TEMP/source/package-lock.json" package-lock.json
-          cp "$RUNNER_TEMP/source/cordis.patch.yml" cordis.patch.yml
-          cp "$RUNNER_TEMP/source/tsconfig.json" tsconfig.json
-          cp "$RUNNER_TEMP/source/tsconfig.client.json" tsconfig.client.json
-          cp "$RUNNER_TEMP/source/scripts/build-client.mjs" scripts/build-client.mjs
-          cp "$RUNNER_TEMP/source/scripts/probe-alpha.mjs" scripts/probe-alpha.mjs
-          cp "$RUNNER_TEMP/source/scripts/validate-dsh-schema.mjs" scripts/validate-dsh-schema.mjs
-          sed -i 's/0\.4\.3-pre\.2/0.4.3-pre.3/g' package.json package-lock.json
           git diff --check
-      - name: Commit exact release runtime
-        run: |
-          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src lib tests package.json package-lock.json cordis.patch.yml tsconfig.json tsconfig.client.json scripts/build-client.mjs scripts/probe-alpha.mjs scripts/validate-dsh-schema.mjs
-          git commit -m 'release: import approved 0.4.3-pre.3 runtime'
+          git add CHANGELOG.md
+          git commit -m 'docs: add 0.4.3-pre.3 changelog'
           git push origin HEAD:release/0.4.3-pre.3
