@@ -1,4 +1,4 @@
-# Model-scoped Responses ownership — 0.4.3-pre.3 prerelease
+# Model-scoped Responses ownership — 0.4.3-pre.4 prerelease
 
 ## Product contract
 
