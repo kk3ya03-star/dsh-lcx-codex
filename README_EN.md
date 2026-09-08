@@ -118,6 +118,31 @@ DSH `0.1.3-alpha.2` loads `fs-ext` during startup even though Windows does not u
 
 Windows tests for this release used a minimal DSH correction: load `fs-ext` only on non-Windows platforms, retaining the existing Win32 session lock. The plugin does not patch DSH automatically, and unmodified Windows startup is not guaranteed. Do not disable session locking to work around this error.
 
+
+Exact procedure (only for `@deepseek-ai/dsh-session-persistence-jsonl@0.1.3-alpha.2`):
+
+1. Stop DSH. Locate the actual `@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js` in the error stack, not another Node installation or DSH copy. For global installations, look under the DSH dependency tree inside the directory reported by `npm root -g`; the absolute stack path is authoritative.
+2. Check the adjacent package `package.json` reports `0.1.3-alpha.2`. Copy `lib/index.js` to `lib/index.js.before-win32-fs-ext.bak`, preserving any existing backup.
+3. In a text editor, replace this single line:
+
+   ```js
+   import { flock } from "fs-ext";
+   ```
+
+   with:
+
+   ```js
+   const flock = process.platform === "win32"
+     ? undefined
+     : (await import("fs-ext")).flock;
+   ```
+
+   Change only this module-loading line; retain the Win32 session lock and all other code. Stop if the version or original line differs.
+4. Save, restart `dsh web`, create a session and send a message to verify startup and session writes. This does not fix unrelated startup errors.
+5. To undo, stop DSH and restore `index.js` from the backup. Reinstalling or upgrading DSH may overwrite this local change; do not apply an old-version workaround blindly to a newer version.
+
+This is an optional local DSH compatibility correction, not a patch performed by the plugin installer. The project's Windows validation used exactly this loading change.
+
 **Nothing changes after installation?**
 
 Check that installation and startup use the same `web` profile, then verify the switches for the active model were saved. The GPT master switch and Grok Web/X switches are independent.

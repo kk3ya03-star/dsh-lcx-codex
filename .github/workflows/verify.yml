@@ -1,0 +1,37 @@
+name: Verify public source
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked build and host dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix scripts/runtime-alpha2 --ignore-scripts --no-audit --no-fund
+          node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+      - name: Verify generated code, strict types, tests, schemas and package
+        run: |
+          node scripts/check-generated.mjs
+          npm run typecheck
+          npm test
+          npm run test:schema
+          git diff --exit-code
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"

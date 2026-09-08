@@ -1,5 +1,5 @@
 version: 0.4.3-pre.3
-state: APPROVED_PRERELEASE
+state: RELEASED_PRERELEASE
 private_source:
   commit: aaa83dcef5d70f37dc8983ae0d8a43bf14c60fc4
   engineering_artifact_sha256: a31684f0e8fa34051710c6498007e4fb6b1191b0d46a850ea345fbc89923619f
@@ -12,7 +12,8 @@ public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   base_commit: fc77999b9fb6307fa377b60f89d6c126203b4cc8
   branch: main
-  release_branch: release/0.4.3-pre.3
+  former_release_branch: release/0.4.3-pre.3
+  temporary_release_branches: removed
   tag: v0.4.3-pre.3
   npm_dist_tag: prelatest
   stable_latest_must_remain: 0.4.2
@@ -80,3 +81,13 @@ runtime_basis:
   grok: native Web/X, local-tool continuation, opaque replay, restart, parent/child identity validated
   remaining: xAI OAuth out of scope; provider-dependent citation rendering; Alpha intermittent refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
   legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained
+
+post_release_verification:
+  public_commit: a11f63fb836797985737784d6687ba17aaa3ea4e
+  git_tag_target: a11f63fb836797985737784d6687ba17aaa3ea4e
+  github_prerelease: true
+  npm_version: 0.4.3-pre.3
+  npm_prelatest: 0.4.3-pre.3
+  npm_latest: 0.4.2
+  checked_at: 2026-09-08
+  note: Post-release documentation and CI maintenance do not modify the immutable release tag or republish its npm version.
