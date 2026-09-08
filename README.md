@@ -4,7 +4,7 @@
 
 # LCX Codex
 
-**为 DeepSeek Harness 中的 GPT 会话提供远程原生压缩、联网搜索和图片搜索。**
+**为 DeepSeek Harness 中的 GPT 提供 Responses 生命周期能力，并为 Grok 接入原生 Web / X Search。**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
 [![DSH](https://img.shields.io/badge/DSH-0.1.3--alpha.2-16803c)](#安装)
@@ -14,24 +14,24 @@
 
 </div>
 
-LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（DSH）的社区插件。它将 GPT 接口的远程压缩和搜索能力接入 DSH，让长对话在压缩后继续，也能在回复中展示搜索到的网页图片。
+LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness)（DSH）的社区插件。它按当前模型启用对应能力：GPT 可使用远程原生压缩、Hosted / Alpha Search；Grok 可直接使用 xAI Responses 的原生 `web_search` 与 `x_search`。其他模型继续走 DSH 原生路径。
 
-模型、接口、凭据、会话和工具仍由 DSH 管理，不需要在插件里再配置一遍。插件面向 **GPT / OpenAI Responses**，可用于支持相应能力的 Sub2API、NewAPI 等通道。
+模型、接口、API Key / credential、会话和工具仍由 DSH 管理，不需要在插件里再配置一遍。GPT 与 Grok 的功能开关彼此独立；当前 Grok 原生搜索支持 API Key / API 网关调用，不包含 xAI OAuth / SuperGrok 登录。
 
 ## 安装
 
-本页对应 **`0.4.3-pre.2` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
+本页对应 **`0.4.3-pre.3` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
 
-安装前，请确认 DSH Web 能正常启动，且已配置可以对话的 GPT Responses 模型。Node.js 要求 `^22.19.0 || >=24.0.0`；Windows 启动出现 `fs-ext` 报错时，先看下方[故障排查](#故障排查)。
+安装前，请确认 DSH Web 能正常启动，并已配置需要使用的 GPT Responses 或 Grok Responses API 路由。Node.js 要求 `^22.19.0 || >=24.0.0`；Windows 启动出现 `fs-ext` 报错时，先看下方[故障排查](#故障排查)。
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.2
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.3
 dsh web
 ```
 
 以后升级预发布版，可执行 `dsh plugin --profile web add dsh-lcx-codex@prelatest`。不带版本或标签安装会得到稳定版，**不是本页介绍的新版本**。
 
-**从 `0.4.2` 升级：** 旧插件配置和 v3/v4 压缩检查点不再兼容，请重新配置插件并新建会话。新版 v5 检查点仍支持重启续聊。
+**从 `0.4.2` 升级：** 旧插件配置和 v3/v4 压缩检查点不再兼容，请重新配置插件并新建会话。新版 v5 GPT 检查点仍支持重启续聊。
 
 ## 启用
 
@@ -39,28 +39,45 @@ dsh web
 
 | 开关 | 什么时候开 |
 | --- | --- |
-| 启用 LCX | 使用 GPT 远程原生压缩及下面的搜索能力时。 |
-| GPT Hosted Search | 需要让 DSH 联网查询时。 |
-| 高级 Hosted 工具 | 需要搜图、限定网站或使用其他搜索条件时。 |
-| Alpha | 需要连续打开、查找和点击网页内容时，属于实验功能。 |
+| 启用 LCX | 使用 GPT Responses 生命周期、Native V2 压缩及 GPT 搜索能力时。 |
+| GPT Hosted Search | 当前模型是 GPT，且需要普通联网查询时。 |
+| 高级 Hosted 工具 | GPT 需要搜图、限定网站或使用其他 Hosted 搜索条件时。 |
+| Alpha | GPT 需要连续 `open / find / click / screenshot` 网页操作时，属于实验功能。 |
+| Grok 原生 Web Search | 当前模型是 Grok，并希望使用 xAI 服务端原生网页搜索时。 |
+| Grok 原生 X Search | 当前模型是 Grok，并希望直接搜索 X 内容时。 |
 
-**四个开关默认均关闭。** 日常联网使用打开前两项；需要图片搜索再打开第三项。模型、推理等级及图片输入能力在 DSH 的模型配置中设置。
+**六个开关默认均关闭。** GPT 四项由“启用 LCX”控制；Grok 两项独立，不要求打开 GPT 的 LCX 主开关。模型、推理等级、图片输入、endpoint 与 credential 都继续在 DSH 的模型/provider 配置中管理。
 
-切换到 Claude、Gemini、DeepSeek 等非 GPT 模型前，请先关闭 LCX。关闭后恢复 DSH 原生请求路径。
+模型切换不需要重启插件：
+
+- GPT → 只启用已打开的 GPT / LCX 能力；
+- Grok → 只启用已打开的原生 Web / X Search；开启任意 Grok 原生搜索时，该请求不会同时暴露 DSH `web_search`，但 `web_fetch` 和其他 DSH/MCP 工具仍可用；
+- Claude、Gemini、DeepSeek 等其他模型 → 保持 DSH 原生会话、搜索、工具和压缩行为。
 
 ## 搜索与搜图
 
-### 联网查询
+### GPT 联网查询
 
-直接在对话里提出问题即可，例如：
+GPT 普通查询沿用 DSH 的单一 `web_search` 工具入口；开启 **GPT Hosted Search** 后，LCX 按当前 GPT Responses route 执行 Hosted Search。需要域名、位置、search context 或图片等额外参数时，可启用 `websearch_gpt_advanced`。
 
-> 查一下 Node.js 最新 LTS 版本，给我官方来源。
-
-普通查询使用 DSH 原有的 `web_search`；需要更细的条件时，模型可以调用高级工具 `websearch_gpt_advanced`：
+例如：
 
 > 只搜索 Python 官方文档，查找 asyncio.TaskGroup 的用法。
 
-### 搜索图片并显示
+### Grok 原生 Web / X Search
+
+Grok 使用 xAI Responses 的服务端工具，而不是把搜索包装成 DSH function tool：
+
+```text
+{ type: "web_search" }
+{ type: "x_search" }
+```
+
+开启任意 Grok 原生搜索后，Grok 请求会移除 DSH `web_search`，避免重复搜索语义；`web_fetch`、`read` 及其他 DSH/MCP function tools 仍保持可用。原生搜索结果可以继续进入本地工具调用，再回到同一 Grok agentic workflow；插件会保存 xAI 必需的 provider-native replay state，但不会把服务端搜索伪装成 DSH 本地工具调用。
+
+当前支持 **API Key / API Gateway** 路由；OAuth / SuperGrok / X Premium 订阅登录不在本版范围内。搜索来源 URL 会尽量保留，但具体 citation 展示形式仍受上游兼容网关返回格式影响。
+
+### GPT 搜索图片并显示
 
 开启高级 Hosted 工具后，可以这样说：
 
@@ -72,9 +89,9 @@ dsh web
 
 ### Alpha 网页操作
 
-`websearch_alpha` 支持 `search / open / find / click / screenshot` 等动作，用于连续查阅网页。它操作的是**上游搜索服务中的网页内容**，不会操作你的本机浏览器或 DSH 界面。
+`websearch_alpha` 支持 `search / open / find / click / screenshot` 等动作，用于 GPT 连续查阅网页。它操作的是**上游搜索服务中的网页内容**，不会操作你的本机浏览器或 DSH 界面。
 
-Alpha 需要单独开启，且接口通过能力探测后才会出现。目前网页引用仍可能偶发失效，`screenshot` 尚未验证能返回可显示的图片。**日常搜索和搜图不需要开启 Alpha。**
+Alpha 需要单独开启，且接口通过能力探测后才会出现。目前网页引用仍可能偶发失效，`screenshot` 尚未验证能返回可显示的图片。**日常 GPT 搜索/搜图和 Grok 原生搜索都不需要开启 Alpha。**
 
 ## 长对话与压缩
 
@@ -92,9 +109,12 @@ Alpha 需要单独开启，且接口通过能力探测后才会出现。目前�
 
 ## 缓存
 
-缓存由上游服务实现，插件负责保持兼容的缓存标识。相同请求前缀可以复用，**是否命中及缓存多久由接口决定**，不需要再开启一个“插件缓存”。
+缓存由上游服务实现，插件只负责保持与当前 provider 兼容的缓存/session identity。
 
-插件跟随 Pi `0.85.1` 的缓存规则，支持显式模式的接口使用 `30m` 长保留参数。压缩、切换模型或改变工具列表后，缓存可能需要重新建立。子代理也可能命中公共前缀缓存，但命中缓存不等于继承了父会话的私有历史。
+- **GPT**：延续 LCX 既有策略；前台会话与其子代理可共享父会话的 prompt-cache identity，以复用公共请求前缀。真正的 DSH Session、工具执行与私有历史仍各自独立。
+- **Grok**：严格跟随 DSH/Pi 原生语义；每个前台/子代理使用自己的 DSH Session ID 作为 prompt cache / session affinity identity，sibling 子代理不会共享 opaque replay state。
+
+Pi `0.85.1` 的显式缓存模式支持 `30m` 长保留参数；`cacheRetention=none` 时不发送 prompt cache key。压缩、切换模型或改变工具列表后，缓存可能需要重新建立。
 
 ## 故障排查
 
@@ -106,17 +126,19 @@ DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使
 
 **安装后没有变化？**
 
-检查安装和启动是否使用同一个 `web` 配置，确认已打开 LCX 并保存。联网搜索和高级搜图各有独立开关。
+检查安装和启动是否使用同一个 `web` 配置，并确认对应模型的开关已保存。GPT 主开关与 Grok Web/X 开关彼此独立。
 
 **对话正常，但搜索或压缩失败？**
 
-普通 Responses 对话可用，不代表接口同时支持 Native V2、Hosted Search 或 Alpha。请确认当前通道提供对应能力；Sub2API、NewAPI 的名称本身不是能力保证。
+普通 Responses 对话可用，不代表接口同时支持 Native V2、Hosted/Alpha 或 Grok 原生 Web/X Search。请确认当前通道提供对应服务端能力；Sub2API、NewAPI 或其他网关名称本身不是能力保证。
 
 ## 版本与验证范围
 
 本版使用 DSH `0.1.3-alpha.2`、DSH host Pi `0.85.1` 和插件 Pi `0.85.1`。插件单独声明 Pi 依赖，不替换 DSH 的依赖。
 
-已实测长对话、压缩后续聊和重启恢复、压缩后切换模型、PNG/TXT 附件、搜索及图片展示、双会话并发和前台子代理缓存。Alpha 的上述限制仍存在；代理、高并发与取消交错、后台可续聊子代理和其他附件格式尚未全面验证。详细变更见 [v0.4.3-pre.2 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.2)。
+发布前完整测试为 **237/237 PASS**，strict host/client typecheck 与 4 个 DSH schema 均通过。真实运行覆盖 GPT Hosted/Native V2 回归、DeepSeek 原生 DSH 搜索回归，以及 Grok 4.5/4.6 原生 Web/X Search、Web/X → 本地 `read` → continuation、provider-native replay、完整 DSH 重启后的续聊、Grok 父/子代理 session/cache 隔离。GPT 已验证的父 cache-sharing 策略保持不变。
+
+仍需保留的预发布限制：Windows DSH `0.1.3-alpha.2` 的 `fs-ext` 启动问题需要文档中的最小 host loading 修正；Alpha 引用及 screenshot 展示、代理/NO_PROXY、更广的并发/取消和后台 continuable subagent 矩阵仍未全面覆盖；Grok OAuth 不支持，citation 渲染仍可能受上游网关格式影响。详细变更见 [v0.4.3-pre.3 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.3)。
 
 ## 开发与反馈
 
