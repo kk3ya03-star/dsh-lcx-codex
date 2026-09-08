@@ -1,15 +1,15 @@
-# GPT Responses full-lifecycle ownership — 0.4.3-pre.2 prerelease
+# Model-scoped Responses ownership — 0.4.3-pre.3 prerelease
 
 ## Product contract
 
-`LCX OFF` leaves every LLM request on the native DSH adapter path. `LCX ON` is the ownership switch for the selected GPT Responses conversation: LCX owns the final Responses wire from the first ordinary turn through tool loops, Native V2 compaction, native replay, portable model migration, and restart/resume. Users turn LCX off before selecting a non-GPT model; DSH model switching itself remains hot and requires no restart.
+Feature ownership follows the active model. The GPT LCX switch owns only eligible GPT Responses conversations: ordinary turns, tool loops, Native V2 compaction/replay, portable GPT migration, Hosted/Alpha Search and restart/resume. Grok native Web/X switches are independent: eligible `grok*` Responses routes keep DSH Agent/Session authority while LCX supplies the narrow xAI server-tool wire/replay bridge. Claude, Gemini, DeepSeek and other models remain on their native DSH adapter paths. DSH model switching remains hot and requires no restart.
 
 ## Responsibility boundary
 
 - **DSH** remains the Agent, Session, request assembly, model/settings/credential, tool-execution, attachment, pressure-policy and compaction-transaction owner.
 - **The DSH adapter bridge** projects current DSH `GenerateOptions` and durable replay content into Pi's provider-neutral `Context`, reusing DSH attachment/file APIs and Pi's public serializers. It does not support older plugin configuration or checkpoints.
 - **Plugin Pi 0.85.1** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing. DSH 0.1.3-alpha.2 has bounded runtime evidence; see the README for the Windows host correction and remaining prerelease limitations.
-- **LCX** owns the final body, HTTP/SSE wire, safe error normalization, ordinary/compact/replay orchestration, Remote V2 opaque state and checkpoint compatibility.
+- **LCX** owns the GPT final body/HTTP/SSE lifecycle where enabled, plus the narrow Grok native-search wire/replay bridge. It does not take ownership of ordinary non-GPT DSH conversations.
 
 ## Remote compaction implementation audit
 
@@ -42,6 +42,14 @@ the plugin does not implement rollback or a second settings persistence layer.
 JSON responses are incrementally bounded at 8 MiB by default; JSON/SSE error
 bodies use the smaller of the configured bound and 512 KiB. Oversized bodies are
 cancelled without retries. These are transport limits, not context-token budgets.
+
+## Grok native-search bridge
+
+For an eligible Grok Responses request with native search enabled, LCX projects the current DSH provider/model/profile directly into one xAI-compatible `/responses` request. It removes the ordinary DSH `web_search` function from that request, adds `{type:"web_search"}` and/or `{type:"x_search"}`, and preserves `web_fetch` plus unrelated local tools. Server-side search items never enter DSH ToolRuntime as local calls.
+
+The bridge remains stateless (`store:false`, no `previous_response_id`). Provider output required for an agentic continuation is kept in a route/session-bound opaque envelope and restored in original order before the corresponding local function result. LCX-generated citation display additions are tracked separately and never inserted into the provider-native sequence. Compatible gateways that represent X search only through encrypted reasoning and usage can still preserve their complete native output across a later user turn or restart.
+
+Grok follows exact DSH/Pi request defaults rather than GPT product policy: each Grok child Session owns its prompt-cache/session-affinity identity, reasoning capability is materialized from the selected DSH profile/catalog, Harness attribution headers win reserved collisions, and stream-idle timing advances on meaningful DSH/Pi progress rather than transport heartbeat bytes. API-key/API-gateway auth is the supported boundary for this release.
 
 ## Unified request path
 
@@ -85,7 +93,7 @@ Native compaction and same-route replay reuse the active DSH/Pi conversation cac
 4. **Opaque state is same-session only.** Provider, model, base URL and exact `sourceSessionId === currentSessionId` gate Native opaque replay. Verified parent/child ancestry authorizes portable migration only; a fork never sends the parent's opaque checkpoint state.
 5. **Route migration is transparent and transient.** Reconstruct shadowed DSH messages and hand them to the normal adapter; do not persist a second portable history copy.
 6. **Ordinary search has one model tool.** `web_search` is ordinary search; `websearch_gpt_advanced` exists only for parameters absent from `WebSearchRequest`; Alpha remains its own stateful protocol.
-7. **Provider-native wire code is isolated.** Direct `/responses` SSE code is limited to Native V2 compaction/replay and Hosted Search protocol calls.
+7. **Provider-native wire code is isolated.** Direct `/responses` SSE code is limited to GPT Native V2/Hosted paths and the bounded Grok native-search bridge; it is not a generic second DSH provider framework.
 
 ## Why not subclass `BasicCompactionEngine`
 
