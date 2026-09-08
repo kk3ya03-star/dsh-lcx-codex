@@ -17,7 +17,7 @@ jobs:
           ref: release/0.4.3-pre.3
       - name: Import reviewed private-CI public source snapshot
         env:
-          SOURCE_URL: 'https://sdmntprwestus3.oaiusercontent.com/files/00000000-e178-81fd-bc37-3d409108f943/raw?se=2026-09-08T19%3A28%3A04Z&sp=r&sv=2026-02-06&sr=b&scid=ea010ff1-e368-56e6-8254-0269326fae3b&skoid=b869bb08-96ac-4184-ab38-9c45e2890c4c&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-08T19%3A20%3A18Z&ske=2026-09-09T19%3A20%3A18Z&sks=b&skv=2026-02-06&sig=H388Ec8durq8R%2BwOOVBbqjiil9ifRlC1kpVlCk/DBZ0%3D'
+          SOURCE_URL: 'https://sdmntprwestus.oaiusercontent.com/files/00000000-6dac-8230-ab94-95b5a9274199/raw?se=2026-09-08T19%3A30%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=ace6220a-cf07-593b-8044-6de6c6498232&skoid=b869bb08-96ac-4184-ab38-9c45e2890c4c&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-08T12%3A31%3A41Z&ske=2026-09-09T12%3A31%3A41Z&sks=b&skv=2026-02-06&sig=oAoTfIGJ%2BmTzTJ6HQbyqQd3ywY%2B0Z6dY413%2B4Aox0J8%3D'
         run: |
           set -euo pipefail
           curl -fL --retry 3 "$SOURCE_URL" -o "$RUNNER_TEMP/public-source.zip"
@@ -35,14 +35,13 @@ jobs:
           cp "$RUNNER_TEMP/source/scripts/build-client.mjs" scripts/build-client.mjs
           cp "$RUNNER_TEMP/source/scripts/probe-alpha.mjs" scripts/probe-alpha.mjs
           cp "$RUNNER_TEMP/source/scripts/validate-dsh-schema.mjs" scripts/validate-dsh-schema.mjs
-          sed -i 's/0\.4\.3-pre\.2/0.4.3-pre.3/g' package.json package-lock.json .github/workflows/publish.yml
-          sed -i 's/v0\.4\.3-pre\.2/v0.4.3-pre.3/g' .github/workflows/publish.yml
+          sed -i 's/0\.4\.3-pre\.2/0.4.3-pre.3/g' package.json package-lock.json
           git diff --check
       - name: Commit exact release runtime
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src lib tests package.json package-lock.json cordis.patch.yml tsconfig.json tsconfig.client.json scripts/build-client.mjs scripts/probe-alpha.mjs scripts/validate-dsh-schema.mjs .github/workflows/publish.yml
+          git add src lib tests package.json package-lock.json cordis.patch.yml tsconfig.json tsconfig.client.json scripts/build-client.mjs scripts/probe-alpha.mjs scripts/validate-dsh-schema.mjs
           git commit -m 'release: import approved 0.4.3-pre.3 runtime'
           git push origin HEAD:release/0.4.3-pre.3
