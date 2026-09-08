@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3-pre.3 - 2026-09-09
+
+- Add model-scoped ownership: GPT keeps the existing LCX Responses/Native V2/Hosted/Alpha path; Grok gains independent xAI-native Web/X Search; other models remain on native DSH behavior.
+- Inject xAI Responses `{type:"web_search"}` and `{type:"x_search"}` for Grok and suppress DSH `web_search` only on Grok native-search requests; keep `web_fetch` and unrelated DSH/MCP tools.
+- Preserve ordered provider-native Grok output across native search → local function → function result continuation and cold/restart replay without exposing server-side search as fake local tool calls.
+- Match DSH 0.1.3-alpha.2 / Pi 0.85.1 reasoning, cache/session identity, header authority, cancellation and idle-timeout semantics, including independent Grok subagent session identity while preserving GPT parent-shared cache policy.
+- Separate user-visible citation fallback from opaque provider replay; support compatible gateways that represent X search through encrypted reasoning/usage without an explicit `x_search_call` item.
+- Validate 237/237 tests, strict host/client types, four schemas, real Grok Web/X + local-tool workflows, parent/child isolation, GPT regressions and native DSH DeepSeek search regression.
+- Publish as prerelease `prelatest`; stable `latest` remains `0.4.2`. API-key/API-gateway Grok routes are supported; xAI OAuth/SuperGrok login remains out of scope and citation rendering can remain gateway-dependent.
+
 ## 0.4.3-pre.2 - 2026-09-07
 
 - Target DSH 0.1.3-alpha.2 and Pi 0.85.1, with strict TypeScript source and generated host/client artifacts.
