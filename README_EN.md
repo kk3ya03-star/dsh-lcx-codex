@@ -20,12 +20,12 @@ Models, endpoints, API keys / credentials, sessions, and tools remain DSH-owned.
 
 ## Installation
 
-This page documents **`0.4.3-pre.3`**, targeting **DSH `0.1.3-alpha.2`**. Stable remains `0.4.2`; users on DSH `0.1.1-rc.2` should use the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md).
+This page documents **`0.4.3-pre.4`**, targeting **DSH `0.1.3-alpha.2`**. Stable remains `0.4.2`; users on DSH `0.1.1-rc.2` should use the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md).
 
 Before installing, make sure DSH Web starts correctly and that the GPT Responses or Grok Responses API route you intend to use is configured in DSH. Node.js requires `^22.19.0 || >=24.0.0`. On Windows, see [Troubleshooting](#troubleshooting) if DSH fails while loading `fs-ext`.
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.3
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.4
 dsh web
 ```
 
@@ -155,9 +155,11 @@ A working Responses chat does not guarantee Native V2, Hosted/Alpha, or Grok nat
 
 This release targets DSH `0.1.3-alpha.2`, DSH host Pi `0.85.1`, and plugin Pi `0.85.1`. The plugin carries its own Pi dependency and does not replace DSH's copy.
 
-Release gates pass **237/237 tests**, strict host/client typechecks, and all four DSH schemas. Live coverage includes GPT Hosted/Native V2 regressions, native DSH DeepSeek search regression, Grok 4.5/4.6 native Web/X Search, Web/X → local `read` → continuation, provider-native replay, full DSH restart continuation, and Grok parent/child cache/session isolation. The existing GPT parent-cache-sharing policy remains unchanged.
+The two display fixes pass streamed, terminal-only and cold-replay regression tests. The live coverage below is inherited from pre.3; it is not a claim that every online scenario was rerun.
 
-Prerelease boundaries remain: Windows DSH `0.1.3-alpha.2` needs the documented minimal `fs-ext` loading correction; Alpha references/screenshot display, proxy/NO_PROXY, broader concurrency/cancellation, and background continuable-subagent matrices are not fully covered; Grok OAuth is unsupported; citation presentation can still depend on gateway formatting. See the [v0.4.3-pre.3 release notes](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.3).
+Release gates pass **243/243 tests**, strict host/client typechecks, and all four DSH schemas. Live coverage includes GPT Hosted/Native V2 regressions, native DSH DeepSeek search regression, Grok 4.5/4.6 native Web/X Search, Web/X → local `read` → continuation, provider-native replay, full DSH restart continuation, and Grok parent/child cache/session isolation. The existing GPT parent-cache-sharing policy remains unchanged.
+
+Prerelease boundaries remain: Windows DSH `0.1.3-alpha.2` needs the documented minimal `fs-ext` loading correction; Alpha references/screenshot display, proxy/NO_PROXY, broader concurrency/cancellation, and background continuable-subagent matrices are not fully covered; Grok OAuth is unsupported; citation presentation can still depend on gateway formatting. See the [v0.4.3-pre.4 release notes](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.4).
 
 ## Development and Feedback
 

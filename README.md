@@ -20,12 +20,12 @@ LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness
 
 ## 安装
 
-本页对应 **`0.4.3-pre.3` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
+本页对应 **`0.4.3-pre.4` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
 
 安装前，请确认 DSH Web 能正常启动，并已配置需要使用的 GPT Responses 或 Grok Responses API 路由。Node.js 要求 `^22.19.0 || >=24.0.0`；Windows 启动出现 `fs-ext` 报错时，先看下方[故障排查](#故障排查)。
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.3
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.4
 dsh web
 ```
 
@@ -161,9 +161,11 @@ DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使
 
 本版使用 DSH `0.1.3-alpha.2`、DSH host Pi `0.85.1` 和插件 Pi `0.85.1`。插件单独声明 Pi 依赖，不替换 DSH 的依赖。
 
-发布前完整测试为 **237/237 PASS**，strict host/client typecheck 与 4 个 DSH schema 均通过。真实运行覆盖 GPT Hosted/Native V2 回归、DeepSeek 原生 DSH 搜索回归，以及 Grok 4.5/4.6 原生 Web/X Search、Web/X → 本地 `read` → continuation、provider-native replay、完整 DSH 重启后的续聊、Grok 父/子代理 session/cache 隔离。GPT 已验证的父 cache-sharing 策略保持不变。
+本版两项展示修复已通过流式/非流式和冷恢复回归；以下真实运行覆盖继承自 pre.3，不代表重新执行了全部在线测试。
 
-仍需保留的预发布限制：Windows DSH `0.1.3-alpha.2` 的 `fs-ext` 启动问题需要文档中的最小 host loading 修正；Alpha 引用及 screenshot 展示、代理/NO_PROXY、更广的并发/取消和后台 continuable subagent 矩阵仍未全面覆盖；Grok OAuth 不支持，citation 渲染仍可能受上游网关格式影响。详细变更见 [v0.4.3-pre.3 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.3)。
+发布前完整测试为 **243/243 PASS**，strict host/client typecheck 与 4 个 DSH schema 均通过。真实运行覆盖 GPT Hosted/Native V2 回归、DeepSeek 原生 DSH 搜索回归，以及 Grok 4.5/4.6 原生 Web/X Search、Web/X → 本地 `read` → continuation、provider-native replay、完整 DSH 重启后的续聊、Grok 父/子代理 session/cache 隔离。GPT 已验证的父 cache-sharing 策略保持不变。
+
+仍需保留的预发布限制：Windows DSH `0.1.3-alpha.2` 的 `fs-ext` 启动问题需要文档中的最小 host loading 修正；Alpha 引用及 screenshot 展示、代理/NO_PROXY、更广的并发/取消和后台 continuable subagent 矩阵仍未全面覆盖；Grok OAuth 不支持，citation 渲染仍可能受上游网关格式影响。详细变更见 [v0.4.3-pre.4 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.4)。
 
 ## 开发与反馈
 

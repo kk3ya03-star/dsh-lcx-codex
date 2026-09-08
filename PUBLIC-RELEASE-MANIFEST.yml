@@ -1,93 +1,41 @@
-version: 0.4.3-pre.3
-state: RELEASED_PRERELEASE
-private_source:
-  commit: aaa83dcef5d70f37dc8983ae0d8a43bf14c60fc4
-  engineering_artifact_sha256: a31684f0e8fa34051710c6498007e4fb6b1191b0d46a850ea345fbc89923619f
+version: 0.4.3-pre.4
+state: APPROVED_PRERELEASE
 approval:
   product_owner: explicit_direct_release_instruction
-  date: 2026-09-09
-  reference: private Issue 59 technical-lead FINAL-PASS comment 5590385720 plus direct publication instruction
-  scope: prerelease_grok_native_search_plus_existing_pre2_runtime_with_disclosed_limits
+  date: 2026-09-08
+  reference: Product Owner approved publishing pre.4 after the two display fixes were merged and tested.
+  scope: prerelease_display_fixes_and_public_maintenance
+source:
+  repository: kk3ya03-star/dsh-lcx-codex
+  runtime_commit: c1f04c3ebde2fe23358a022983a5af509a21b5b6
+  sources_fix_pr: 15
+  empty_reasoning_fix_pr: 16
+  policy: Runtime is unchanged from the tested public source; release preparation changes metadata and documentation only.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
-  base_commit: fc77999b9fb6307fa377b60f89d6c126203b4cc8
   branch: main
-  former_release_branch: release/0.4.3-pre.3
-  temporary_release_branches: removed
-  tag: v0.4.3-pre.3
+  tag: v0.4.3-pre.4
   npm_dist_tag: prelatest
   stable_latest_must_remain: 0.4.2
-included_candidate_paths:
-  - src/**
-  - lib/**
-  - scripts/build-client.mjs
-  - scripts/probe-alpha.mjs
-  - scripts/validate-dsh-schema.mjs
-  - tests/**
-  - package.json
-  - package-lock.json
-  - cordis.patch.yml
-  - tsconfig.json
-  - tsconfig.client.json
-explicit_build_helper_mappings:
-  - tools/check-generated.mjs -> scripts/check-generated.mjs
-  - tools/link-dsh-runtime.mjs -> scripts/link-dsh-runtime.mjs
-  - qa/runtime-alpha2/package.json -> scripts/runtime-alpha2/package.json
-  - qa/runtime-alpha2/package-lock.json -> scripts/runtime-alpha2/package-lock.json
-preserved_distribution_paths:
-  - assets/**
-  - LICENSE
-  - .gitignore
-  - .gitattributes
-updated_distribution_paths:
-  - README.md
-  - README_EN.md
-  - CHANGELOG.md
-  - ARCHITECTURE.md
-  - .github/workflows/publish.yml
-  - PUBLIC-RELEASE-MANIFEST.yml
-excluded_private_paths:
-  - private root README.md
-  - AGENTS.md
-  - AI-MANIFEST.yml
-  - GOVERNANCE.md
-  - PROJECT-CHARTER.md
-  - STATUS.md
-  - ROADMAP.md
-  - ACCEPTANCE.md
-  - ERRORS.md
-  - RESEARCH.md
-  - DESIGN.md
-  - DEVELOPMENT-PLAN.md
-  - docs/**
-  - qa/**
-  - releases/**
-  - compatibility/**
-  - tools/**
-  - private workflows
-  - credentials, raw provider state, image fixtures and local logs
 verification:
+  regression_tests: 243/243 PASS
   strict_types: PASS
-  regression_tests: 237/237 PASS
   schemas: 4/4 PASS
-  grok_protocol_review: TECHNICAL_LEAD_FINAL_PASS
-  runtime_source_policy: runtime behavior equals reviewed private source aaa83dc except release metadata/docs
-  artifact_policy: build and publish final npm artifact from public release tree
+  generated_output: PASS
+  package: verify_on_release_tree
+  live_scope: Prior pre.3 live coverage is inherited; the two new display fixes are verified by streamed, terminal-only and cold-replay regression fixtures.
+previous_release:
+  version: 0.4.3-pre.3
+  tag: v0.4.3-pre.3
+  public_commit: a11f63fb836797985737784d6687ba17aaa3ea4e
+  policy: Immutable tag and published npm version remain unchanged.
 runtime_basis:
   dsh: 0.1.3-alpha.2
   host_pi: 0.85.1
   plugin_pi: 0.85.1
-  qualification: bounded_live_tests_on_Windows_with_approved_host_loading_correction
-  grok: native Web/X, local-tool continuation, opaque replay, restart, parent/child identity validated
-  remaining: xAI OAuth out of scope; provider-dependent citation rendering; Alpha intermittent refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
+  qualification: bounded_live_tests_on_Windows_with_documented_host_loading_correction
+  remaining: xAI OAuth unsupported; provider-dependent citations; Alpha refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
   legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained
-
-post_release_verification:
-  public_commit: a11f63fb836797985737784d6687ba17aaa3ea4e
-  git_tag_target: a11f63fb836797985737784d6687ba17aaa3ea4e
-  github_prerelease: true
-  npm_version: 0.4.3-pre.3
-  npm_prelatest: 0.4.3-pre.3
-  npm_latest: 0.4.2
-  checked_at: 2026-09-08
-  note: Post-release documentation and CI maintenance do not modify the immutable release tag or republish its npm version.
+publication:
+  state: pending_registry_verification
+  policy: Publish a new prerelease only; never republish an existing version or alter stable latest.
