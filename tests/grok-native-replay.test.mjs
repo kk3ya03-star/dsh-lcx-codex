@@ -95,7 +95,7 @@ async function twoHop(t, serverTypes, { cold = false, firstEvents } = {}) {
   const first = await collect(h.stream(options([prompt]), () => { throw new Error('DSH adapter must not run') }))
   assert.deepEqual(
     first.filter(chunk => chunk.type === 'block-end').map(chunk => chunk.block.type),
-    ['reasoning', 'tool-call', ...(serverTypes.includes('web_search_call') ? ['text'] : [])],
+    ['reasoning', 'tool-call'],
   )
   let history = [prompt, assistantFrom(first), toolResult()]
   if (cold) history = JSON.parse(JSON.stringify(history))
@@ -185,7 +185,7 @@ test('empty reasoning, split output text, and source fallback remain replayable 
     type: 'message', id: 'msg_split_59', role: 'assistant', status: 'completed',
     content: [
       { type: 'output_text', text: 'Part A', annotations: [] },
-      { type: 'output_text', text: ' and B', annotations: [] },
+      { type: 'output_text', text: ' and B', annotations: [{ type: 'url_citation', url: 'https://example.com/source-7', title: 'Source 7' }] },
     ],
   }
   const emptyReasoning = { type: 'reasoning', id: 'rs_empty_59', encrypted_content: 'SYNTHETIC_EMPTY_59', summary: [] }
@@ -215,7 +215,12 @@ test('empty reasoning, split output text, and source fallback remain replayable 
 })
 
 async function capturedHistory(t) {
-  const output = [reasoningItem, serverItem('web_search_call', 9), clientCall]
+  const output = [reasoningItem, serverItem('web_search_call', 9), {
+    type: 'message', id: 'msg_cited_history', role: 'assistant', status: 'completed',
+    content: [{ type: 'output_text', text: 'Cited answer', annotations: [
+      { type: 'url_citation', url: 'https://example.com/source-9', title: 'Source 9' },
+    ] }],
+  }, clientCall]
   t.mock.method(globalThis, 'fetch', async () => sseResponse([completed(output)]))
   const h = grokHarness({ nativeWeb: true })
   const prompt = user('capture history')
@@ -228,7 +233,7 @@ test('legacy v1 citation items migrate to display-only anchors on cold continuat
   const assistant = history[1]
   const envelope = assistant.source.replayState.grokNative
   const originalOutput = structuredClone(envelope.output)
-  const sourceText = assistant.content.find(block => block.type === 'text').text
+  const sourceText = assistant.content.find(block => block.type === 'text' && block.text.includes('Sources:')).text
   envelope.version = 1
   delete envelope.visibleAdditions
   envelope.output.push({
@@ -248,7 +253,7 @@ test('legacy v1 citation items migrate to display-only anchors on cold continuat
   assert.deepEqual(request.input.slice(start, start + originalOutput.length), originalOutput)
   assert.equal(request.input[start + originalOutput.length].type, 'function_call_output')
   assert.equal(request.input.some(item => item.id?.startsWith('msg_lcx_sources_')), false)
-  assert.equal(assistant.content.find(block => block.type === 'text').text, sourceText)
+  assert.equal(assistant.content.find(block => block.type === 'text' && block.text.includes('Sources:')).text, sourceText)
 })
 
 for (const framed of [false, true])
