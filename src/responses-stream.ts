@@ -852,11 +852,6 @@ async function* normalizedResponseEvents(
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : 0;
-    if (
-      (event.type === "response.output_item.added" ||
-        event.type === "response.output_item.done") &&
-      isObject(event.item)
-    )
     if (event.type === "response.output_item.done" && isObject(event.item))
       completedWireItems.set(index, structuredClone(event.item));
     if (

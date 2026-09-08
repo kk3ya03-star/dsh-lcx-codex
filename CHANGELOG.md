@@ -8,7 +8,7 @@
 
 - Add model-scoped ownership: GPT keeps the existing LCX Responses/Native V2/Hosted/Alpha path; Grok gains independent xAI-native Web/X Search; other models remain on native DSH behavior.
 - Inject xAI Responses `{type:"web_search"}` and `{type:"x_search"}` for Grok and suppress DSH `web_search` only on Grok native-search requests; keep `web_fetch` and unrelated DSH/MCP tools.
-- Preserve ordered provider-native Grok output across native search â†’ local function â†’ function result continuation and cold/restart replay without exposing server-side search as fake local tool calls.
+- Preserve ordered provider-native Grok output across native search → local function → function result continuation and cold/restart replay without exposing server-side search as fake local tool calls.
 - Match DSH 0.1.3-alpha.2 / Pi 0.85.1 reasoning, cache/session identity, header authority, cancellation and idle-timeout semantics, including independent Grok subagent session identity while preserving GPT parent-shared cache policy.
 - Separate user-visible citation fallback from opaque provider replay; support compatible gateways that represent X search through encrypted reasoning/usage without an explicit `x_search_call` item.
 - Validate 237/237 tests, strict host/client types, four schemas, real Grok Web/X + local-tool workflows, parent/child isolation, GPT regressions and native DSH DeepSeek search regression.
@@ -115,14 +115,14 @@
 
 - `tests/rc13-regressions.test.mjs`: 15/15 passed.
 - Full local suite: 58/58 passed; DSH schema validation: 4/4 passed; `git diff --check` passed.
-- Installed DSH/NewAPI acceptance passed on Terra xhigh: automatic 90% Native V2 compact, continuous replay/cache re-warm, DSH Web restart/resume, real GUI `/compact` plus continuation, and parentâ†’child fork portable isolation all completed without pre-Native stock prune or cross-session opaque replay.
+- Installed DSH/NewAPI acceptance passed on Terra xhigh: automatic 90% Native V2 compact, continuous replay/cache re-warm, DSH Web restart/resume, real GUI `/compact` plus continuation, and parent→child fork portable isolation all completed without pre-Native stock prune or cross-session opaque replay.
 - This remains a local release candidate only; no npm/GitHub publication or tag is implied.
 
 ## 0.4.0-rc.12 - 2026-08-22
 
 ### Fixed
 
-- Serialize every `compactIfNeeded()` call per concrete preset compaction service so same-generation sessions cannot observe each otherâ€™s temporary Native-first pruner/config state; queued calls are abortable and plugin cleanup drains active owners before restoring the original method.
+- Serialize every `compactIfNeeded()` call per concrete preset compaction service so same-generation sessions cannot observe each other’s temporary Native-first pruner/config state; queued calls are abortable and plugin cleanup drains active owners before restoring the original method.
 - Align Native `openai-responses` session affinity with the active Pi adapter: default OpenAI-format routes use `session_id` plus `x-client-request-id`, while OpenRouter-format routes use `x-session-id`; explicit affinity headers remain authoritative.
 - Restrict Basic fallback to allowlisted retryable first-checkpoint failures and fail closed once a Native/legacy checkpoint already exists.
 - Require a real `response.completed` terminal event with `status=completed` for Native compaction/replay and reject orphan `function_call_output` items.
@@ -182,7 +182,7 @@
 
 - Added Native-first automatic pressure coordination for GPT Responses sessions: below the configured Native threshold the plugin suppresses DSH's stock 80% pressure compaction/prune path; at the default 90% threshold it lets compaction proceed while temporarily suppressing tool-result pruning so Native V2 runs first.
 - Added a separate emergency prune threshold (default 95%). At or above this zone, DSH's replay-safe tool-result pruner is allowed to run before compaction as overflow protection.
-- Added adjustable `web_search` tool deadline, default 240 seconds (30â€“600s). This mutates only DSH's non-model-visible `ToolDefinition.timeoutMs`, so the model tool schema and prompt-cache prefix do not change.
+- Added adjustable `web_search` tool deadline, default 240 seconds (30–600s). This mutates only DSH's non-model-visible `ToolDefinition.timeoutMs`, so the model tool schema and prompt-cache prefix do not change.
 - Added Settings UI controls for automatic compaction, Native threshold, emergency prune threshold, and web search timeout.
 - Kept the rc.5 checkpoint/fidelity format unchanged (`lcx-native-compaction-v5`); rc.6 is a pressure/timeout coordination release, not another checkpoint migration.
 
