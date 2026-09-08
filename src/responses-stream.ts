@@ -815,12 +815,7 @@ async function* normalizedResponseEvents(
             observeCitation(annotation);
       }
     }
-    if (
-      item.type === "web_search_call" &&
-      isObject(item.action) &&
-      Array.isArray(item.action.sources)
-    )
-      for (const source of item.action.sources) observeCitation(source);
+    // Search candidates are not answer citations. Only output_text annotations qualify.
   };
   const isServerToolItem = (value: unknown): value is WireItem =>
     isObject(value) && options.serverToolTypes?.has(String(value.type ?? "")) === true;
@@ -857,12 +852,6 @@ async function* normalizedResponseEvents(
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : 0;
-    if (
-      (event.type === "response.output_item.added" ||
-        event.type === "response.output_item.done") &&
-      isObject(event.item)
-    )
-      observeCitations(event.item);
     if (event.type === "response.output_item.done" && isObject(event.item))
       completedWireItems.set(index, structuredClone(event.item));
     if (

@@ -325,3 +325,35 @@ test('aliased mixed-case custom Grok preserves selected route controls, images, 
   assert.equal(finish.replayState.response.provider, 'relay')
   assert.equal(finish.replayState.response.model, 'GrOkCustomPreview')
 })
+
+for (const mode of ['uncited', 'cited', 'inline', 'discarded-stream-citation']) {
+  test(`Grok sources display only actual answer citations: ${mode}`, async t => {
+    const cited = { type: 'url_citation', url: 'https://example.com/cited', title: 'Cited' }
+    const server = {
+      type: 'web_search_call', id: 'ws_candidates', status: 'completed',
+      action: { type: 'search', sources: Array.from({ length: 20 }, (_, n) => ({ url: `https://example.com/unused-${n}` })) },
+    }
+    const message = {
+      type: 'message', id: 'msg_cited', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: mode === 'inline' ? 'Answer https://example.com/cited' : 'Answer',
+        annotations: ['cited', 'inline'].includes(mode) ? [cited, cited] : [] }],
+    }
+    const output = [server, message]
+    t.mock.method(globalThis, 'fetch', async () => sseResponse([
+      ...(mode === 'discarded-stream-citation' ? [{ type: 'response.output_item.done', output_index: 1,
+        item: { ...message, content: [{ type: 'output_text', text: 'Draft', annotations: [cited] }] } }] : []),
+      { type: 'response.completed', response: {
+        id: 'resp_sources', model: 'grok-4.6', status: 'completed', output,
+        usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 },
+      } },
+    ]))
+    const h = grokHarness({ nativeWeb: true })
+    const chunks = await collect(h.stream(requestOptions([{ type: 'text', text: 'search' }]), () => { throw new Error('Unexpected adapter') }))
+    assert.equal(chunks.at(-1).reason.kind, 'stop')
+    const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
+    assert.doesNotMatch(text, /unused-/)
+    assert.equal(text.includes('Sources:'), mode === 'cited')
+    assert.equal(text.split('https://example.com/cited').length - 1, ['cited', 'inline'].includes(mode) ? 1 : 0)
+    assert.deepEqual(chunks.at(-1).replayState.grokNative.output, output, 'Provider replay retains complete original search data')
+  })
+}

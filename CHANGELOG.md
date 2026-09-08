@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Display only Grok answer `url_citation` annotations as fallback Sources; search candidate lists no longer become visible citations. Preserve inline links, deduplicate citation URLs and keep original provider replay unchanged.
+
 ## 0.4.3-pre.3 - 2026-09-09
 
 - Add model-scoped ownership: GPT keeps the existing LCX Responses/Native V2/Hosted/Alpha path; Grok gains independent xAI-native Web/X Search; other models remain on native DSH behavior.
