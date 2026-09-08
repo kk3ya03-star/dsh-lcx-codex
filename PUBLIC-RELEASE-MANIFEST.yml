@@ -1,5 +1,5 @@
 version: 0.4.3-pre.4
-state: APPROVED_PRERELEASE
+state: RELEASED_PRERELEASE
 approval:
   product_owner: explicit_direct_release_instruction
   date: 2026-09-08
@@ -22,7 +22,7 @@ verification:
   strict_types: PASS
   schemas: 4/4 PASS
   generated_output: PASS
-  package: verify_on_release_tree
+  package: PASS
   live_scope: Prior pre.3 live coverage is inherited; the two new display fixes are verified by streamed, terminal-only and cold-replay regression fixtures.
 previous_release:
   version: 0.4.3-pre.3
@@ -37,5 +37,18 @@ runtime_basis:
   remaining: xAI OAuth unsupported; provider-dependent citations; Alpha refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
   legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained
 publication:
-  state: pending_registry_verification
+  state: RELEASED
   policy: Publish a new prerelease only; never republish an existing version or alter stable latest.
+
+post_release_verification:
+  public_commit: 62510064dd860162964a9110adc7fa5cf32d6339
+  git_tag_target: 62510064dd860162964a9110adc7fa5cf32d6339
+  github_prerelease: true
+  npm_version: 0.4.3-pre.4
+  npm_prelatest: 0.4.3-pre.4
+  npm_latest: 0.4.2
+  npm_integrity: sha512-lEA/gG0fxKDtn7Jg8rldFFpTebEnKPdMjIgKTUkn0nFwbc12hZfNbuWTAAg9vU85sy9IIPMtRDCG2blgyFAJ1Q==
+  matches_checked_artifact: true
+  published_fix_modules_match: true
+  publish_workflow: 34276794741
+  release_branch: removed
