@@ -201,7 +201,7 @@ test('empty reasoning, split output text, and source fallback remain replayable 
   const first = await collect(h.stream(options([prompt]), () => { throw new Error('DSH adapter must not run') }))
   const assistant = assistantFrom(first)
   assert.deepEqual(assistant.content.map(block => [block.type, block.text ?? block.name]), [
-    ['reasoning', ''], ['text', 'Part A and B'], ['tool-call', 'workspace_read'],
+    ['text', 'Part A and B'], ['tool-call', 'workspace_read'],
     ['text', '\n\nSources:\n- Source 7: https://example.com/source-7'],
   ])
   await collect(h.stream(options([prompt, JSON.parse(JSON.stringify(assistant)), toolResult()]), () => { throw new Error('DSH adapter must not run') }))

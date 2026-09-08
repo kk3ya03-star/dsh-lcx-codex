@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hide Grok reasoning blocks with no visible text while preserving their encrypted provider state for tool continuation and cold replay. Visible reasoning and GPT streaming remain unchanged.
+
 - Display only Grok answer `url_citation` annotations as fallback Sources; search candidate lists no longer become visible citations. Preserve inline links, deduplicate citation URLs and keep original provider replay unchanged.
 
 ## 0.4.3-pre.3 - 2026-09-09

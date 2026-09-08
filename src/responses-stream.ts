@@ -862,6 +862,14 @@ async function* normalizedResponseEvents(
       observeServerTool(event.item);
       continue;
     }
+    // Grok may send many encrypted reasoning items with no visible summary.
+    // Keep them in completedWireItems/nativeOutput, but do not open empty UI blocks.
+    if (
+      options.serverToolTypes &&
+      (event.type === "response.output_item.added" || event.type === "response.output_item.done") &&
+      isObject(event.item) && event.item.type === "reasoning" &&
+      !itemText(event.item as WireItem).trim() && !open.get(index)?.text.trim()
+    ) continue;
     if (event.type === "response.output_item.added" && isObject(event.item)) {
       const item = normalizedTerminalItem(event.item as WireItem, index);
       open.set(index, { kind: itemKind(item), item, text: itemText(item) });
@@ -894,6 +902,8 @@ async function* normalizedResponseEvents(
       event.type === "response.reasoning_summary_text.delta" ||
       event.type === "response.reasoning_text.delta"
     ) {
+      if (options.serverToolTypes && !open.has(index) && !String(event.delta ?? "").trim())
+        continue;
       let record = open.get(index);
       if (!record) {
         const item = {
@@ -998,6 +1008,8 @@ async function* normalizedResponseEvents(
       }
       const output = terminalOutput
         .filter((item) => !isServerToolItem(item))
+        .filter((item) => !(options.serverToolTypes && isObject(item) &&
+          item.type === "reasoning" && !itemText(item as WireItem).trim()))
         .map((item: unknown, terminalIndex: number) =>
           isObject(item)
             ? normalizedTerminalItem(item as WireItem, terminalIndex)
