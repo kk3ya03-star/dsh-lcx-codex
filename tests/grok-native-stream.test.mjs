@@ -357,3 +357,30 @@ for (const mode of ['uncited', 'cited', 'inline', 'discarded-stream-citation']) 
     assert.deepEqual(chunks.at(-1).replayState.grokNative.output, output, 'Provider replay retains complete original search data')
   })
 }
+
+for (const framed of [false, true]) {
+  test(`Grok hides empty encrypted reasoning while retaining visible thoughts and replay (${framed ? 'streamed' : 'terminal'})`, async t => {
+    const empty = Array.from({ length: 8 }, (_, n) => ({
+      type: 'reasoning', id: `rs_hidden_${n}`, summary: n % 2 ? [{ type: 'summary_text', text: '  ' }] : [], encrypted_content: `SYNTHETIC_${n}`,
+    }))
+    const visible = { type: 'reasoning', id: 'rs_visible', summary: [{ type: 'summary_text', text: 'Checking the photograph sources.' }], encrypted_content: 'SYNTHETIC_VISIBLE' }
+    const answer = { type: 'message', id: 'msg_photo', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Photo result', annotations: [] }] }
+    const output = [...empty, visible, answer]
+    t.mock.method(globalThis, 'fetch', async () => sseResponse([
+      ...(framed ? output.flatMap((item, output_index) => [
+        { type: 'response.output_item.added', output_index, item: item.type === 'reasoning' ? { ...item, summary: [] } : item },
+        ...(item === visible ? [{ type: 'response.reasoning_summary_text.delta', output_index, summary_index: 0, item_id: item.id, delta: 'Checking the photograph sources.' }] : []),
+        { type: 'response.output_item.done', output_index, item },
+      ]) : []),
+      { type: 'response.completed', response: { id: 'resp_photos', model: 'grok-4.6', status: 'completed', output, usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } },
+    ]))
+    const h = grokHarness({ nativeWeb: true })
+    const chunks = await collect(h.stream(requestOptions([{ type: 'text', text: 'search photographs' }]), () => { throw new Error('Unexpected adapter') }))
+    assert.equal(chunks.at(-1).reason.kind, 'stop', JSON.stringify(chunks.at(-1)))
+    const blocks = chunks.filter(c => c.type === 'block-end').map(c => c.block)
+    assert.deepEqual(blocks.map(b => [b.type, b.text]), [['reasoning', 'Checking the photograph sources.'], ['text', 'Photo result']])
+    assert.equal(chunks.filter(c => c.type === 'block-start' && c.blockType === 'reasoning').length, 1)
+    assert.deepEqual(chunks.at(-1).replayState.blocks.map(b => b.type), blocks.map(b => b.type))
+    assert.deepEqual(chunks.at(-1).replayState.grokNative.output, output)
+  })
+}

@@ -339,10 +339,12 @@ function replayForMessage(
     if (isRecord(block) && visibleItemMatchesBlock(item, block)) {
       anchors.push(item);
       blockIndex += 1;
-    } else if (!(item.type === "reasoning" && (reasoningCounts.get(String(item.id)) ?? 0) > 1)) {
+    } else if (!(item.type === "reasoning" &&
+      (!itemText(item).trim() || (reasoningCounts.get(String(item.id)) ?? 0) > 1))) {
       return undefined;
     }
   }
+  // Empty Grok reasoning has no UI block; older histories can still contain it.
   // Pi can coalesce repeated reasoning IDs in terminal-only gateway responses.
   // Match every provider-visible DSH block and only the hashed LCX additions.
   if (anchors.length === 0) return undefined;
