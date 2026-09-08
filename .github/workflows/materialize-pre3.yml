@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   materialize:
-    if: github.event.head_commit.message == 'ci: materialize approved pre3 source'
+    if: "${{ github.event.head_commit.message == 'ci: materialize approved pre3 source' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
