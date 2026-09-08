@@ -21,7 +21,13 @@
 - Bounded live validation covers long dialogue, Native compaction/restart/model switching, uploaded PNG/TXT, two-session concurrency, foreground subagent caches, and automatic pressure bands. 156 regression tests pass.
 - Prerelease on `prelatest`; stable `latest` remains 0.4.2. Windows DSH tests require the documented minimal host loading correction. Alpha intermittent references and screenshot delivery, proxy behavior, and broader concurrency/cancellation remain limitations, not verified fixes.
 
-## 0.4.2-pre.1 - candidate under runtime acceptance
+## 0.4.2 - 2026-08-29
+
+- Promote the validated 0.4.2-pre.1 runtime to stable with no functional/runtime changes.
+- Publish on npm `latest`; subsequently superseded prerelease channels do not change this stable release.
+- Release commit: `60b023378d2d506093694e218ab6eb97cd81d9c0`; tag: `v0.4.2`.
+
+## 0.4.2-pre.1 - released; superseded by 0.4.2
 
 ### Architecture
 
@@ -34,7 +40,7 @@
 
 ### Validation state
 
-- Engineering gates pass on the private work branch; exact commit-bound DSH + Sub2API runtime acceptance remains mandatory before integration, publication or a `VERIFIED` compatibility claim.
+- Engineering gates and commit-bound DSH + Sub2API runtime acceptance completed before publication. Stable 0.4.2 subsequently promoted the same runtime without functional changes.
 
 ## 0.4.1 - 2026-08-25
 

@@ -124,6 +124,31 @@ DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使
 
 本版 Windows 实测使用了一个最小 DSH 修正：仅在非 Windows 平台加载 `fs-ext`，保留原有 Win32 会话锁。插件不会自动修改 DSH；未经该修正的 Windows 环境不保证能启动。不要用关闭会话锁来绕过问题。
 
+
+具体处理方法（仅适用于 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.3-alpha.2`）：
+
+1. 先停止正在运行的 DSH，并从错误堆栈找到实际加载的 `@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js`。不要修改其他 Node 安装或其他 DSH 副本。全局安装通常在 `npm root -g` 返回目录中的 DSH 依赖树内；以堆栈的绝对路径为准。
+2. 检查该包相邻的 `package.json`，确认版本为 `0.1.3-alpha.2`，并把 `lib/index.js` 复制为 `lib/index.js.before-win32-fs-ext.bak`；备份已存在时保留它。
+3. 用编辑器将下面唯一一行：
+
+   ```js
+   import { flock } from "fs-ext";
+   ```
+
+   替换为：
+
+   ```js
+   const flock = process.platform === "win32"
+     ? undefined
+     : (await import("fs-ext")).flock;
+   ```
+
+   只改模块加载这一处，保留其余代码和 Win32 会话锁。如果版本或原始行不符，请停止套用此修正。
+4. 保存后重新运行 `dsh web`，新建会话并发送一条消息，确认启动和会话写入正常。此修正不保证解决其他启动错误。
+5. 恢复时先停止 DSH，再用备份覆盖 `index.js`。重新安装或升级 DSH 可能覆盖此本地修改；不要把这个旧版本修正直接套到新版本。
+
+这是一项用户自行选择的 DSH 本地兼容修正，不是插件安装步骤自动执行的补丁。项目的 Windows 验证使用的正是上述加载方式。
+
 **安装后没有变化？**
 
 检查安装和启动是否使用同一个 `web` 配置，并确认对应模型的开关已保存。GPT 主开关与 Grok Web/X 开关彼此独立。

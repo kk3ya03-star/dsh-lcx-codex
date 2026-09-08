@@ -1,7 +1,7 @@
 {
   "name": "dsh-lcx-codex",
   "version": "0.4.3-pre.3",
-  "description": "DSH GPT Responses lifecycle owner with Native V2 compaction/replay and Hosted/Alpha Search capabilities",
+  "description": "Model-scoped DSH plugin: GPT Responses lifecycle, Native V2 compaction and Hosted/Alpha Search; Grok native Web/X Search",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -11,7 +11,10 @@
     "openai-responses",
     "sub2api",
     "newapi",
-    "compaction"
+    "compaction",
+    "grok",
+    "xai",
+    "x-search"
   ],
   "repository": {
     "type": "git",
