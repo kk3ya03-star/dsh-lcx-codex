@@ -11,6 +11,7 @@ type PiResponsesModel = {
     provider: string;
     reasoning?: boolean;
     thinkingLevelMap?: Record<string, string | null>;
+    includeEncryptedReasoning?: boolean;
     compat?: ResponsesCompat;
 };
 type GenerationControls = {

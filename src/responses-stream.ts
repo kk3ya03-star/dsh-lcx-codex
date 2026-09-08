@@ -9,6 +9,10 @@ import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-respons
 import { ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry } from "./transport.js";
+import {
+  createGrokNativeReplayEnvelope,
+  type GrokNativeReplayRoute,
+} from "./grok-native-search.js";
 
 type UnknownRecord = Record<string, unknown>;
 type ResponseStreamEvent = import("openai/resources/responses/responses.js").ResponseStreamEvent;
@@ -52,7 +56,21 @@ type WireItem = UnknownRecord & {
   arguments?: unknown;
   input?: unknown;
 };
-type StreamOptions = { signal?: AbortSignal; maxResponseBytes?: number };
+type StreamOptions = {
+  signal?: AbortSignal;
+  maxResponseBytes?: number;
+};
+type ResponseWireMeta = {
+  responseModel?: string;
+  nativeOutput?: unknown[];
+  nativeVisibleAdditions?: unknown[];
+};
+export type ServerToolUsage = {
+  webSearchCalls: number;
+  xSearchCalls: number;
+  total: number;
+};
+
 type StreamRequestOptions = {
   baseURL: string;
   provider: string;
@@ -63,8 +81,13 @@ type StreamRequestOptions = {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  applyDefaultTimeout?: boolean;
+  streamIdleTimeoutMs?: number;
   maxAttempts?: number;
   maxResponseBytes?: number;
+  serverToolTypes?: ReadonlySet<string>;
+  nativeReplayRoute?: GrokNativeReplayRoute;
+  onServerToolUsage?: (usage: ServerToolUsage) => void;
 };
 type PiOutput = import("@earendil-works/pi-ai").AssistantMessage & {
   responseModel?: string;
@@ -274,10 +297,95 @@ export function managedFailureChunk(
   };
 }
 
+async function readWithSignal(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read();
+  if (signal.aborted) throw signal.reason;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+function requestDeadline(
+  parent: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener("abort", onParentAbort, { once: true });
+  if (
+    !controller.signal.aborted &&
+    typeof timeoutMs === "number" &&
+    Number.isFinite(timeoutMs) &&
+    timeoutMs > 0
+  )
+    timer = setTimeout(() => controller.abort(Object.assign(
+      new Error(`Responses request timeout after ${timeoutMs}ms`),
+      { code: "LCX_REQUEST_TIMEOUT" },
+    )), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() {
+      if (timer !== undefined) clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+      if (!controller.signal.aborted)
+        controller.abort(Object.assign(new Error("Responses request consumer stopped"), {
+          code: "LCX_ABORTED",
+        }));
+    },
+  };
+}
+
+function streamIdleWatchdog(
+  parent: AbortSignal | undefined,
+  idleTimeoutMs: number | undefined,
+) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener("abort", onParentAbort, { once: true });
+  const disarm = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  const arm = () => {
+    if (controller.signal.aborted) return;
+    disarm();
+    if (typeof idleTimeoutMs === "number" && Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0)
+      timer = setTimeout(() => controller.abort(Object.assign(
+        new Error(`Responses stream idle timeout after ${idleTimeoutMs}ms`),
+        { code: "LCX_STREAM_IDLE_TIMEOUT" },
+      )), idleTimeoutMs);
+  };
+  return {
+    signal: controller.signal,
+    arm,
+    disarm,
+    dispose() {
+      disarm();
+      parent?.removeEventListener("abort", onParentAbort);
+      if (!controller.signal.aborted)
+        controller.abort(Object.assign(new Error("Responses stream consumer stopped"), {
+          code: "LCX_ABORTED",
+        }));
+    },
+  };
+}
+
 /**
  * Minimal JSON SSE reader. LCX owns the exact HTTP wire; Pi owns event semantics after this boundary.
+ * Stream liveness is measured after Pi emits meaningful DSH progress, not here.
  * @param {Response} response
- * @param {{ signal?: AbortSignal, maxResponseBytes?: number }} [options]
+ * @param {StreamOptions} [options]
  */
 async function* responseEvents(
   response: Response,
@@ -316,7 +424,7 @@ async function* responseEvents(
           options.signal.reason ??
           Object.assign(new Error("request aborted"), { code: "LCX_ABORTED" })
         );
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithSignal(reader, options.signal);
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes)
@@ -674,10 +782,57 @@ function recordMatches(
  */
 async function* normalizedResponseEvents(
   source: AsyncIterable<unknown>,
-  meta: { responseModel?: string } = {},
+  meta: ResponseWireMeta = {},
+  options: {
+    serverToolTypes?: ReadonlySet<string>;
+    onServerToolUsage?: (usage: ServerToolUsage) => void;
+  } = {},
 ): AsyncGenerator<UnknownRecord> {
   const open = new Map<number, { kind: string | undefined; item: WireItem; text: string }>();
   const completed = new Set<string>();
+  const completedWireItems = new Map<number, unknown>();
+  const serverToolIds = new Map<string, Set<string>>();
+  const citations = new Map<string, string>();
+  const observeCitation = (candidate: unknown) => {
+    if (!isObject(candidate)) return;
+    try {
+      const url = new URL(String(candidate.url ?? ""));
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      const title = typeof candidate.title === "string"
+        ? candidate.title.replace(/[\r\n]+/gu, " ").trim()
+        : "";
+      if (!citations.has(url.href)) citations.set(url.href, title);
+    } catch {}
+  };
+  const observeCitations = (item: unknown) => {
+    if (!isObject(item)) return;
+    if (item.type === "message" && Array.isArray(item.content)) {
+      for (const part of item.content) {
+        if (!isObject(part) || part.type !== "output_text" || !Array.isArray(part.annotations))
+          continue;
+        for (const annotation of part.annotations)
+          if (isObject(annotation) && annotation.type === "url_citation")
+            observeCitation(annotation);
+      }
+    }
+    if (
+      item.type === "web_search_call" &&
+      isObject(item.action) &&
+      Array.isArray(item.action.sources)
+    )
+      for (const source of item.action.sources) observeCitation(source);
+  };
+  const isServerToolItem = (value: unknown): value is WireItem =>
+    isObject(value) && options.serverToolTypes?.has(String(value.type ?? "")) === true;
+  const observeServerTool = (item: WireItem) => {
+    const type = String(item.type);
+    let ids = serverToolIds.get(type);
+    if (!ids) {
+      ids = new Set();
+      serverToolIds.set(type, ids);
+    }
+    ids.add(typeof item.id === "string" && item.id ? item.id : `${type}:${ids.size}`);
+  };
   /** @param {number} index @param {UnknownRecord} item */
   const ensure = function* (
     index: number,
@@ -702,6 +857,22 @@ async function* normalizedResponseEvents(
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : 0;
+    if (
+      (event.type === "response.output_item.added" ||
+        event.type === "response.output_item.done") &&
+      isObject(event.item)
+    )
+      observeCitations(event.item);
+    if (event.type === "response.output_item.done" && isObject(event.item))
+      completedWireItems.set(index, structuredClone(event.item));
+    if (
+      (event.type === "response.output_item.added" ||
+        event.type === "response.output_item.done") &&
+      isServerToolItem(event.item)
+    ) {
+      observeServerTool(event.item);
+      continue;
+    }
     if (event.type === "response.output_item.added" && isObject(event.item)) {
       const item = normalizedTerminalItem(event.item as WireItem, index);
       open.set(index, { kind: itemKind(item), item, text: itemText(item) });
@@ -825,16 +996,60 @@ async function* normalizedResponseEvents(
       const response = /** @type {UnknownRecord} */ event.response;
       if (typeof response.model === "string" && response.model.length > 0)
         meta.responseModel = response.model;
-      const output = Array.isArray(response.output)
-        ? response.output.map((item: unknown, terminalIndex: number) =>
-            isObject(item)
-              ? normalizedTerminalItem(
-                  item as WireItem,
-                  terminalIndex,
-                )
-              : item,
-          )
-        : [];
+      const terminalOutput = Array.isArray(response.output) && response.output.length > 0
+        ? response.output
+        : [...completedWireItems.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([, item]) => item);
+      const nativeOutput = terminalOutput.map((item) => structuredClone(item));
+      const nativeVisibleAdditions: unknown[] = [];
+      for (const item of terminalOutput) {
+        observeCitations(item);
+        if (isServerToolItem(item)) observeServerTool(item);
+      }
+      const output = terminalOutput
+        .filter((item) => !isServerToolItem(item))
+        .map((item: unknown, terminalIndex: number) =>
+          isObject(item)
+            ? normalizedTerminalItem(item as WireItem, terminalIndex)
+            : item,
+        );
+      if (options.serverToolTypes && citations.size > 0) {
+        const visibleText = output
+          .filter(isObject)
+          .map((item) => itemText(item as WireItem))
+          .join("\n");
+        const missing = [...citations].filter(([url]) => !visibleText.includes(url));
+        if (missing.length > 0) {
+          const suffix = missing
+            .map(([url, title]) => `- ${title ? `${title}: ` : ""}${url}`)
+            .join("\n");
+          const responseId = String(response.id ?? "native")
+            .replace(/[^A-Za-z0-9_-]/gu, "_")
+            .slice(0, 40);
+          const fallbackItem = {
+            type: "message",
+            id: `msg_lcx_sources_${responseId}`.slice(0, 64),
+            role: "assistant",
+            status: "completed",
+            content: [{
+              type: "output_text",
+              text: `\n\nSources:\n${suffix}`,
+              annotations: [],
+            }],
+          };
+          output.push(fallbackItem);
+          nativeVisibleAdditions.push(structuredClone(fallbackItem));
+        }
+      }
+      if (
+        event.type === "response.completed" &&
+        response.status === "completed" &&
+        options.serverToolTypes
+      ) {
+        meta.nativeOutput = nativeOutput;
+        meta.nativeVisibleAdditions = nativeVisibleAdditions;
+      }
       const used = new Set();
       for (const [streamIndex, record] of open) {
         let terminalIndex = output.findIndex(
@@ -924,6 +1139,30 @@ async function* normalizedResponseEvents(
         };
         if (identity) completed.add(identity);
       }
+      if (options.onServerToolUsage) {
+        const usage = isObject(response.usage) ? response.usage : {};
+        const details = isObject(usage.server_side_tool_usage_details)
+          ? usage.server_side_tool_usage_details
+          : {};
+        const safeCount = (value: unknown, fallback: number) =>
+          Number.isSafeInteger(value) && Number(value) >= 0
+            ? Number(value)
+            : fallback;
+        const webSearchCalls = safeCount(
+          details.web_search_calls,
+          serverToolIds.get("web_search_call")?.size ?? 0,
+        );
+        const xSearchCalls = safeCount(
+          details.x_search_calls,
+          serverToolIds.get("x_search_call")?.size ?? 0,
+        );
+        const total = safeCount(
+          usage.num_server_side_tools_used,
+          webSearchCalls + xSearchCalls,
+        );
+        if (total > 0 || webSearchCalls > 0 || xSearchCalls > 0)
+          options.onServerToolUsage({ webSearchCalls, xSearchCalls, total });
+      }
       yield { ...event, response: { ...response, output } };
       continue;
     }
@@ -971,7 +1210,12 @@ function rawArguments(value: unknown) {
 }
 
 /** @param {unknown} message */
-function replayState(message: UnknownRecord) {
+function replayState(
+  message: UnknownRecord,
+  nativeOutput?: readonly unknown[],
+  nativeVisibleAdditions?: readonly unknown[],
+  nativeReplayRoute?: GrokNativeReplayRoute,
+) {
   if (!isObject(message)) return undefined;
   const content: UnknownRecord[] = Array.isArray(message.content)
     ? message.content.filter(isObject)
@@ -981,6 +1225,11 @@ function replayState(message: UnknownRecord) {
   const model = typeof message.model === "string" ? message.model : undefined;
   const api = typeof message.api === "string" ? message.api : undefined;
   if (!provider || !model || !api) return undefined;
+  const grokNative = createGrokNativeReplayEnvelope(
+    nativeOutput,
+    nativeReplayRoute,
+    nativeVisibleAdditions,
+  );
   return {
     response: {
       kind: "pi-ai",
@@ -1025,6 +1274,7 @@ function replayState(message: UnknownRecord) {
         };
       },
     ),
+    ...(grokNative === undefined ? {} : { grokNative }),
   };
 }
 
@@ -1060,6 +1310,8 @@ function successfulFinish(message: unknown): FinishReason {
 async function* toDshChunks(
   events: AsyncIterable<AssistantMessageEvent>,
   signal?: AbortLike,
+  wireMeta?: ResponseWireMeta,
+  nativeReplayRoute?: GrokNativeReplayRoute,
 ): AsyncGenerator<StreamChunk> {
   const toolIds = new Map<number, { id: string; name: string }>();
   for await (const event of events) {
@@ -1164,7 +1416,14 @@ async function* toDshChunks(
           : {};
         yield { type: "usage", usage: dshUsage(message.usage) };
         const reason = successfulFinish(message);
-        const replay = reason.kind === "error" ? undefined : replayState(message);
+        const replay = reason.kind === "error"
+          ? undefined
+          : replayState(
+              message,
+              wireMeta?.nativeOutput,
+              wireMeta?.nativeVisibleAdditions,
+              nativeReplayRoute,
+            );
         yield {
           type: "finish",
           reason,
@@ -1238,6 +1497,8 @@ async function* toDshChunks(
  * @param {number} [options.timeoutMs]
  * @param {number} [options.maxAttempts]
  * @param {number} [options.maxResponseBytes]
+ * @param {ReadonlySet<string>} [options.serverToolTypes]
+ * @param {(usage: ServerToolUsage) => void} [options.onServerToolUsage]
  */
 export async function* streamResponsesRequest({
   baseURL,
@@ -1249,17 +1510,28 @@ export async function* streamResponsesRequest({
   headers,
   signal,
   timeoutMs,
+  applyDefaultTimeout = true,
+  streamIdleTimeoutMs,
   maxAttempts = 1,
   maxResponseBytes,
+  serverToolTypes,
+  nativeReplayRoute,
+  onServerToolUsage,
 }: StreamRequestOptions) {
+  const effectiveTimeoutMs = timeoutMs ?? (applyDefaultTimeout ? 300_000 : undefined);
+  const deadline = requestDeadline(signal, effectiveTimeoutMs);
+  const watchdog = streamIdleWatchdog(deadline.signal, streamIdleTimeoutMs);
   try {
+    // Match DSH's idleWatchdog.next(): the first outstanding next includes
+    // request dispatch and headers, and later intervals cover one DSH chunk.
+    watchdog.arm();
     const response = await fetchSseWithRetry(
       `${String(baseURL).replace(/\/+$/u, "")}/responses`,
       body,
       headers,
-      signal,
-      timeoutMs,
-      { maxAttempts, maxResponseBytes },
+      watchdog.signal,
+      undefined,
+      { maxAttempts, maxResponseBytes, applyDefaultTimeout: false },
     );
     const output: PiOutput = {
       role: "assistant",
@@ -1272,15 +1544,19 @@ export async function* streamResponsesRequest({
       timestamp: Date.now(),
     };
     const piEvents = createAssistantMessageEventStream();
-    const wireMeta: { responseModel?: string } = {};
+    const wireMeta: ResponseWireMeta = {};
     const parser = (async () => {
       try {
         piEvents.push({ type: "start", partial: output });
         await processResponsesStream(
           validatedResponseEvents(
             normalizedResponseEvents(
-              responseEvents(response, { signal, maxResponseBytes }),
+              responseEvents(response, {
+                signal: watchdog.signal,
+                maxResponseBytes,
+              }),
               wireMeta,
+              { serverToolTypes, onServerToolUsage },
             ),
           ),
           output,
@@ -1324,9 +1600,35 @@ export async function* streamResponsesRequest({
         piEvents.end();
       }
     })();
-    yield* toDshChunks(piEvents, signal);
+    const chunks = toDshChunks(
+      piEvents,
+      signal,
+      wireMeta,
+      nativeReplayRoute,
+    )[Symbol.asyncIterator]();
+    let exhausted = false;
+    try {
+      while (true) {
+        const result = await chunks.next();
+        if (watchdog.signal.aborted) throw watchdog.signal.reason;
+        if (result.done) {
+          exhausted = true;
+          watchdog.disarm();
+          break;
+        }
+        watchdog.disarm();
+        yield result.value;
+        watchdog.arm();
+      }
+    } finally {
+      watchdog.disarm();
+      if (!exhausted) await chunks.return?.(undefined);
+    }
     await parser;
   } catch (error) {
     yield managedFailureChunk(error, signal);
+  } finally {
+    watchdog.dispose();
+    deadline.dispose();
   }
 }

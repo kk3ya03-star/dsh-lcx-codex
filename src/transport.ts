@@ -7,6 +7,7 @@ type TransportError = Error & { code?: string; retryable?: boolean };
 type RetryOptions = { maxAttempts?: number; maxResponseBytes?: number };
 type SseRetryOptions<T = Response> = RetryOptions & {
   consume?: (response: Response, options: { requestSignal?: AbortSignal }) => Promise<T>;
+  applyDefaultTimeout?: boolean;
 };
 type JsonRequestBody = Record<string, unknown>;
 type SseRequestBody = Record<string, unknown>;
@@ -220,9 +221,11 @@ export async function fetchSseWithRetry<T = Response>(
   body: SseRequestBody,
   headers: HeadersInit = {},
   signal: AbortSignal | undefined,
-  timeoutMs: number | undefined = DEFAULT_TIMEOUT_MS,
+  timeoutMs: number | undefined,
   options: SseRetryOptions<T> = {},
 ): Promise<T> {
+  const requestTimeoutMs = timeoutMs ??
+    (options.applyDefaultTimeout === false ? undefined : DEFAULT_TIMEOUT_MS);
   const maxAttempts = Math.max(
     1,
     Math.min(6, Number(options.maxAttempts ?? 3)),
@@ -231,7 +234,7 @@ export async function fetchSseWithRetry<T = Response>(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     abortIfNeeded(signal);
     try {
-      const requestSignal = combinedSignal(signal, timeoutMs);
+      const requestSignal = combinedSignal(signal, requestTimeoutMs);
       const response = await fetch(url, {
         method: "POST",
         headers: {

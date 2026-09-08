@@ -131,3 +131,32 @@ test('shared pressure service serializes native/emergency calls and restores on 
   assert.equal(f.pruner.pruneSession, f.originalPrune)
   await f.dispose()
 })
+
+test('mixed-model pressure calls retain native DSH thresholds and pruning after GPT ownership', async () => {
+  const f = pressureFixture(), gate = deferred()
+  const gpt = f.agent('gpt-held', 240000)
+  const deepseek = f.agent('deepseek-native', 240000)
+  const grok = f.agent('grok-native', 240000)
+  deepseek.options = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
+  grok.options = { provider: 'relay', model: 'grok-4.6' }
+  gpt.work = () => gate.promise
+  const running = f.compaction.compactIfNeeded(gpt, 'pressure', new AbortController().signal)
+  await new Promise(resolve => setImmediate(resolve))
+  const nativeCalls = [deepseek, grok].map(agent =>
+    f.compaction.compactIfNeeded(agent, 'pressure', new AbortController().signal))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(f.compaction.calls.map(call => call.id), ['gpt-held'])
+  assert.deepEqual(f.pruner.calls, [])
+  gate.resolve()
+  await Promise.all([running, ...nativeCalls])
+  assert.deepEqual(f.compaction.calls.map(({ id, threshold, modelThreshold }) =>
+    ({ id, threshold, modelThreshold })), [
+    { id: 'gpt-held', threshold: 0.9, modelThreshold: 0.9 },
+    { id: 'deepseek-native', threshold: 0.8, modelThreshold: 0.7 },
+    { id: 'grok-native', threshold: 0.8, modelThreshold: 0.7 },
+  ])
+  assert.deepEqual(f.pruner.calls, ['deepseek-native', 'grok-native'])
+  assert.equal(f.compaction.config, f.config)
+  assert.equal(f.pruner.pruneSession, f.originalPrune)
+  await f.dispose()
+})

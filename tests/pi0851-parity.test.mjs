@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { stream as streamOpenAIResponses } from '@earendil-works/pi-ai/api/openai-responses'
+import {
+  stream as streamOpenAIResponses,
+  streamSimple as streamSimpleOpenAIResponses,
+} from '@earendil-works/pi-ai/api/openai-responses'
+import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { buildResponsesBody, buildCompactionResponsesBody } from '../lib/responses-request.js'
 import { buildNativeCompactionBody, parseNativeCompactionSse } from '../lib/compact-v2.js'
 
@@ -61,6 +65,49 @@ test('ordinary, Compact and Replay cache/output-token fields match the actual Pi
     ]) {
       for (const field of fields) assert.deepEqual(body[field], expected[field], `${field}: explicit=${explicit}, supportsLong=${supportsLong}, retention=${retention}`)
     }
+  }
+})
+
+async function capturedPiBody(model, reasoning) {
+  let payload
+  const stream = streamSimpleOpenAIResponses(model, { messages: [] }, {
+    apiKey: 'synthetic-test-key', maxRetries: 0,
+    ...(reasoning === undefined ? {} : { reasoning }),
+    onPayload(body) { payload = body; throw new Error('fixture stops before network') },
+    fetch() { throw new Error('network must not run') },
+  })
+  for await (const _ of stream) { /* Drain the intentionally stopped provider stream. */ }
+  return payload
+}
+
+test('Grok reasoning/default envelope matches actual Pi 0.85.1 payloads', async () => {
+  const builtins = new Map(getBuiltinModels('xai').map(model => [model.id, model]))
+  const fixtures = [
+    { name: 'grok-4.3 default off', model: builtins.get('grok-4.3') },
+    { name: 'grok-4.5 provider default', model: builtins.get('grok-4.5') },
+    { name: 'grok-4.6 provider default', model: builtins.get('grok-4.6') },
+    { name: 'grok-4.6 profile effective medium', model: builtins.get('grok-4.6'), reasoning: 'medium' },
+    { name: 'grok-4.6 explicit high', model: builtins.get('grok-4.6'), reasoning: 'high' },
+    {
+      name: 'custom mapped alias', reasoning: 'medium',
+      model: {
+        ...builtins.get('grok-4.6'), id: 'grok-custom-alias',
+        thinkingLevelMap: { off: null, minimal: null, low: null, medium: 'gateway-medium', high: 'gateway-high', xhigh: null, max: null },
+      },
+    },
+    {
+      name: 'custom reasoning disabled',
+      model: { ...builtins.get('grok-4.6'), id: 'grok-custom-disabled', reasoning: false, thinkingLevelMap: undefined },
+    },
+  ]
+  for (const fixture of fixtures) {
+    assert.ok(fixture.model, `${fixture.name} descriptor exists`)
+    const expected = await capturedPiBody(fixture.model, fixture.reasoning)
+    const actual = buildResponsesBody({
+      model: fixture.model, input: [], reasoningEffort: fixture.reasoning,
+    })
+    assert.deepEqual(actual.reasoning, expected.reasoning, fixture.name)
+    assert.deepEqual(actual.include, expected.include, fixture.name)
   }
 })
 

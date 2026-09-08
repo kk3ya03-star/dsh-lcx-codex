@@ -44,7 +44,6 @@ async function settlePlugins(ctx) {
 const listenerEvents = [
   'session/disposed',
   'session/event',
-  'tools/execute',
   'agent/created',
   'agent/status',
   'llm/stream',
@@ -77,8 +76,8 @@ test('plugin waits for required services, initializes once and cleanly re-enable
   await first
   await settlePlugins(ctx)
 
-  assert.equal(web.registerCalls, 1, 'required service dependencies initialize once')
-  assert.equal(web.providers.size, 1)
+  assert.equal(web.registerCalls, 0, 'plugin does not add a global search provider')
+  assert.equal(web.providers.size, 0)
   assertListenerCounts(ctx, 1)
 
   assert.equal(settings.registerCalls, 1, 'settings section mounts after the required provider is available')
@@ -93,8 +92,8 @@ test('plugin waits for required services, initializes once and cleanly re-enable
   await second
   await settlePlugins(ctx)
 
-  assert.equal(web.registerCalls, 2)
-  assert.equal(web.providers.size, 1, 're-enable leaves one provider registration')
+  assert.equal(web.registerCalls, 0)
+  assert.equal(web.providers.size, 0, 're-enable leaves global provider ownership unchanged')
   assert.equal(settings.registerCalls, 2)
   assert.deepEqual([...settings.namespaces], ['lcx-codex'], 're-enable leaves one settings namespace registration')
   assertListenerCounts(ctx, 1)

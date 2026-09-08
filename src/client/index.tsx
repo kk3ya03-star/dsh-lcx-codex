@@ -5,7 +5,9 @@ type Field =
   | "enabled"
   | "webSearch"
   | "advancedHostedSearch"
-  | "alphaSearch";
+  | "alphaSearch"
+  | "grokNativeWebSearch"
+  | "grokNativeXSearch";
 
 type Values = Record<Field, boolean>;
 
@@ -106,11 +108,13 @@ window.__ModuleLoader__.load({
       "webSearch",
       "advancedHostedSearch",
       "alphaSearch",
+      "grokNativeWebSearch",
+      "grokNativeXSearch",
     ];
     const DEFAULTS: Values = Object.fromEntries(
       FIELDS.map((field) => [field, false]),
     ) as Values;
-    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}`;
+    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}`;
     if (
       typeof document !== "undefined" &&
       !document.querySelector('style[data-plugin-css="dsh-lcx-codex"]')
@@ -126,7 +130,7 @@ window.__ModuleLoader__.load({
         desc: "LCX 跟随 DSH 当前会话选择的 GPT Responses route；模型、endpoint 和 credential 继续只由 DSH 管理。",
         enabled: "启用 LCX（接管当前 GPT Responses 会话）",
         enabledHelp:
-          "切换 Claude、Gemini、DeepSeek 等非 GPT 模型前先关闭 LCX；模型切换本身不需要重启 DSH。",
+          "此开关仅接管 GPT Responses 会话；Grok 原生搜索由下方独立开关控制，其他非 GPT 模型继续使用 DSH 原生路径。",
         web: "使用 GPT Hosted Search 作为 DSH web_search 后端",
         webHelp:
           "不会新增第二个普通搜索工具；普通 web_search 自动跟随当前 Agent 的 GPT Responses route。",
@@ -136,6 +140,12 @@ window.__ModuleLoader__.load({
         alpha: "启用 Alpha command（websearch_alpha）",
         alphaHelp:
           "仅 capability probe 对当前 route/schema 验证通过后才真正注册。",
+        grokTitle: "Grok 原生搜索",
+        grokDesc: "使用 DSH 当前选择的 Grok 模型及其服务配置；与 GPT 功能开关独立。开启任一搜索后，Grok 仅使用原生搜索，网页读取和其他工具仍可用。",
+        grokWeb: "启用原生 Web Search",
+        grokWebHelp: "使用 Grok 的原生网页搜索。",
+        grokX: "启用原生 X Search",
+        grokXHelp: "使用 Grok 的原生 X 搜索；单独开启也不会使用 DSH 搜索。",
         save: "保存",
         discard: "放弃修改",
         saving: "保存中…",
@@ -146,7 +156,7 @@ window.__ModuleLoader__.load({
         desc: "LCX follows the GPT Responses route selected by the current DSH session. Model, endpoint and credentials remain DSH-owned.",
         enabled: "Enable LCX (own current GPT Responses conversation)",
         enabledHelp:
-          "Turn LCX off before switching to Claude, Gemini, DeepSeek, or another non-GPT model. Model switching itself does not require a DSH restart.",
+          "Applies only to GPT Responses conversations. Grok native search is controlled independently below; other non-GPT models continue through DSH normally.",
         web: "Use GPT Hosted Search as DSH web_search backend",
         webHelp:
           "Keeps DSH web_search as the single ordinary search tool and follows the active Agent GPT Responses route.",
@@ -155,6 +165,12 @@ window.__ModuleLoader__.load({
           "Only for native Hosted controls such as domains, location, context size and image search; off by default for stable tool schemas.",
         alpha: "Enable Alpha command (websearch_alpha)",
         alphaHelp: "Registered only after a matching capability probe.",
+        grokTitle: "Grok native search",
+        grokDesc: "Uses the Grok model and provider profile currently selected in DSH, independently of the GPT switch. When either search is enabled, Grok uses native search while page reading and other tools remain available.",
+        grokWeb: "Enable native Web Search",
+        grokWebHelp: "Use Grok's native web search.",
+        grokX: "Enable native X Search",
+        grokXHelp: "Use Grok's native X search. Enabling it alone also avoids DSH search.",
         save: "Save",
         discard: "Discard",
         saving: "Saving…",
@@ -362,6 +378,30 @@ window.__ModuleLoader__.load({
                 disabled: disabled || !s.enabled.value,
                 onChange: (value: boolean) => props.edit("alphaSearch", value),
               }),
+              React.createElement(
+                "section",
+                { className: "lcx-group" },
+                React.createElement("strong", null, t("grokTitle")),
+                React.createElement("p", { className: "lcx-help" }, t("grokDesc")),
+                React.createElement(Row, {
+                  id: "lcx-grok-web",
+                  label: t("grokWeb"),
+                  help: t("grokWebHelp"),
+                  checked: s.grokNativeWebSearch.value,
+                  disabled,
+                  onChange: (value: boolean) =>
+                    props.edit("grokNativeWebSearch", value),
+                }),
+                React.createElement(Row, {
+                  id: "lcx-grok-x",
+                  label: t("grokX"),
+                  help: t("grokXHelp"),
+                  checked: s.grokNativeXSearch.value,
+                  disabled,
+                  onChange: (value: boolean) =>
+                    props.edit("grokNativeXSearch", value),
+                }),
+              ),
               React.createElement(
                 "p",
                 { role: "alert", hidden: !s.saveError },

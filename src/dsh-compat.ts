@@ -110,11 +110,15 @@ export function readAgentRouteState(agent: unknown): {
 
 export function scopedToolRuntime(
   agent: unknown,
-): Pick<ToolRuntime, "register"> | undefined {
+): (Pick<ToolRuntime, "register"> & Partial<Pick<ToolRuntime, "get">>) | undefined {
   const tools = resolveScopedService(agent, "tools");
-  return mutableService(tools) && typeof tools.register === "function"
-    ? { register: (tools.register as ToolRuntime["register"]).bind(tools) }
-    : undefined;
+  if (!mutableService(tools) || typeof tools.register !== "function") return undefined;
+  return {
+    register: (tools.register as ToolRuntime["register"]).bind(tools),
+    ...(typeof tools.get === "function"
+      ? { get: (tools.get as ToolRuntime["get"]).bind(tools) }
+      : {}),
+  };
 }
 
 export function tokenMeterTotal(value: unknown, session: Session): number | undefined {
