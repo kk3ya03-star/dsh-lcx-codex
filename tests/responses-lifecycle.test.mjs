@@ -79,6 +79,41 @@ test('ordinary request serialization emits exactly one canonical developer prelu
   assert.equal(serialized.input.filter((item) => item?.role === 'developer' && item?.content === fingerprint).length, 1)
 })
 
+test('low-level serializer leaves DSH 0.1.5 system-history ownership to the caller', async () => {
+  const fingerprint = 'durable-system-v1'
+  const serialized = await serializeDshMessages([
+    { role: 'system', content: [{ type: 'text', text: fingerprint }] },
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+  ], {}, { model: model(), includeSystemPrompt: true })
+
+  assert.equal(serialized.input.filter((item) => item?.role === 'developer' && item?.content === fingerprint).length, 0)
+  assert.equal(serialized.input.filter((item) => item?.role === 'user' && Array.isArray(item?.content) && item.content.some((part) => part?.text === fingerprint)).length, 1)
+})
+
+test('later DSH 0.1.5 system updates remain ordinary in-history context below the caller-owned head', async () => {
+  const serialized = await serializeDshMessages([
+    { role: 'system', content: [{ type: 'text', text: 'durable-system-v1' }] },
+    { role: 'user', content: [{ type: 'text', text: 'turn one' }] },
+    { role: 'system', content: [{ type: 'text', text: 'durable-system-v2' }] },
+    { role: 'user', content: [{ type: 'text', text: 'turn two' }] },
+  ], {}, { model: model(), includeSystemPrompt: true })
+
+  assert.equal(serialized.input.filter((item) => item?.role === 'developer').length, 0)
+  assert.equal(serialized.input.filter((item) => item?.role === 'user' && Array.isArray(item?.content) && item.content.some((part) => part?.text === 'durable-system-v1')).length, 1)
+  assert.equal(serialized.input.filter((item) => item?.role === 'user' && Array.isArray(item?.content) && item.content.some((part) => part?.text === 'durable-system-v2')).length, 1)
+})
+
+test('caller-provided request prelude is emitted once while in-history system updates stay portable', async () => {
+  const serialized = await serializeDshMessages([
+    { role: 'system', content: [{ type: 'text', text: 'durable-history-system' }] },
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+  ], {}, { model: model(), systemPrompt: 'caller-owned-system', includeSystemPrompt: true })
+
+  assert.equal(serialized.input.filter((item) => item?.role === 'developer' && item?.content === 'caller-owned-system').length, 1)
+  assert.equal(serialized.input.filter((item) => item?.role === 'developer' && item?.content === 'durable-history-system').length, 0)
+  assert.equal(serialized.input.filter((item) => item?.role === 'user' && Array.isArray(item?.content) && item.content.some((part) => part?.text === 'durable-history-system')).length, 1)
+})
+
 test('two ordinary turns preserve the canonical cacheable prefix and tool order', async () => {
   const tools = [
     { name: 'first', description: 'first tool', parameters: { type: 'object', properties: { value: { type: 'string' } } } },

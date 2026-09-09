@@ -1,0 +1,10 @@
+{
+  "name": "dsh-015-static-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-alpha.1",
+    "@deepseek-ai/dsh-client-store": "0.1.5-alpha.1",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.1.5-alpha.1"
+  }
+}

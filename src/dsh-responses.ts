@@ -208,7 +208,7 @@ function attachmentResolver(ctx: DshContext | undefined, options: ImageOptions) 
   return async (block: { attachment: ImageAttachmentRef }, signal?: AbortSignal) => {
     if (attachments === undefined)
       throw error(
-        "LCX requires the DSH 0.1.3 request-image attachment API",
+        "LCX requires the DSH request-image attachment API",
         "LCX_COMPACT_IMAGE_API_UNAVAILABLE",
       );
     const request = await attachments.store.readImageRequest(
@@ -408,10 +408,19 @@ function projectFiles(
   }));
 }
 
+function flattenMessageText(message: Message): string {
+  return message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("");
+}
+
 async function dshToPiMessages(messages: readonly Message[], ctx: DshContext | undefined, options: ImageOptions & { onReplayDegrade?: unknown }, imageMap: Map<string, ImageAttachmentRef>): Promise<PiMessage[]> {
   const result: PiMessage[] = [];
   for (const message of messages) {
-    if (message.role === "system") continue;
+    if (message.role === "system") {
+      result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
+      continue;
+    }
     if (message.role === "assistant") { result.push(toPiAssistant(message, options.onReplayDegrade)); continue; }
     const ordinary: ContentBlock[] = [];
     const toolResults: ContentBlock[] = [];

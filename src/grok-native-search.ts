@@ -22,19 +22,14 @@ export type GrokNativeReplayRoute = {
 
 type WireTool = Record<string, unknown>;
 type WireItem = Record<string, unknown> & { type: string };
-type GrokNativeVisibleAddition = {
-  kind: "citation-sources";
-  textSha256: string;
-};
 type GrokNativeReplayEnvelope = {
   kind: "xai-responses-native-search";
-  version: 2;
+  version: 3;
   provider: string;
   model: string;
   sourceSessionId: string;
   routeAuthorityFingerprint: string;
   output: WireItem[];
-  visibleAdditions: GrokNativeVisibleAddition[];
 };
 
 const GROK_EXCLUDED_SEARCH_FUNCTIONS = new Set([
@@ -124,39 +119,6 @@ function validVisibleItem(item: WireItem): boolean {
   return false;
 }
 
-function textSha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function lcxCitationAddition(item: WireItem): GrokNativeVisibleAddition | undefined {
-  if (
-    item.type !== "message" ||
-    typeof item.id !== "string" ||
-    !item.id.startsWith("msg_lcx_sources_")
-  )
-    return undefined;
-  const text = itemText(item);
-  return text.startsWith("\n\nSources:\n")
-    ? { kind: "citation-sources", textSha256: textSha256(text) }
-    : undefined;
-}
-
-function validVisibleAdditions(value: unknown): GrokNativeVisibleAddition[] | undefined {
-  if (!Array.isArray(value) || value.length > GROK_NATIVE_REPLAY_MAX_ITEMS) return undefined;
-  const additions: GrokNativeVisibleAddition[] = [];
-  for (const candidate of value) {
-    if (
-      !isRecord(candidate) ||
-      candidate.kind !== "citation-sources" ||
-      typeof candidate.textSha256 !== "string" ||
-      !/^[0-9a-f]{64}$/u.test(candidate.textSha256)
-    )
-      return undefined;
-    additions.push({ kind: "citation-sources", textSha256: candidate.textSha256 });
-  }
-  return additions;
-}
-
 function readGrokNativeReplayEnvelope(
   value: unknown,
   route: GrokNativeReplayRoute,
@@ -164,7 +126,7 @@ function readGrokNativeReplayEnvelope(
   if (
     !isRecord(value) ||
     value.kind !== "xai-responses-native-search" ||
-    (value.version !== 1 && value.version !== 2)
+    value.version !== 3
   )
     return undefined;
   if (
@@ -188,15 +150,9 @@ function readGrokNativeReplayEnvelope(
   const output: WireItem[] = [];
   const itemKinds = new Map<string, string>();
   const callIds = new Set<string>();
-  const migratedAdditions: GrokNativeVisibleAddition[] = [];
   for (const candidate of value.output) {
     if (!isRecord(candidate) || typeof candidate.type !== "string") return undefined;
     const item = candidate as WireItem;
-    const legacyAddition = value.version === 1 ? lcxCitationAddition(item) : undefined;
-    if (legacyAddition) {
-      migratedAdditions.push(legacyAddition);
-      continue;
-    }
     if (GROK_NATIVE_SERVER_TOOL_TYPES.has(item.type)) {
       if (typeof item.id !== "string" || item.id.length === 0) return undefined;
     } else if (!GROK_NATIVE_VISIBLE_ITEM_TYPES.has(item.type) || !validVisibleItem(item)) {
@@ -218,42 +174,30 @@ function readGrokNativeReplayEnvelope(
     output.push(structuredClone(item));
   }
   if (output.length === 0) return undefined;
-  const visibleAdditions = value.version === 1
-    ? migratedAdditions
-    : validVisibleAdditions(value.visibleAdditions);
-  if (!visibleAdditions) return undefined;
   return {
     kind: "xai-responses-native-search",
-    version: 2,
+    version: 3,
     provider: route.provider,
     model: route.model,
     sourceSessionId: route.sessionId,
     routeAuthorityFingerprint: grokNativeReplayRouteFingerprint(route),
     output,
-    visibleAdditions,
   };
 }
 
 export function createGrokNativeReplayEnvelope(
   output: readonly unknown[] | undefined,
   route: GrokNativeReplayRoute | undefined,
-  visibleAdditions: readonly unknown[] = [],
 ): GrokNativeReplayEnvelope | undefined {
   if (!route || !Array.isArray(output)) return undefined;
-  const additions = visibleAdditions.map((candidate) =>
-    isRecord(candidate) && typeof candidate.type === "string"
-      ? lcxCitationAddition(candidate as WireItem)
-      : undefined);
-  if (additions.some((addition) => addition === undefined)) return undefined;
   return readGrokNativeReplayEnvelope({
     kind: "xai-responses-native-search",
-    version: 2,
+    version: 3,
     provider: route.provider,
     model: route.model,
     sourceSessionId: route.sessionId,
     routeAuthorityFingerprint: grokNativeReplayRouteFingerprint(route),
     output,
-    visibleAdditions: additions,
   }, route);
 }
 
@@ -291,33 +235,12 @@ function visibleItemMatchesInput(item: WireItem, candidate: unknown): boolean {
   return true;
 }
 
-function additionMatchesBlock(
-  addition: GrokNativeVisibleAddition,
-  candidate: unknown,
-): boolean {
-  return isRecord(candidate) && candidate.type === "text" &&
-    typeof candidate.text === "string" &&
-    candidate.text.startsWith("\n\nSources:\n") &&
-    textSha256(candidate.text) === addition.textSha256;
-}
-
-function additionMatchesInput(
-  addition: GrokNativeVisibleAddition,
-  candidate: unknown,
-): boolean {
-  if (!isRecord(candidate) || candidate.type !== "message") return false;
-  if (typeof candidate.id !== "string" || !candidate.id.startsWith("msg_lcx_sources_"))
-    return false;
-  return textSha256(itemText(candidate as WireItem)) === addition.textSha256;
-}
-
 function replayForMessage(
   message: Message,
   route: GrokNativeReplayRoute,
 ): {
   envelope: GrokNativeReplayEnvelope;
   visible: WireItem[];
-  additions: GrokNativeVisibleAddition[];
 } | undefined {
   if (message.role !== "assistant" || message.source.kind !== "model") return undefined;
   if (message.source.provider !== route.provider || message.source.model !== route.model)
@@ -344,16 +267,11 @@ function replayForMessage(
       return undefined;
     }
   }
-  // Empty Grok reasoning has no UI block; older histories can still contain it.
-  // Pi can coalesce repeated reasoning IDs in terminal-only gateway responses.
-  // Match every provider-visible DSH block and only the hashed LCX additions.
+  // Empty Grok reasoning has no UI block. Pi can coalesce repeated reasoning IDs
+  // in terminal-only gateway responses; every actual DSH-visible block must still match.
   if (anchors.length === 0) return undefined;
-  for (const addition of envelope.visibleAdditions) {
-    if (!additionMatchesBlock(addition, message.content[blockIndex])) return undefined;
-    blockIndex += 1;
-  }
   if (blockIndex !== message.content.length) return undefined;
-  return { envelope, visible: anchors, additions: envelope.visibleAdditions };
+  return { envelope, visible: anchors };
 }
 
 export function restoreGrokNativeReplay(
@@ -367,15 +285,13 @@ export function restoreGrokNativeReplay(
   for (const message of messages) {
     const replay = replayForMessage(message, route);
     if (!replay) continue;
-    const { envelope, visible, additions } = replay;
-    const replacedLength = visible.length + additions.length;
+    const { envelope, visible } = replay;
+    const replacedLength = visible.length;
     let start = -1;
     for (let index = cursor; index <= restored.length - replacedLength; index += 1) {
       if (
         visible.every((item, offset) =>
-          visibleItemMatchesInput(item, restored[index + offset])) &&
-        additions.every((addition, offset) =>
-          additionMatchesInput(addition, restored[index + visible.length + offset]))
+          visibleItemMatchesInput(item, restored[index + offset]))
       ) {
         start = index;
         break;

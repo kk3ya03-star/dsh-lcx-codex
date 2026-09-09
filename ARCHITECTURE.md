@@ -1,4 +1,4 @@
-# Model-scoped Responses ownership — 0.4.3-pre.4 prerelease
+# Model-scoped Responses ownership — 0.4.3-pre.12 prerelease
 
 ## Product contract
 
@@ -8,12 +8,12 @@ Feature ownership follows the active model. The GPT LCX switch owns only eligibl
 
 - **DSH** remains the Agent, Session, request assembly, model/settings/credential, tool-execution, attachment, pressure-policy and compaction-transaction owner.
 - **The DSH adapter bridge** projects current DSH `GenerateOptions` and durable replay content into Pi's provider-neutral `Context`, reusing DSH attachment/file APIs and Pi's public serializers. It does not support older plugin configuration or checkpoints.
-- **Plugin Pi 0.85.1** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing. DSH 0.1.3-alpha.2 has bounded runtime evidence; see the README for the Windows host correction and remaining prerelease limitations.
+- **Plugin Pi 0.85.1** owns canonical Responses message/tool serialization and stream semantics: reasoning, IDs, custom tools, strict/grammar tools, `additional_tools`, `tool_search`, namespace, cache semantics and event parsing. DSH 0.1.5-alpha.1 is the only qualified host for this prerelease; older DSH/session formats are intentionally outside the runtime contract.
 - **LCX** owns the GPT final body/HTTP/SSE lifecycle where enabled, plus the narrow Grok native-search wire/replay bridge. It does not take ownership of ordinary non-GPT DSH conversations.
 
 ## Remote compaction implementation audit
 
-The September 7 audit compares exact DSH 0.1.3 source, installed Pi 0.85.1,
+The September 9 audit compares exact DSH 0.1.5-alpha.1 source, installed Pi 0.85.1,
 OpenAI's public compaction guide, and OpenAI Codex commit
 `f3f53ee949eeaa9b6050699a783b94fe4ee8ff0d`. The protocol distinctions below
 describe the implementation rather than a guarantee for every compatible gateway.

@@ -405,7 +405,7 @@ test('Alpha response parser strips encrypted fields and keeps refs', () => {
   assert.equal(parsed.sources[0].url, 'https://example.com/')
 })
 
-test('DSH 0.1.3 request-image projection covers user and tool-result images', async () => {
+test('DSH 0.1.5 request-image projection covers user and tool-result images', async () => {
   let policy
   let readImageCalls = 0
   const ref = { attachmentId: 'sha256:test', mediaType: 'image/png', bytes: 2_000_000, width: 2048, height: 2048 }

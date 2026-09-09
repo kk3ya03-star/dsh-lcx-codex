@@ -7,7 +7,7 @@
 **为 DeepSeek Harness 中的 GPT 提供 Responses 生命周期能力，并为 Grok 接入原生 Web / X Search。**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.3--alpha.2-16803c)](#安装)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5--alpha.1-16803c)](#安装)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 **简体中文** · [English](README_EN.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
@@ -20,18 +20,20 @@ LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness
 
 ## 安装
 
-本页对应 **`0.4.3-pre.4` 预发布版**，适配 **DSH `0.1.3-alpha.2`**。稳定版仍为 `0.4.2`，使用旧版 DSH `0.1.1-rc.2` 的用户请看[稳定版说明](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
+本页对应 **`0.4.3-pre.12` 预发布版**，只支持 **DSH `0.1.5-alpha.1` + Pi `0.85.1`**。稳定版仍为 `0.4.2`；本预发布版不为旧 DSH / 旧 Session 格式保留兼容层。
 
-安装前，请确认 DSH Web 能正常启动，并已配置需要使用的 GPT Responses 或 Grok Responses API 路由。Node.js 要求 `^22.19.0 || >=24.0.0`；Windows 启动出现 `fs-ext` 报错时，先看下方[故障排查](#故障排查)。
+安装前，请确认 DSH `0.1.5-alpha.1` Web 能正常启动，并已配置需要使用的 GPT Responses 或 Grok Responses API 路由。Node.js 要求 `^22.19.0 || >=24.0.0`。
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.4
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.12
 dsh web
 ```
 
 以后升级预发布版，可执行 `dsh plugin --profile web add dsh-lcx-codex@prelatest`。不带版本或标签安装会得到稳定版，**不是本页介绍的新版本**。
 
-**从 `0.4.2` 升级：** 旧插件配置和 v3/v4 压缩检查点不再兼容，请重新配置插件并新建会话。新版 v5 GPT 检查点仍支持重启续聊。
+**升级到本版：** 只支持 DSH `0.1.5-alpha.1` 的 Session V3。旧插件配置、旧 DSH session、旧 LCX checkpoint / Grok replay envelope 都不迁移到活动目录。需要保留旧历史时，请先将旧 `sessions` 目录改名或归档，再让 DSH `0.1.5-alpha.1` 从新的空 `sessions` 目录开始；旧数据只作为离线备份保留。
+
+DSH 持久化层重新打开同一个已保存 session 时，LCX 可以恢复该 session 内保存的 v5 checkpoint；这只是 DSH session persistence 上的继续对话，**不是 Codex rollout/checkpoint 的进程级 restart/resume 机制**。
 
 ## 启用
 
@@ -75,7 +77,7 @@ Grok 使用 xAI Responses 的服务端工具，而不是把搜索包装成 DSH f
 
 开启任意 Grok 原生搜索后，Grok 请求会移除 DSH `web_search`，避免重复搜索语义；`web_fetch`、`read` 及其他 DSH/MCP function tools 仍保持可用。原生搜索结果可以继续进入本地工具调用，再回到同一 Grok agentic workflow；插件会保存 xAI 必需的 provider-native replay state，但不会把服务端搜索伪装成 DSH 本地工具调用。
 
-当前支持 **API Key / API Gateway** 路由；OAuth / SuperGrok / X Premium 订阅登录不在本版范围内。搜索来源 URL 会尽量保留，但具体 citation 展示形式仍受上游兼容网关返回格式影响。
+当前支持 **API Key / API Gateway** 路由；OAuth / SuperGrok / X Premium 订阅登录不在本版范围内。LCX 不再为 Grok 自动追加可见的 synthetic `Sources:` 列表，并会清理已知的 `render_inline_citation` / `stateless_invoke` /私有区 renderer 标记、尾部 `<|eos|>` 等上游渲染协议残留；模型正文中主动写出的普通链接仍保持可见。完整 provider-native 搜索输出只保存在 same-session replay state 中。
 
 ### GPT 搜索图片并显示
 
@@ -103,9 +105,9 @@ Alpha 需要单独开启，且接口通过能力探测后才会出现。目前�
 | `90%` 至 `95%` | 优先尝试远程原生压缩。 |
 | 达到 `95%` | 允许 DSH 紧急裁剪工具结果，再按流程压缩。 |
 
-也可以输入 `/compact` 手动压缩。这些阈值是固定策略，不需要额外设置；实际能否压缩取决于是否有可压缩的历史以及接口支持情况。
+也可以输入 `/compact` 手动压缩。这些阈值是固定策略，不需要额外设置；实际能否压缩取决于是否有可压缩的历史以及接口支持情况。Grok 不走 GPT Native V2，而继续使用 DSH `0.1.5-alpha.1` 自己的 compaction；Session V3 的 leading `system/message` 由 DSH 保持在摘要之外。
 
-压缩后可以继续对话、重启恢复或切换 GPT 模型。遇到不兼容的模型或接口配置时，插件改用可迁移的历史，不会强行复用原生状态。首次建立检查点时，部分可恢复失败可以回退到 DSH 基础压缩；并非所有失败都会回退。
+压缩后可以在同一存活 session 内继续对话；如果 DSH 自身重新打开同一个已持久化 session，LCX 也会校验并恢复其中的 v5 checkpoint。遇到不兼容的模型、route 或 session identity 时，插件改用可迁移的历史，不会强行复用原生状态。首次建立检查点时，部分可恢复失败可以回退到 DSH 基础压缩；并非所有失败都会回退。这里不引入 Codex 式 rollout/checkpoint restart-resume。
 
 ## 缓存
 
@@ -118,36 +120,9 @@ Pi `0.85.1` 的显式缓存模式支持 `30m` 长保留参数；`cacheRetention=
 
 ## 故障排查
 
-**DSH 在 Windows 启动时报 `fs-ext` 错误？**
+**从旧版 Windows DSH 升级后还需要 `fs-ext` 本地补丁吗？**
 
-DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使用它。当它的原生模块不可用时，DSH 会在启动阶段退出。这是 **DSH 的依赖加载问题，不是插件压缩或会话锁损坏**。
-
-本版 Windows 实测使用了一个最小 DSH 修正：仅在非 Windows 平台加载 `fs-ext`，保留原有 Win32 会话锁。插件不会自动修改 DSH；未经该修正的 Windows 环境不保证能启动。不要用关闭会话锁来绕过问题。
-
-
-具体处理方法（仅适用于 `@deepseek-ai/dsh-session-persistence-jsonl@0.1.3-alpha.2`）：
-
-1. 先停止正在运行的 DSH，并从错误堆栈找到实际加载的 `@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js`。不要修改其他 Node 安装或其他 DSH 副本。全局安装通常在 `npm root -g` 返回目录中的 DSH 依赖树内；以堆栈的绝对路径为准。
-2. 检查该包相邻的 `package.json`，确认版本为 `0.1.3-alpha.2`，并把 `lib/index.js` 复制为 `lib/index.js.before-win32-fs-ext.bak`；备份已存在时保留它。
-3. 用编辑器将下面唯一一行：
-
-   ```js
-   import { flock } from "fs-ext";
-   ```
-
-   替换为：
-
-   ```js
-   const flock = process.platform === "win32"
-     ? undefined
-     : (await import("fs-ext")).flock;
-   ```
-
-   只改模块加载这一处，保留其余代码和 Win32 会话锁。如果版本或原始行不符，请停止套用此修正。
-4. 保存后重新运行 `dsh web`，新建会话并发送一条消息，确认启动和会话写入正常。此修正不保证解决其他启动错误。
-5. 恢复时先停止 DSH，再用备份覆盖 `index.js`。重新安装或升级 DSH 可能覆盖此本地修改；不要把这个旧版本修正直接套到新版本。
-
-这是一项用户自行选择的 DSH 本地兼容修正，不是插件安装步骤自动执行的补丁。项目的 Windows 验证使用的正是上述加载方式。
+不需要把 `0.1.3-alpha.2` 的 `fs-ext` 本地 workaround 带到 DSH `0.1.5-alpha.1`。本版已经在未修改的 Windows DSH `0.1.5-alpha.1` 上完成 Web 与 headless 启动验证。若旧安装曾手工修改 DSH 文件，请通过正常安装得到干净的 `0.1.5-alpha.1` 文件，不要把旧补丁复制到新版本。
 
 **安装后没有变化？**
 
@@ -159,20 +134,20 @@ DSH `0.1.3-alpha.2` 会在启动时加载 `fs-ext`，即使 Windows 实际不使
 
 ## 版本与验证范围
 
-本版使用 DSH `0.1.3-alpha.2`、DSH host Pi `0.85.1` 和插件 Pi `0.85.1`。插件单独声明 Pi 依赖，不替换 DSH 的依赖。
+本版使用 DSH `0.1.5-alpha.1`、DSH host Pi `0.85.1` 和插件 Pi `0.85.1`。插件单独声明 Pi 依赖，不替换 DSH 的依赖。
 
-本版两项展示修复已通过流式/非流式和冷恢复回归；以下真实运行覆盖继承自 pre.3，不代表重新执行了全部在线测试。
+发布候选已通过 **246/246 PASS**、strict host/client typecheck 与 DSH schema 校验。真实 DSH `0.1.5-alpha.1` 隔离运行已验证：Web 启动、headless GPT 普通请求、Session V3 `system/message`、Native V2 `/compact`、compact 后同 session continuation，以及 v5 checkpoint 的 session identity 绑定。
 
-发布前完整测试为 **243/243 PASS**，strict host/client typecheck 与 4 个 DSH schema 均通过。真实运行覆盖 GPT Hosted/Native V2 回归、DeepSeek 原生 DSH 搜索回归，以及 Grok 4.5/4.6 原生 Web/X Search、Web/X → 本地 `read` → continuation、provider-native replay、完整 DSH 重启后的续聊、Grok 父/子代理 session/cache 隔离。GPT 已验证的父 cache-sharing 策略保持不变。
+Grok 另做了真实长会话验证：原生 Web Search → 足够长的上下文 → DSH 实际 `/compact` → compact 后再次原生搜索/续聊。marker 与关键事实保持，`system/message` 只出现一次，Grok replay 为当前 v3 envelope，最终可见正文 `sourceLeak=false`。
 
-仍需保留的预发布限制：Windows DSH `0.1.3-alpha.2` 的 `fs-ext` 启动问题需要文档中的最小 host loading 修正；Alpha 引用及 screenshot 展示、代理/NO_PROXY、更广的并发/取消和后台 continuable subagent 矩阵仍未全面覆盖；Grok OAuth 不支持，citation 渲染仍可能受上游网关格式影响。详细变更见 [v0.4.3-pre.4 发布说明](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.4)。
+仍需保留的预发布限制：Alpha 引用及 screenshot 展示、代理/NO_PROXY、更广的并发/取消和后台 continuable subagent 矩阵仍未全面覆盖；Grok OAuth 不支持；未知的新型上游 renderer 协议仍可能需要额外适配。DSH `0.1.5-alpha.1` 本身仍是 alpha/developer-preview 级上游。
 
 ## 开发与反馈
 
 ```sh
 npm ci --ignore-scripts
-npm ci --prefix scripts/runtime-alpha2 --ignore-scripts
-node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+npm ci --prefix scripts/runtime-dsh015 --ignore-scripts
+node scripts/link-dsh-runtime.mjs scripts/runtime-dsh015
 node scripts/check-generated.mjs
 npm run typecheck
 npm test
