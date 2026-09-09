@@ -2,6 +2,7 @@ import z from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type {
+  ContentBlock,
   GenerateOptions,
   LlmRuntime,
   Message,
@@ -1021,7 +1022,7 @@ async function serializeNativeAware(
   route: { provider: string; model: string; baseURL: string; sessionId: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
-  options: Pick<GenerateOptions, "signal" | "system" | "tools"> & {
+  options: Pick<GenerateOptions, "signal" | "tools"> & {
     grokNativeReplayRoute?: GrokNativeReplayRoute;
   },
 ) {
@@ -1053,11 +1054,18 @@ async function serializeNativeAware(
         ...extra,
       },
     );
+  const firstMessage = messages[0];
+  const systemHead = firstMessage?.role === "system" ? firstMessage : undefined;
+  const surfaceMessages = systemHead ? messages.slice(1) : messages;
+  const systemPrompt = systemHead?.content
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+    .map((block) => block.text)
+    .join("") || undefined;
   const prelude = await serializeDshMessages(
     [],
     ctx,
     serializeOptions(undefined, {
-      systemPrompt: options.system,
+      systemPrompt,
       includeSystemPrompt: true,
     }),
   );
@@ -1086,7 +1094,7 @@ async function serializeNativeAware(
     ) as SerializedDshMessages["input"]);
     mergeMap(imageMap, serialized.imageMap);
   };
-  for (const message of messages ?? []) {
+  for (const message of surfaceMessages ?? []) {
     assertSupportedCheckpointMessage(message);
     const state = session
       ? checkpointStateForMessage(session, message)
@@ -1173,7 +1181,7 @@ async function* remoteCompactionStream(
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, system: options.system, tools: options.tools },
+      { signal: options.signal, tools: options.tools },
     );
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
@@ -1461,7 +1469,7 @@ async function* managedResponsesStream(
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, system: options.system, tools: options.tools },
+      { signal: options.signal, tools: options.tools },
     );
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
@@ -1527,7 +1535,6 @@ async function* managedGrokNativeSearchStream(
       ctx,
       {
         signal: options.signal,
-        system: options.system,
         tools: visibleTools,
         grokNativeReplayRoute: nativeReplayRoute,
       },

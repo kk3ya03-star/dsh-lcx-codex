@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const runtime = realpathSync(process.argv[2])
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
-assert.equal(runtimeRequire('@deepseek-ai/dsh/package.json').version, '0.1.3-alpha.2')
+assert.equal(runtimeRequire('@deepseek-ai/dsh/package.json').version, '0.1.5-alpha.1')
 const hostPi = createRequire(runtimeRequire.resolve('@deepseek-ai/dsh-llm-pi-ai/package.json'))
 const hostPiManifest = hostPi.resolve.paths('@earendil-works/pi-ai')
   .map(path => join(path, '@earendil-works/pi-ai/package.json')).find(existsSync)
@@ -20,8 +20,8 @@ const names = [...Object.keys(pkg.peerDependencies).filter(name => name.startsWi
 for (const name of names) {
   const target = dirname(runtimeRequire.resolve(name + '/package.json'))
   if (name.startsWith('@deepseek-ai/dsh-')) {
-    assert.equal(readJson(join(target, 'package.json')).version, '0.1.3-alpha.2')
-    assert.equal(pkg.peerDependencies[name], '0.1.3-alpha.2')
+    assert.equal(readJson(join(target, 'package.json')).version, '0.1.5-alpha.1')
+    assert.equal(pkg.peerDependencies[name], '0.1.5-alpha.1')
   }
   const destination = resolve(root, 'node_modules', name)
   assert.equal(dirname(destination), resolve(root, 'node_modules/@deepseek-ai'))
@@ -30,4 +30,4 @@ for (const name of names) {
   mkdirSync(dirname(destination), { recursive: true })
   symlinkSync(target, destination, process.platform === 'win32' ? 'junction' : 'dir')
 }
-console.log('Linked DSH 0.1.3-alpha.2 published packages; host and plugin Pi 0.85.1')
+console.log('Linked DSH 0.1.5-alpha.1 published packages; host and plugin Pi 0.85.1')

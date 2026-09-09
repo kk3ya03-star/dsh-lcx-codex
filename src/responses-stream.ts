@@ -63,7 +63,6 @@ type StreamOptions = {
 type ResponseWireMeta = {
   responseModel?: string;
   nativeOutput?: unknown[];
-  nativeVisibleAdditions?: unknown[];
 };
 export type ServerToolUsage = {
   webSearchCalls: number;
@@ -678,6 +677,40 @@ function itemText(item: Pick<
   return "";
 }
 
+const GROK_RENDER_MARKER = /(?:\bstateless_invoke\s+)?\{?render_inline_citation(?:\s*\(\s*citation_id\s*=\s*\d+\s*\)|\s+with\s+citation_id\s+is\s+\d+)\}?/giu;
+const GROK_UI_CITATION_MARKER = /render_inline_citation[^\r\n]*/giu;
+const GROK_PRIVATE_RENDER_MARKER = /[\uE000-\uF8FF]render_inline_citation[^\uE000-\uF8FF\r\n]*[\uE000-\uF8FF]/giu;
+const GROK_NUMBERED_CITATION = /\[\[\d+\]\]\(https?:\/\/[^)\s]+\)/giu;
+const GROK_EOS_MARKER = /<\|eos\|>/giu;
+const GROK_SOURCE_TAIL = /(?:^|[ \t\r\n]+)Sources:\s*(?=(?:\r?\n)?\s*[-*])/iu;
+
+function sanitizeGrokVisibleText(value: string): string {
+  let text = value
+    .replace(GROK_RENDER_MARKER, "")
+    .replace(GROK_UI_CITATION_MARKER, "")
+    .replace(GROK_PRIVATE_RENDER_MARKER, "")
+    .replace(GROK_NUMBERED_CITATION, "")
+    .replace(GROK_EOS_MARKER, "");
+  const sourceTail = text.search(GROK_SOURCE_TAIL);
+  if (sourceTail >= 0) text = text.slice(0, sourceTail);
+  return text.replace(/[ \t]{2,}/gu, " ").replace(/[ \t]+([,.;:!?])/gu, "$1").replace(/[ \t]+\n/gu, "\n").trimEnd();
+}
+
+function sanitizeGrokTerminalItem(item: WireItem, index: number): WireItem {
+  const normalized = normalizedTerminalItem(item, index);
+  if (normalized.type !== "message" || !Array.isArray(normalized.content)) return normalized;
+  return {
+    ...normalized,
+    content: normalized.content.map((part) => {
+      if (!isObject(part) || (part.type !== "output_text" && part.type !== "refusal")) return structuredClone(part);
+      const text = sanitizeGrokVisibleText(String(part.text ?? part.refusal ?? ""));
+      return part.type === "output_text"
+        ? { ...structuredClone(part), text }
+        : { ...structuredClone(part), refusal: text };
+    }),
+  };
+}
+
 /** @param {UnknownRecord} item @param {number} index */
 function normalizedTerminalItem(item: WireItem, index: number): WireItem {
   if (item.type === "message")
@@ -789,34 +822,46 @@ async function* normalizedResponseEvents(
   } = {},
 ): AsyncGenerator<UnknownRecord> {
   const open = new Map<number, { kind: string | undefined; item: WireItem; text: string }>();
+  const grokTextProjection = new Map<number, { raw: string; emitted: string }>();
+  const hiddenPrefixTokens = ["sources:", "render_inline_citation", "{render_inline_citation", "render_inline_citation", "stateless_invoke", "[[", "<|eos|>"];
+  const safeGrokRawPrefix = (raw: string, final: boolean): string => {
+    if (final || raw.search(GROK_SOURCE_TAIL) >= 0) return raw;
+    const lower = raw.toLowerCase();
+    let holdStart = raw.length;
+    const pendingSource = lower.lastIndexOf("sources:");
+    if (pendingSource >= 0 && (pendingSource === 0 || /\s/u.test(raw[pendingSource - 1] ?? "")))
+      holdStart = Math.min(holdStart, pendingSource);
+    for (const token of hiddenPrefixTokens) {
+      const complete = lower.lastIndexOf(token);
+      if (complete >= 0) {
+        const tail = raw.slice(complete);
+        if (sanitizeGrokVisibleText(tail).toLowerCase().includes(token.replace(/^\{/u, "")))
+          holdStart = Math.min(holdStart, complete);
+      }
+      const max = Math.min(token.length - 1, lower.length);
+      for (let size = max; size > 0; size -= 1) {
+        if (lower.endsWith(token.slice(0, size))) {
+          holdStart = Math.min(holdStart, raw.length - size);
+          break;
+        }
+      }
+    }
+    return raw.slice(0, holdStart);
+  };
+  const grokProjectionDelta = (index: number, rawText: string, final = false): string => {
+    let state = grokTextProjection.get(index);
+    if (!state) { state = { raw: "", emitted: "" }; grokTextProjection.set(index, state); }
+    state.raw = rawText;
+    const target = sanitizeGrokVisibleText(safeGrokRawPrefix(rawText, final));
+    if (!target.startsWith(state.emitted)) return "";
+    const delta = target.slice(state.emitted.length);
+    state.emitted = target;
+    if (final) grokTextProjection.delete(index);
+    return delta;
+  };
   const completed = new Set<string>();
   const completedWireItems = new Map<number, unknown>();
   const serverToolIds = new Map<string, Set<string>>();
-  const citations = new Map<string, string>();
-  const observeCitation = (candidate: unknown) => {
-    if (!isObject(candidate)) return;
-    try {
-      const url = new URL(String(candidate.url ?? ""));
-      if (url.protocol !== "http:" && url.protocol !== "https:") return;
-      const title = typeof candidate.title === "string"
-        ? candidate.title.replace(/[\r\n]+/gu, " ").trim()
-        : "";
-      if (!citations.has(url.href)) citations.set(url.href, title);
-    } catch {}
-  };
-  const observeCitations = (item: unknown) => {
-    if (!isObject(item)) return;
-    if (item.type === "message" && Array.isArray(item.content)) {
-      for (const part of item.content) {
-        if (!isObject(part) || part.type !== "output_text" || !Array.isArray(part.annotations))
-          continue;
-        for (const annotation of part.annotations)
-          if (isObject(annotation) && annotation.type === "url_citation")
-            observeCitation(annotation);
-      }
-    }
-    // Search candidates are not answer citations. Only output_text annotations qualify.
-  };
   const isServerToolItem = (value: unknown): value is WireItem =>
     isObject(value) && options.serverToolTypes?.has(String(value.type ?? "")) === true;
   const observeServerTool = (item: WireItem) => {
@@ -871,9 +916,10 @@ async function* normalizedResponseEvents(
       !itemText(event.item as WireItem).trim() && !open.get(index)?.text.trim()
     ) continue;
     if (event.type === "response.output_item.added" && isObject(event.item)) {
-      const item = normalizedTerminalItem(event.item as WireItem, index);
-      open.set(index, { kind: itemKind(item), item, text: itemText(item) });
-      yield { ...event, item };
+      const rawItem = normalizedTerminalItem(event.item as WireItem, index);
+      const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
+      open.set(index, { kind: itemKind(item), item: rawItem, text: itemText(rawItem) });
+      yield { ...event, item: options.serverToolTypes ? addedShell(item, index) : item };
       continue;
     }
     if (event.type === "response.output_text.delta") {
@@ -895,7 +941,11 @@ async function* normalizedResponseEvents(
         record = next.value;
       }
       record.text = String(record.text ?? "") + String(event.delta ?? "");
-      yield event;
+      if (!options.serverToolTypes) yield event;
+      else {
+        const delta = grokProjectionDelta(index, record.text);
+        if (delta) yield { ...event, delta };
+      }
       continue;
     }
     if (
@@ -980,7 +1030,12 @@ async function* normalizedResponseEvents(
       continue;
     }
     if (event.type === "response.output_item.done" && isObject(event.item)) {
-      const item = normalizedTerminalItem(event.item as WireItem, index);
+      const rawItem = normalizedTerminalItem(event.item as WireItem, index);
+      const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
+      if (options.serverToolTypes && item.type === "message") {
+        const delta = grokProjectionDelta(index, itemText(rawItem), true);
+        if (delta) yield { type: "response.output_text.delta", output_index: index, content_index: 0, item_id: item.id, delta };
+      }
       const identity = itemIdentity(item);
       if (identity) completed.add(identity);
       open.delete(index);
@@ -1001,9 +1056,7 @@ async function* normalizedResponseEvents(
             .sort(([left], [right]) => left - right)
             .map(([, item]) => item);
       const nativeOutput = terminalOutput.map((item) => structuredClone(item));
-      const nativeVisibleAdditions: unknown[] = [];
       for (const item of terminalOutput) {
-        observeCitations(item);
         if (isServerToolItem(item)) observeServerTool(item);
       }
       const output = terminalOutput
@@ -1012,44 +1065,17 @@ async function* normalizedResponseEvents(
           item.type === "reasoning" && !itemText(item as WireItem).trim()))
         .map((item: unknown, terminalIndex: number) =>
           isObject(item)
-            ? normalizedTerminalItem(item as WireItem, terminalIndex)
+            ? (options.serverToolTypes
+                ? sanitizeGrokTerminalItem(item as WireItem, terminalIndex)
+                : normalizedTerminalItem(item as WireItem, terminalIndex))
             : item,
         );
-      if (options.serverToolTypes && citations.size > 0) {
-        const visibleText = output
-          .filter(isObject)
-          .map((item) => itemText(item as WireItem))
-          .join("\n");
-        const missing = [...citations].filter(([url]) => !visibleText.includes(url));
-        if (missing.length > 0) {
-          const suffix = missing
-            .map(([url, title]) => `- ${title ? `${title}: ` : ""}${url}`)
-            .join("\n");
-          const responseId = String(response.id ?? "native")
-            .replace(/[^A-Za-z0-9_-]/gu, "_")
-            .slice(0, 40);
-          const fallbackItem = {
-            type: "message",
-            id: `msg_lcx_sources_${responseId}`.slice(0, 64),
-            role: "assistant",
-            status: "completed",
-            content: [{
-              type: "output_text",
-              text: `\n\nSources:\n${suffix}`,
-              annotations: [],
-            }],
-          };
-          output.push(fallbackItem);
-          nativeVisibleAdditions.push(structuredClone(fallbackItem));
-        }
-      }
       if (
         event.type === "response.completed" &&
         response.status === "completed" &&
         options.serverToolTypes
       ) {
         meta.nativeOutput = nativeOutput;
-        meta.nativeVisibleAdditions = nativeVisibleAdditions;
       }
       const used = new Set();
       for (const [streamIndex, record] of open) {
@@ -1072,6 +1098,10 @@ async function* normalizedResponseEvents(
             ? output[terminalIndex] as WireItem
             : normalizedTerminalItem(record.item, streamIndex);
         if (terminalIndex >= 0) used.add(terminalIndex);
+        if (options.serverToolTypes && item.type === "message") {
+          const delta = grokProjectionDelta(streamIndex, itemText(item), true);
+          if (delta) yield { type: "response.output_text.delta", output_index: streamIndex, content_index: 0, item_id: item.id, delta };
+        }
         yield {
           type: "response.output_item.done",
           output_index: streamIndex,
@@ -1081,6 +1111,7 @@ async function* normalizedResponseEvents(
         if (identity) completed.add(identity);
       }
       open.clear();
+      grokTextProjection.clear();
       for (const [terminalIndex, candidate] of output.entries()) {
         if (
           !isObject(candidate) ||
@@ -1214,7 +1245,6 @@ function rawArguments(value: unknown) {
 function replayState(
   message: UnknownRecord,
   nativeOutput?: readonly unknown[],
-  nativeVisibleAdditions?: readonly unknown[],
   nativeReplayRoute?: GrokNativeReplayRoute,
 ) {
   if (!isObject(message)) return undefined;
@@ -1229,7 +1259,6 @@ function replayState(
   const grokNative = createGrokNativeReplayEnvelope(
     nativeOutput,
     nativeReplayRoute,
-    nativeVisibleAdditions,
   );
   return {
     response: {
@@ -1422,7 +1451,6 @@ async function* toDshChunks(
           : replayState(
               message,
               wireMeta?.nativeOutput,
-              wireMeta?.nativeVisibleAdditions,
               nativeReplayRoute,
             );
         yield {

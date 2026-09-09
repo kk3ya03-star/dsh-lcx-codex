@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3-pre.12 - 2026-09-09
+
+- Target DSH `0.1.5-alpha.1` Session V3 and Pi `0.85.1` only. Remove old-session migration/carrier behavior and reject older Grok replay envelopes instead of maintaining compatibility paths.
+- Make the DSH 0.1.5 leading durable `system/message` the single request-level system prelude; later system updates remain ordinary in-history context.
+- Move Grok native replay to envelope v3 and remove synthetic visible citation additions / `Sources:` fallback while preserving complete provider-native search output for exact same-session continuation.
+- Sanitize known upstream Grok renderer artifacts from visible output, including `render_inline_citation`, `stateless_invoke`, private-use-area renderer tokens, numbered citation wrappers, trailing `<|eos|>`, and trailing synthetic `Sources:` sections, without buffering ordinary streaming text.
+- Qualify real DSH 0.1.5 Grok Web Search → long conversation → actual `/compact` → post-compact native search continuation: marker/fact retained, single system surface, replay v3, and visible `sourceLeak=false`.
+- Release gates: 246/246 tests, strict host/client typechecks, four DSH schemas, clean package contents, and real GPT/Grok smoke tests.
+
 ## 0.4.3-pre.4 - 2026-09-08
 
 - Hide Grok reasoning blocks with no visible text while preserving their encrypted provider state for tool continuation and cold replay. Visible reasoning and GPT streaming remain unchanged.

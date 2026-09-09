@@ -48,7 +48,7 @@ test('scoped tool registration preserves the DSH service receiver and disposer',
   assert.equal(scopedToolRuntime({ ctx: {} }), undefined)
 })
 
-test('agent route and Sessions access use the DSH 0.1.3 public shape', () => {
+test('agent route and Sessions access use the DSH 0.1.5 public shape', () => {
   const requestConfig = { provider: 'header-provider', model: 'header-model' }
   const options = { provider: 'selected-provider', model: 'selected-model' }
   const agentSession = { id: 'session-compat', requestHeader: () => ({ config: requestConfig }) }

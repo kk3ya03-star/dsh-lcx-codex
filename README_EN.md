@@ -7,7 +7,7 @@
 **GPT Responses lifecycle capabilities plus native Web / X Search for Grok in DeepSeek Harness.**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.3--alpha.2-16803c)](#installation)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5--alpha.1-16803c)](#installation)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 [简体中文](README.md) · **English** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
@@ -20,18 +20,20 @@ Models, endpoints, API keys / credentials, sessions, and tools remain DSH-owned.
 
 ## Installation
 
-This page documents **`0.4.3-pre.4`**, targeting **DSH `0.1.3-alpha.2`**. Stable remains `0.4.2`; users on DSH `0.1.1-rc.2` should use the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md).
+This page documents **`0.4.3-pre.12`**, supporting only **DSH `0.1.5-alpha.1` + Pi `0.85.1`**. Stable remains `0.4.2`; this prerelease does not keep compatibility layers for older DSH or Session formats.
 
-Before installing, make sure DSH Web starts correctly and that the GPT Responses or Grok Responses API route you intend to use is configured in DSH. Node.js requires `^22.19.0 || >=24.0.0`. On Windows, see [Troubleshooting](#troubleshooting) if DSH fails while loading `fs-ext`.
+Before installing, make sure DSH Web starts correctly and that the GPT Responses or Grok Responses API route you intend to use is configured in DSH. Node.js requires `^22.19.0 || >=24.0.0`. DSH `0.1.5-alpha.1` was qualified on Windows without the old `0.1.3-alpha.2` `fs-ext` workaround.
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.4
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.12
 dsh web
 ```
 
 For later prerelease updates, use `dsh plugin --profile web add dsh-lcx-codex@prelatest`. Installing without a version or dist-tag still selects stable, **not this prerelease**.
 
-**Upgrading from `0.4.2`:** old plugin configuration and v3/v4 compaction checkpoints are unsupported. Reconfigure the plugin and start a new session. Current v5 GPT checkpoints remain restart-safe.
+**Upgrading to this prerelease:** only DSH `0.1.5-alpha.1` Session V3 is supported. Old plugin configuration, old DSH sessions, old LCX checkpoints, and older Grok replay envelopes are not migrated into the active session root. To retain old history, rename/archive the old `sessions` directory and let DSH `0.1.5-alpha.1` start from a fresh empty `sessions` root; keep the old data only as an offline backup.
+
+When DSH persistence reopens the same saved session, LCX can restore its persisted v5 checkpoint. This is ordinary continuation over DSH session persistence, **not a Codex-style process-level rollout/checkpoint restart/resume mechanism**.
 
 ## Enable the Plugin
 
@@ -71,7 +73,7 @@ Grok receives xAI Responses server-side tools directly rather than function wrap
 
 When either native Grok search is enabled, DSH `web_search` is removed from that Grok request to avoid duplicate search semantics. `web_fetch`, `read`, and unrelated DSH/MCP function tools remain available. A native search can therefore flow into a local tool and continue in the same agentic workflow. Provider-native search state is replayed as xAI state, never as fake DSH local tool calls.
 
-This release supports **API-key / API-gateway** routes. xAI OAuth / SuperGrok / X Premium subscription login is not supported. Source URLs are preserved when available, but exact citation rendering can still depend on the compatible gateway's response format.
+This release supports **API-key / API-gateway** routes. xAI OAuth / SuperGrok / X Premium subscription login is not supported. LCX no longer appends a visible synthetic `Sources:` block for Grok and filters known upstream renderer artifacts such as `render_inline_citation`, `stateless_invoke`, private-use-area renderer tokens, and trailing `<|eos|>`. Ordinary links intentionally written in answer text remain visible. Complete provider-native search output is retained only in same-session replay state.
 
 ### Find and Display Images with GPT
 
@@ -97,9 +99,9 @@ With LCX enabled, the plugin sends DSH's compaction request to the upstream GPT 
 | `90%` to below `95%` | Prefer remote native compaction. |
 | At least `95%` | Allow DSH emergency tool-result pruning, then follow its compaction workflow. |
 
-Use `/compact` for manual compaction. These thresholds are fixed policy, not additional settings. Compaction requires an eligible history range and upstream support.
+Use `/compact` for manual compaction. These thresholds are fixed policy, not additional settings. Compaction requires an eligible history range and upstream support. Grok does not use GPT Native V2; it continues through DSH `0.1.5-alpha.1` compaction, with the Session V3 leading `system/message` kept outside the summary.
 
-You can continue after compaction, restart the session, or switch GPT models. For incompatible model or route configurations, LCX uses portable history instead of forcing native-state reuse. Some recoverable failures while creating the first checkpoint can fall back to DSH basic compaction; not every failure qualifies.
+You can continue after compaction in the same live session. If DSH itself reopens the same persisted session, LCX validates and restores its v5 checkpoint. For incompatible model, route, or session identities, LCX uses portable history instead of forcing native-state reuse. Some recoverable failures while creating the first checkpoint can fall back to DSH basic compaction; not every failure qualifies. LCX does not add Codex-style rollout/checkpoint restart-resume.
 
 ## Caching
 
@@ -112,36 +114,9 @@ Pi `0.85.1` explicit cache mode supports a `30m` long-retention option. With `ca
 
 ## Troubleshooting
 
-**DSH fails to start on Windows with an `fs-ext` error?**
+**Should I keep the old Windows `fs-ext` patch after upgrading?**
 
-DSH `0.1.3-alpha.2` loads `fs-ext` during startup even though Windows does not use it. If its native module is unavailable, DSH exits before startup completes. This is **a DSH dependency-loading problem, not broken plugin compaction or a broken session lock**.
-
-Windows tests for this release used a minimal DSH correction: load `fs-ext` only on non-Windows platforms, retaining the existing Win32 session lock. The plugin does not patch DSH automatically, and unmodified Windows startup is not guaranteed. Do not disable session locking to work around this error.
-
-
-Exact procedure (only for `@deepseek-ai/dsh-session-persistence-jsonl@0.1.3-alpha.2`):
-
-1. Stop DSH. Locate the actual `@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js` in the error stack, not another Node installation or DSH copy. For global installations, look under the DSH dependency tree inside the directory reported by `npm root -g`; the absolute stack path is authoritative.
-2. Check the adjacent package `package.json` reports `0.1.3-alpha.2`. Copy `lib/index.js` to `lib/index.js.before-win32-fs-ext.bak`, preserving any existing backup.
-3. In a text editor, replace this single line:
-
-   ```js
-   import { flock } from "fs-ext";
-   ```
-
-   with:
-
-   ```js
-   const flock = process.platform === "win32"
-     ? undefined
-     : (await import("fs-ext")).flock;
-   ```
-
-   Change only this module-loading line; retain the Win32 session lock and all other code. Stop if the version or original line differs.
-4. Save, restart `dsh web`, create a session and send a message to verify startup and session writes. This does not fix unrelated startup errors.
-5. To undo, stop DSH and restore `index.js` from the backup. Reinstalling or upgrading DSH may overwrite this local change; do not apply an old-version workaround blindly to a newer version.
-
-This is an optional local DSH compatibility correction, not a patch performed by the plugin installer. The project's Windows validation used exactly this loading change.
+No. Do not carry the DSH `0.1.3-alpha.2` `fs-ext` workaround into `0.1.5-alpha.1`. This release was qualified with an unmodified Windows DSH `0.1.5-alpha.1` Web and headless runtime. If the old installation was patched manually, obtain clean `0.1.5-alpha.1` package files through a normal reinstall/upgrade rather than copying the old modified file forward.
 
 **Nothing changes after installation?**
 
@@ -153,20 +128,22 @@ A working Responses chat does not guarantee Native V2, Hosted/Alpha, or Grok nat
 
 ## Versions and Test Coverage
 
-This release targets DSH `0.1.3-alpha.2`, DSH host Pi `0.85.1`, and plugin Pi `0.85.1`. The plugin carries its own Pi dependency and does not replace DSH's copy.
+This release targets DSH `0.1.5-alpha.1`, DSH host Pi `0.85.1`, and plugin Pi `0.85.1`. The plugin carries its own Pi dependency and does not replace DSH's copy.
 
-The two display fixes pass streamed, terminal-only and cold-replay regression tests. The live coverage below is inherited from pre.3; it is not a claim that every online scenario was rerun.
+Release qualification was rerun against DSH `0.1.5-alpha.1`, including the changed Session V3/system-history path rather than relying on the previous pre.4 online matrix.
 
-Release gates pass **243/243 tests**, strict host/client typechecks, and all four DSH schemas. Live coverage includes GPT Hosted/Native V2 regressions, native DSH DeepSeek search regression, Grok 4.5/4.6 native Web/X Search, Web/X → local `read` → continuation, provider-native replay, full DSH restart continuation, and Grok parent/child cache/session isolation. The existing GPT parent-cache-sharing policy remains unchanged.
+Release gates pass **246/246 tests**, strict host/client typechecks, and DSH schema validation. Real isolated DSH `0.1.5-alpha.1` coverage includes Web startup, a headless GPT ordinary request, Session V3 `system/message`, Native V2 `/compact`, same-session post-compact continuation, and v5 checkpoint session-identity binding.
 
-Prerelease boundaries remain: Windows DSH `0.1.3-alpha.2` needs the documented minimal `fs-ext` loading correction; Alpha references/screenshot display, proxy/NO_PROXY, broader concurrency/cancellation, and background continuable-subagent matrices are not fully covered; Grok OAuth is unsupported; citation presentation can still depend on gateway formatting. See the [v0.4.3-pre.4 release notes](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.4).
+Grok also has a real long-session qualification: native Web Search → enough conversation history for an actual DSH `/compact` → native search/continuation after compaction. The marker and key fact were retained, `system/message` appeared once, replay used the current v3 envelope, and final visible output reported `sourceLeak=false`.
+
+Prerelease boundaries remain: Alpha references/screenshot display, proxy/NO_PROXY, broader concurrency/cancellation, and background continuable-subagent matrices are not fully covered; Grok OAuth is unsupported; unknown future upstream renderer protocols may still require adaptation. DSH `0.1.5-alpha.1` itself remains an alpha/developer-preview upstream.
 
 ## Development and Feedback
 
 ```sh
 npm ci --ignore-scripts
-npm ci --prefix scripts/runtime-alpha2 --ignore-scripts
-node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+npm ci --prefix scripts/runtime-dsh015 --ignore-scripts
+node scripts/link-dsh-runtime.mjs scripts/runtime-dsh015
 node scripts/check-generated.mjs
 npm run typecheck
 npm test
