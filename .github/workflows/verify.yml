@@ -25,8 +25,8 @@ jobs:
       - name: Install locked build and host dependencies
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix scripts/runtime-alpha2 --ignore-scripts --no-audit --no-fund
-          node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+          npm ci --prefix scripts/runtime-dsh015 --ignore-scripts --no-audit --no-fund
+          node scripts/link-dsh-runtime.mjs scripts/runtime-dsh015
       - name: Verify generated code, strict types, tests, schemas and package
         run: |
           node scripts/check-generated.mjs

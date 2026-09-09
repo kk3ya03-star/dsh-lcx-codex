@@ -1,5 +1,5 @@
 version: 0.4.3-pre.12
-state: APPROVED_PRERELEASE
+state: RELEASED_PRERELEASE
 approval:
   product_owner: explicit_direct_release_instruction
   date: 2026-09-09
@@ -8,6 +8,7 @@ approval:
 source:
   repository: kk3ya03-star/dsh-lcx-codex
   runtime_commit: 43b5193
+  release_commit: d837a354f643aadc06d6f4f7c4cf8059c6635733
   policy: Runtime code was fully validated before release metadata/workflow-only preparation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
@@ -34,7 +35,15 @@ runtime_basis:
   remaining: xAI OAuth unsupported; Alpha refs/screenshot display; proxy/NO_PROXY; broader concurrency/cancellation/background continuable-subagent matrices; unknown future upstream renderer protocols
   legacy: Old DSH/session/checkpoint/Grok replay formats are unsupported and are archived rather than migrated into the active Session V3 root.
 publication:
-  state: APPROVED_PENDING_PUBLISH
-  policy: Publish this new prerelease only to prelatest; never change stable latest.
+  state: RELEASED
+  policy: Published this prerelease only to prelatest; stable latest remains unchanged.
 post_release_verification:
-  state: PENDING
+  npm_version: 0.4.3-pre.12
+  npm_prelatest: 0.4.3-pre.12
+  npm_latest: 0.4.2
+  npm_integrity: sha512-Me9WYCai79daozSb+RMjvUuIhs/nOhpa1iR/sqVVMGNVHcvLYVGLPot0ogvX/pvwFayXqHqpGt0Ce6Zq/Oyb8A==
+  npm_shasum: ec018b5736c3cba4b20c7a25328d65f9b5ebca7e
+  git_tag_target: d837a354f643aadc06d6f4f7c4cf8059c6635733
+  publish_workflow: 34325332402
+  publish_workflow_conclusion: success
+  matches_checked_artifact: true
