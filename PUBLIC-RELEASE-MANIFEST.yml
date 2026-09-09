@@ -1,54 +1,40 @@
-version: 0.4.3-pre.4
-state: RELEASED_PRERELEASE
+version: 0.4.3-pre.12
+state: APPROVED_PRERELEASE
 approval:
   product_owner: explicit_direct_release_instruction
-  date: 2026-09-08
-  reference: Product Owner approved publishing pre.4 after the two display fixes were merged and tested.
-  scope: prerelease_display_fixes_and_public_maintenance
+  date: 2026-09-09
+  reference: Product Owner approved publishing pre.12 after final DSH 0.1.5, Grok replay/source cleanup, compaction, packaging, and deployment verification.
+  scope: dsh_015_session_v3_grok_replay_v3_and_current_only_release
 source:
   repository: kk3ya03-star/dsh-lcx-codex
-  runtime_commit: c1f04c3ebde2fe23358a022983a5af509a21b5b6
-  sources_fix_pr: 15
-  empty_reasoning_fix_pr: 16
-  policy: Runtime is unchanged from the tested public source; release preparation changes metadata and documentation only.
+  runtime_commit: 43b5193
+  policy: Runtime code was fully validated before release metadata/workflow-only preparation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
-  branch: main
-  tag: v0.4.3-pre.4
+  branch: issue/18-dsh-015-pre12
+  tag: v0.4.3-pre.12
   npm_dist_tag: prelatest
   stable_latest_must_remain: 0.4.2
 verification:
-  regression_tests: 243/243 PASS
+  regression_tests: 246/246 PASS
   strict_types: PASS
   schemas: 4/4 PASS
   generated_output: PASS
   package: PASS
-  live_scope: Prior pre.3 live coverage is inherited; the two new display fixes are verified by streamed, terminal-only and cold-replay regression fixtures.
+  live_scope: Real DSH 0.1.5-alpha.1 verification covered GPT ordinary Responses, Native V2 compact and continuation, Session V3 system-message semantics, Grok native Web search, replay v3, long-session compaction and post-compact search, renderer/source cleanup, and production gateway startup.
 previous_release:
-  version: 0.4.3-pre.3
-  tag: v0.4.3-pre.3
-  public_commit: a11f63fb836797985737784d6687ba17aaa3ea4e
-  policy: Immutable tag and published npm version remain unchanged.
+  version: 0.4.3-pre.4
+  tag: v0.4.3-pre.4
+  policy: Existing npm version and immutable tag remain unchanged.
 runtime_basis:
-  dsh: 0.1.3-alpha.2
+  dsh: 0.1.5-alpha.1
   host_pi: 0.85.1
   plugin_pi: 0.85.1
-  qualification: bounded_live_tests_on_Windows_with_documented_host_loading_correction
-  remaining: xAI OAuth unsupported; provider-dependent citations; Alpha refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
-  legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained
+  qualification: current_only_DSH_0.1.5_Session_V3_and_real_Windows_runtime_tests
+  remaining: xAI OAuth unsupported; Alpha refs/screenshot display; proxy/NO_PROXY; broader concurrency/cancellation/background continuable-subagent matrices; unknown future upstream renderer protocols
+  legacy: Old DSH/session/checkpoint/Grok replay formats are unsupported and are archived rather than migrated into the active Session V3 root.
 publication:
-  state: RELEASED
-  policy: Publish a new prerelease only; never republish an existing version or alter stable latest.
-
+  state: APPROVED_PENDING_PUBLISH
+  policy: Publish this new prerelease only to prelatest; never change stable latest.
 post_release_verification:
-  public_commit: 62510064dd860162964a9110adc7fa5cf32d6339
-  git_tag_target: 62510064dd860162964a9110adc7fa5cf32d6339
-  github_prerelease: true
-  npm_version: 0.4.3-pre.4
-  npm_prelatest: 0.4.3-pre.4
-  npm_latest: 0.4.2
-  npm_integrity: sha512-lEA/gG0fxKDtn7Jg8rldFFpTebEnKPdMjIgKTUkn0nFwbc12hZfNbuWTAAg9vU85sy9IIPMtRDCG2blgyFAJ1Q==
-  matches_checked_artifact: true
-  published_fix_modules_match: true
-  publish_workflow: 34276794741
-  release_branch: removed
+  state: PENDING
