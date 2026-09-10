@@ -1,9 +1,9 @@
 version: 0.4.3-pre.13
-state: REVIEW_ONLY
+state: APPROVED_PRERELEASE
 approval:
-  product_owner: PENDING_CONTROLLER_APPROVAL
+  product_owner: private-work-74-da659da6f762336f5c601d4d1934436258b0b452
 readiness:
-  state: READY_FOR_PRODUCT_OWNER_APPROVAL
+  state: APPROVED
   policy: Technical readiness is not release authorization.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
@@ -16,4 +16,4 @@ runtime_basis:
   host_pi: 0.85.1
   plugin_pi: 0.85.1
 publication:
-  state: BLOCKED
+  state: APPROVED_PENDING_PUBLISH
