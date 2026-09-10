@@ -4,7 +4,10 @@ import test from 'node:test'
 import { assertReleasePolicy } from './release-policy.mjs'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)))
-const review = readFileSync(new URL('../PUBLIC-RELEASE-MANIFEST.yml', import.meta.url), 'utf8')
+const actual = readFileSync(new URL('../PUBLIC-RELEASE-MANIFEST.yml', import.meta.url), 'utf8')
+const review = actual.replace(/^state: APPROVED_PRERELEASE$/m, 'state: REVIEW_ONLY')
+  .replace(/^  product_owner: .+$/m, '  product_owner: PENDING_CONTROLLER_APPROVAL')
+  .replace(/^  state: APPROVED_PENDING_PUBLISH$/m, '  state: BLOCKED')
 const tag = `refs/tags/v${pkg.version}`
 // Synthetic approval fixture; never persisted as the candidate manifest.
 const approved = review.replace('state: REVIEW_ONLY', 'state: APPROVED_PRERELEASE')
@@ -25,3 +28,11 @@ for (const [label, manifest, ref] of [
   ['pending owner approval', approved.replace('synthetic_test_approval', 'PENDING_CONTROLLER_APPROVAL'), tag],
   ['blocked publication', approved.replace('state: APPROVED_PENDING_PUBLISH', 'state: BLOCKED'), tag],
 ]) test(`publication rejects ${label}`, () => assert.throws(() => assertReleasePolicy(pkg, manifest, ref)))
+
+test('actual manifest approval state is enforced', () => {
+  if (/^state: APPROVED_PRERELEASE$/m.test(actual)) {
+    assert.doesNotThrow(() => assertReleasePolicy(pkg, actual, tag))
+  } else {
+    assert.throws(() => assertReleasePolicy(pkg, actual, tag))
+  }
+})
