@@ -1,7 +1,10 @@
 import z from "@deepseek-ai/schemastery";
+import { recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
+import { installSearchUsage } from "./search-usage.js";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type {
+  ContentBlock,
   GenerateOptions,
   LlmRuntime,
   Message,
@@ -25,7 +28,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "./pi-responses-runtime.js";
 import { fetchJsonWithRetry } from "./transport.js";
 import {
   agentSessionId,
@@ -51,6 +54,7 @@ import {
   toolResultPrunerState,
 } from "./dsh-compat.js";
 import type { CompactionPatchRecords } from "./dsh-compat.js";
+import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import {
   authenticatedGrokHeaders,
   authenticatedHeaders,
@@ -93,6 +97,7 @@ import {
   HOSTED_SEARCH_OUTPUT,
   HOSTED_SEARCH_PARAMETERS,
   buildHostedSearchBody,
+  hostedMediaPresentationMeta,
   normalizeHostedSearchArgs,
   parseHostedSearchResponse,
   renderHostedSearchResult,
@@ -104,22 +109,27 @@ import {
   isAlphaHttpUrl,
   ALPHA_SEARCH_OUTPUT,
   ALPHA_SEARCH_PARAMETERS,
+  alphaSearchRetryOptions,
   buildAlphaSearchBody,
   normalizeAlphaSearchArgs,
   parseAlphaSearchResponse,
   renderAlphaSearchResult,
+  runWithAlphaSessionLock,
 } from "./web-search-alpha.js";
 import {
   AlphaCapabilityStore,
   alphaCapabilityFingerprint,
   alphaCapabilityUsable,
+  alphaSearchParametersFor,
+  assertAlphaActionAllowed,
 } from "./web-search-capability.js";
-import { AlphaRefStore } from "./web-search-ref-store.js";
+import { AlphaRefStore, type AlphaRefRecord } from "./web-search-ref-store.js";
 import { ServiceMutex } from "./service-mutex.js";
 import {
   GROK_NATIVE_SERVER_TOOL_TYPES,
   grokNativeSearchEnabled,
   grokVisibleFunctionTools,
+  isGrokNativeServerToolItem,
   grokWireTools,
   restoreGrokNativeReplay,
   type GrokNativeReplayRoute,
@@ -274,6 +284,7 @@ type SettingsState = {
   grokNativeWebSearch: boolean;
   grokNativeXSearch: boolean;
 };
+type SettingsValue = SettingsState & { searchMediaPreview: boolean };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -345,6 +356,7 @@ const SettingsSchema = z.object({
   alphaSearch: z.boolean().default(false),
   grokNativeWebSearch: z.boolean().default(false),
   grokNativeXSearch: z.boolean().default(false),
+  searchMediaPreview: z.boolean().default(false),
 });
 
 function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
@@ -505,6 +517,7 @@ async function executeHostedSearch(
       maxResponseBytes: routeConfig.maxResponseBytes,
     },
   );
+  recordHostedUsage(response, requestId, routeConfig.provider, routeConfig.model);
   return parseHostedSearchResponse(
     response,
     requestId,
@@ -606,8 +619,19 @@ function createScopedGptWebSearchTool(
   if (!definition)
     throw new Error("DSH web_search composition did not register a tool");
   const execute = definition.execute.bind(definition);
-  return {
+  const output = definition.output;
+  return withAuxiliaryUsage({
     ...definition,
+    output: {
+      ...output,
+      presentationMeta(args: unknown, value: Parameters<ToolDefinition["output"]["render"]>[1]) {
+        return hostedMediaPresentationMeta(
+          value,
+          "web_search",
+          output.presentationMeta?.(args, value),
+        );
+      },
+    },
     async execute(args: unknown, exec: ToolRunContext) {
       if (!state.enabled || !state.webSearch)
         throw webError("web_search GPT Hosted Search is disabled", "LCX_WEB_DISABLED");
@@ -620,7 +644,7 @@ function createScopedGptWebSearchTool(
         );
       return hostedSearchRouteContext.run(active, () => execute(args, exec));
     },
-  };
+  });
 }
 
 function createAdvancedHostedTool(
@@ -633,7 +657,7 @@ function createAdvancedHostedTool(
   },
   getConfig: () => NormalizedConfig,
 ) {
-  return {
+  return withAuxiliaryUsage({
     name: ADVANCED_HOSTED_TOOL,
     description:
       "Advanced GPT Responses Hosted Search. Use DSH web_search for ordinary lookup. Call this only when you need domain allow/block filters, approximate user location, search-context size, image search, external-web-access or return-token-budget controls. It is one-shot and has no open/find/click state.",
@@ -642,6 +666,8 @@ function createAdvancedHostedTool(
       schema: HOSTED_SEARCH_OUTPUT,
       render: (_args: unknown, value: unknown) =>
         renderHostedSearchResult(value),
+      presentationMeta: (_args: unknown, value: unknown) =>
+        hostedMediaPresentationMeta(value, ADVANCED_HOSTED_TOOL),
     },
     async execute(args: unknown, exec: HostExecution) {
       if (!state.enabled || !state.webSearch || !state.advancedHostedSearch)
@@ -665,7 +691,7 @@ function createAdvancedHostedTool(
         active.sessionId,
       );
     },
-  };
+  });
 }
 
 function disposeGptToolsForAgent(
@@ -789,91 +815,100 @@ async function executeAlpha(
   routeConfig: ResponsesRouteConfig,
   capability: { classification: unknown },
   refStore: {
-    assertUsable: (arg0: string, arg1: string, arg2: unknown) => void;
+    assertUsable: (arg0: string, arg1: string, arg2: unknown) => AlphaRefRecord;
     record: (arg0: string, arg1: string, arg2: unknown[]) => void;
   },
   args: unknown,
   exec: HostExecution,
 ) {
-  const normalized = normalizeAlphaSearchArgs(args);
-  if (
-    ["open", "find", "screenshot"].includes(normalized.action) &&
-    isAlphaHttpUrl(normalized.refId) &&
-    !isAlphaContinuationUrl(normalized.refId)
-  ) {
-    throw webError(
-      "Alpha Search direct URLs must be public HTTP(S) targets",
-      "LCX_ALPHA_URL_UNAVAILABLE",
-    );
-  }
   const sessionId = agentSessionId(exec?.agent);
   if (!sessionId)
     throw webError(
       "Alpha Search requires a DSH session",
       "LCX_ALPHA_SESSION_REQUIRED",
     );
-  const routeFp = routeFingerprint({
-    provider: routeConfig.provider,
-    model: routeConfig.model,
-    baseURL: routeConfig.baseURL,
-    sessionId,
-  });
-  if (alphaRefRequiresStore(normalized.action, normalized.refId))
-    refStore.assertUsable(sessionId, routeFp, normalized.refId);
-  const requestId = randomUUID();
-  const headers = await authenticatedHeaders(
-    ctx,
-    routeConfig,
-    sessionId,
-    requestId,
-  );
-  let response;
-  try {
-    response = await fetchJsonWithRetry(
-      `${routeConfig.baseURL}/alpha/search`,
-      buildAlphaSearchBody(
-        normalized,
-        routeConfig.model,
-        sessionId,
-        true,
-        routeConfig.alphaMaxOutputTokens,
-      ),
-      headers,
-      exec?.signal,
-      routeConfig.timeoutMs,
-      {
-        maxAttempts: routeConfig.maxAttempts,
-        maxResponseBytes: routeConfig.maxResponseBytes,
-      },
-    );
-  } catch (error) {
-    const details = errorDetails(error);
+  return runWithAlphaSessionLock(sessionId, exec?.signal, async () => {
+    const normalized = normalizeAlphaSearchArgs(args);
+    assertAlphaActionAllowed(capability, normalized.action);
     if (
-      [404, 405].includes(Number(details.status)) ||
-      /channel does not support/iu.test(String(details.message ?? ""))
-    )
+      ["open", "find", "screenshot"].includes(normalized.action) &&
+      isAlphaHttpUrl(normalized.refId) &&
+      !isAlphaContinuationUrl(normalized.refId)
+    ) {
       throw webError(
-        "Alpha Search is not supported by this route",
-        "LCX_ALPHA_UNAVAILABLE",
+        "Alpha Search direct URLs must be public HTTP(S) targets",
+        "LCX_ALPHA_URL_UNAVAILABLE",
+      );
+    }
+    const routeFp = routeFingerprint({
+      provider: routeConfig.provider,
+      model: routeConfig.model,
+      baseURL: routeConfig.baseURL,
+      sessionId,
+    });
+    const continuedRef = alphaRefRequiresStore(normalized.action, normalized.refId)
+      ? refStore.assertUsable(sessionId, routeFp, normalized.refId)
+      : undefined;
+    const requestId = randomUUID();
+    const headers = await authenticatedHeaders(
+      ctx,
+      routeConfig,
+      sessionId,
+      requestId,
+    );
+    let response;
+    try {
+      response = await fetchJsonWithRetry(
+        `${routeConfig.baseURL}/alpha/search`,
+        buildAlphaSearchBody(
+          normalized,
+          routeConfig.model,
+          sessionId,
+          true,
+          routeConfig.alphaMaxOutputTokens,
+        ),
+        headers,
+        exec?.signal,
+        routeConfig.timeoutMs,
+        alphaSearchRetryOptions(routeConfig.maxResponseBytes),
+      );
+    } catch (error) {
+      const details = errorDetails(error);
+      if (
+        [404, 405].includes(Number(details.status)) ||
+        /channel does not support/iu.test(String(details.message ?? ""))
+      )
+        throw webError(
+          "Alpha Search is not supported by this route",
+          "LCX_ALPHA_UNAVAILABLE",
+          error,
+        );
+      throw webError(
+        "Alpha Search provider request failed",
+        "LCX_ALPHA_PROVIDER_ERROR",
         error,
       );
-    throw webError(
-      "Alpha Search provider request failed",
-      "LCX_ALPHA_PROVIDER_ERROR",
-      error,
-    );
-  }
-  const { refRecords, ...result } = parseAlphaSearchResponse(response, {
-    action: normalized.action,
-    capability: capability.classification,
-    requestId,
+    }
+    const { refRecords: observedRefs, ...result } = parseAlphaSearchResponse(response, {
+      action: normalized.action,
+      capability: capability.classification,
+      requestId,
+    });
+    const refRecords = observedRefs.map((observation) => {
+      if (observation.refId !== normalized.refId || !continuedRef) return observation;
+      const observedArtifact = observation.provenance.artifactFingerprint;
+      const acceptedArtifact = continuedRef.provenance.artifactFingerprint;
+      if (observedArtifact && observedArtifact !== acceptedArtifact) return observation;
+      // An echoed input ref retains its accepted origin; an omitted URL makes no new claim.
+      return {
+        ...observation,
+        ...(observation.url === undefined && continuedRef.url ? { url: continuedRef.url } : {}),
+        provenance: { ...continuedRef.provenance },
+      };
+    });
+    refStore.record(sessionId, routeFp, refRecords);
+    return result;
   });
-  refStore.record(
-    sessionId,
-    routeFp,
-    refRecords,
-  );
-  return result;
 }
 
 function createAlphaTool(
@@ -884,15 +919,18 @@ function createAlphaTool(
     get: (key: string) => AlphaCapabilityRecord | undefined;
   },
   refStore: {
-    assertUsable: (sessionId: string, routeFingerprint: string, refId: unknown) => void;
+    assertUsable: (sessionId: string, routeFingerprint: string, refId: unknown) => AlphaRefRecord;
     record: (sessionId: string, routeFingerprint: string, refs: unknown[]) => void;
   },
+  advertisedRecord?: unknown,
 ) {
   return {
     name: ALPHA_TOOL,
     description:
       "Stateful Codex/Alpha web command tool. Use it for search/open/find/click/PDF screenshot and the structured image/finance/weather/sports/time actions. Use DSH web_search for ordinary search, and websearch_gpt_advanced only for Hosted Search controls.",
-    parameters: ALPHA_SEARCH_PARAMETERS,
+    parameters: advertisedRecord
+      ? alphaSearchParametersFor(advertisedRecord)
+      : ALPHA_SEARCH_PARAMETERS,
     output: {
       schema: ALPHA_SEARCH_OUTPUT,
       render: (_args: unknown, value: unknown) =>
@@ -972,7 +1010,7 @@ function syncAlphaToolForAgent(
     registrations.set(agent, {
       fingerprint: capability.fingerprint,
       dispose: scopedTools.register(
-        createAlphaTool(ctx, state, getConfig, capabilityStore, refStore),
+        createAlphaTool(ctx, state, getConfig, capabilityStore, refStore, capability.record),
       ),
     });
     return true;
@@ -1021,7 +1059,7 @@ async function serializeNativeAware(
   route: { provider: string; model: string; baseURL: string; sessionId: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
-  options: Pick<GenerateOptions, "signal" | "system" | "tools"> & {
+  options: Pick<GenerateOptions, "signal" | "tools"> & {
     grokNativeReplayRoute?: GrokNativeReplayRoute;
   },
 ) {
@@ -1053,11 +1091,18 @@ async function serializeNativeAware(
         ...extra,
       },
     );
+  const firstMessage = messages[0];
+  const systemHead = firstMessage?.role === "system" ? firstMessage : undefined;
+  const surfaceMessages = systemHead ? messages.slice(1) : messages;
+  const systemPrompt = systemHead?.content
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+    .map((block) => block.text)
+    .join("") || undefined;
   const prelude = await serializeDshMessages(
     [],
     ctx,
     serializeOptions(undefined, {
-      systemPrompt: options.system,
+      systemPrompt,
       includeSystemPrompt: true,
     }),
   );
@@ -1086,7 +1131,7 @@ async function serializeNativeAware(
     ) as SerializedDshMessages["input"]);
     mergeMap(imageMap, serialized.imageMap);
   };
-  for (const message of messages ?? []) {
+  for (const message of surfaceMessages ?? []) {
     assertSupportedCheckpointMessage(message);
     const state = session
       ? checkpointStateForMessage(session, message)
@@ -1173,7 +1218,7 @@ async function* remoteCompactionStream(
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, system: options.system, tools: options.tools },
+      { signal: options.signal, tools: options.tools },
     );
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
@@ -1336,71 +1381,90 @@ function patchCompactionPressureService(
   const candidate = compactionPatchCandidate(compactionValue, records);
   if (!candidate) return false;
   const mutex = new ServiceMutex();
+  const policyScope = new InvocationPolicyScope();
   const lifecycle = new AbortController();
-  return installCompactionPatch(records, candidate, mutex, lifecycle, async (
+  return installCompactionPatch(records, candidate, mutex, policyScope, lifecycle, async (
     agent,
     trigger,
     signal,
     callOriginal,
   ) => {
     const activeSignal = combinedAbortSignal(signal, lifecycle.signal);
-    return mutex.run(activeSignal, async () => {
-      if (trigger !== "pressure" || !state.enabled) return callOriginal(activeSignal);
-      const config = getConfig();
-      const target = routedTargetForAgent(agent);
-      if (!target || !resolveResponsesRouteConfig(ctx, target, config))
-        return callOriginal(activeSignal);
-      const session = sessionFromAgent(agent);
-      const tokenMeter =
-        resolveScopedService(agent, "tokenMeter") ??
-        resolveContextService(ctx, "tokenMeter");
-      if (!session || tokenMeter === undefined) return callOriginal(activeSignal);
-      let contextWindow: number | undefined;
-      try {
-        contextWindow = (
-          await ctx.llm.resolveModelInfo(
-            target.provider,
-            target.model,
-            activeSignal,
-          )
-        ).context?.contextWindow;
-      } catch {
-        return callOriginal(activeSignal);
-      }
-      const totalTokens = tokenMeterTotal(tokenMeter, session);
-      if (
-        contextWindow === undefined ||
-        contextWindow <= 0 ||
-        totalTokens === undefined
-      )
-        return callOriginal(activeSignal);
-      const auto = AUTO_COMPACTION_THRESHOLD_PERCENT;
-      const emergency = EMERGENCY_PRUNE_THRESHOLD_PERCENT;
-      const pressure = compactionPressureBand(totalTokens, contextWindow, {
-        auto,
-        emergency,
-      });
-      if (pressure.band === "below") return null;
-      const prunerState = toolResultPrunerState(
-        resolveAgentService(ctx, agent, "toolResultPruner"),
-      );
-      const configState = compactionConfigState(compactionValue);
-      const nativeFirst = pressure.band === "native";
-      const prunerPatch = nativeFirst
-        ? patchToolResultPruner(prunerState, () => ({ pruned: [], charsRemoved: 0 }))
-        : undefined;
-      const configPatch = patchCompactionConfig(configState, (originalConfig) =>
-        adjustedCompactionConfig(originalConfig, target, auto / 100),
-      );
-      ctx.logger?.info?.(
-        `[lcx-codex] auto pressure ${pressure.ratioPercent.toFixed(1)}%: ${nativeFirst ? "Native V2 first" : "emergency DSH prune allowed"} (native ${auto}%, emergency ${emergency}%)`,
-      );
-      try {
-        return await callOriginal(activeSignal);
-      } finally {
-        restoreCompactionConfig(configPatch);
-        restoreToolResultPruner(prunerPatch);
-      }
+    const configScoped = policyScope.ensure(
+      compactionConfigState(candidate.compaction).service,
+      "config",
+    );
+    const prunerState = toolResultPrunerState(
+      resolveAgentService(ctx, agent, "toolResultPruner") ??
+        resolveScopedService(agent, "toolResultPruner") ??
+        resolveContextService(ctx, "toolResultPruner"),
+    );
+    const prunerScoped =
+      !prunerState.pruner ||
+      (typeof prunerState.original === "function" &&
+        policyScope.ensure(prunerState.pruner, "pruneSession"));
+    const accessMode = configScoped && prunerScoped ? "shared" : "exclusive";
+    return policyScope.run(activeSignal, accessMode, async () => {
+      const invoke = async () => {
+        if (trigger !== "pressure" || !state.enabled)
+          return callOriginal(activeSignal);
+        const config = getConfig();
+        const target = routedTargetForAgent(agent);
+        if (!target || !resolveResponsesRouteConfig(ctx, target, config))
+          return callOriginal(activeSignal);
+        const session = sessionFromAgent(agent);
+        const tokenMeter =
+          resolveScopedService(agent, "tokenMeter") ??
+          resolveContextService(ctx, "tokenMeter");
+        if (!session || tokenMeter === undefined) return callOriginal(activeSignal);
+        let contextWindow: number | undefined;
+        try {
+          contextWindow = (
+            await ctx.llm.resolveModelInfo(
+              target.provider,
+              target.model,
+              activeSignal,
+            )
+          ).context?.contextWindow;
+        } catch {
+          return callOriginal(activeSignal);
+        }
+        const totalTokens = tokenMeterTotal(tokenMeter, session);
+        if (
+          contextWindow === undefined ||
+          contextWindow <= 0 ||
+          totalTokens === undefined
+        )
+          return callOriginal(activeSignal);
+        const auto = AUTO_COMPACTION_THRESHOLD_PERCENT;
+        const emergency = EMERGENCY_PRUNE_THRESHOLD_PERCENT;
+        const pressure = compactionPressureBand(totalTokens, contextWindow, {
+          auto,
+          emergency,
+        });
+        if (pressure.band === "below") return null;
+        const nativeFirst = pressure.band === "native";
+        const prunerPatch = nativeFirst
+          ? patchToolResultPruner(prunerState, () => ({ pruned: [], charsRemoved: 0 }))
+          : undefined;
+        const configPatch = patchCompactionConfig(
+          compactionConfigState(candidate.compaction),
+          (originalConfig) =>
+            adjustedCompactionConfig(originalConfig, target, auto / 100),
+        );
+        ctx.logger?.info?.(
+          `[lcx-codex] auto pressure ${pressure.ratioPercent.toFixed(1)}%: ${nativeFirst ? "Native V2 first" : "emergency DSH prune allowed"} (native ${auto}%, emergency ${emergency}%)`,
+        );
+        try {
+          return await callOriginal(activeSignal);
+        } finally {
+          restoreCompactionConfig(configPatch);
+          restoreToolResultPruner(prunerPatch);
+        }
+      };
+      return accessMode === "shared"
+        ? invoke()
+        : mutex.run(activeSignal, invoke);
     });
   });
 }
@@ -1427,8 +1491,14 @@ async function restoreCompactionPressure(records: CompactionPatchRecords) {
   for (const record of entries) {
     if (!record.lifecycle.signal.aborted) record.lifecycle.abort(reason);
   }
-  await Promise.allSettled(entries.map((record) => record.mutex.close(reason)));
+  await Promise.allSettled(
+    entries.flatMap((record) => [
+      record.policyScope.close(reason),
+      record.mutex.close(reason),
+    ]),
+  );
   restoreCompactionPatches(records, entries);
+  for (const record of entries) record.policyScope.restore();
 }
 
 function messagesContainNativeCheckpoint(
@@ -1461,7 +1531,7 @@ async function* managedResponsesStream(
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, system: options.system, tools: options.tools },
+      { signal: options.signal, tools: options.tools },
     );
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
@@ -1520,6 +1590,7 @@ async function* managedGrokNativeSearchStream(
         { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
       );
     const visibleTools = grokVisibleFunctionTools(options.tools, nativeSearch);
+    const declaredToolNames = new Set(visibleTools?.map((tool) => tool.name) ?? []);
     const prepared = await serializeNativeAware(
       options.messages,
       route,
@@ -1527,7 +1598,6 @@ async function* managedGrokNativeSearchStream(
       ctx,
       {
         signal: options.signal,
-        system: options.system,
         tools: visibleTools,
         grokNativeReplayRoute: nativeReplayRoute,
       },
@@ -1589,6 +1659,8 @@ async function* managedGrokNativeSearchStream(
       maxAttempts: 1,
       maxResponseBytes: routeConfig.maxResponseBytes,
       serverToolTypes: GROK_NATIVE_SERVER_TOOL_TYPES,
+      isServerToolItem: (item) => isGrokNativeServerToolItem(item, nativeSearch, declaredToolNames),
+      declaredToolNames,
       nativeReplayRoute,
       onServerToolUsage(usage) {
         ctx.logger?.info?.(
@@ -1623,6 +1695,7 @@ function installInjected(
   ctx: HostContext,
   configInput: ConfigInput = {},
 ) {
+  installSearchUsage(ctx);
   const baseConfig = normalizeConfig(configInput);
   let runtimeConfig = baseConfig;
   const state: SettingsState = {
@@ -1692,13 +1765,14 @@ function installInjected(
     { global: true },
   );
 
-  const settingsEntry: SettingsState = {
+  const settingsEntry: SettingsValue = {
     enabled: false,
     webSearch: false,
     advancedHostedSearch: false,
     alphaSearch: false,
     grokNativeWebSearch: false,
     grokNativeXSearch: false,
+    searchMediaPreview: false,
   };
   let source: () => SettingsState = () => settingsEntry;
   ctx.settings.installSection(

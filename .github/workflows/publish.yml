@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -32,14 +32,8 @@ jobs:
           import {readFileSync, appendFileSync} from 'node:fs';
           const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
           const manifest = readFileSync('PUBLIC-RELEASE-MANIFEST.yml', 'utf8');
-          const field = name => manifest.match(new RegExp(`^\\s*${name}:\\s*(\\S+)\\s*$`, 'm'))?.[1];
-          assert.equal(pkg.name, 'dsh-lcx-codex');
-          assert.match(pkg.version, /^\d+\.\d+\.\d+-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*$/, 'This workflow only publishes prereleases');
-          assert.equal(process.env.GITHUB_REF, `refs/tags/v${pkg.version}`);
-          assert.equal(field('version'), pkg.version);
-          assert.equal(field('tag'), `v${pkg.version}`);
-          assert.equal(field('npm_dist_tag'), 'prelatest');
-          assert(['APPROVED_PRERELEASE', 'RELEASED_PRERELEASE'].includes(field('state')));
+          const { assertReleasePolicy } = await import('./scripts/release-policy.mjs');
+          const field = assertReleasePolicy(pkg, manifest, process.env.GITHUB_REF);
           const tagsResponse = await fetch('https://registry.npmjs.org/-/package/dsh-lcx-codex/dist-tags');
           assert(tagsResponse.ok, `Registry tags HTTP ${tagsResponse.status}`);
           const tags = await tagsResponse.json();
@@ -55,18 +49,19 @@ jobs:
         if: steps.release.outputs.exists == 'false'
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix scripts/runtime-alpha2 --ignore-scripts --no-audit --no-fund
-          node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+          npm ci --prefix scripts/runtime-dsh015 --ignore-scripts --no-audit --no-fund
+          node scripts/link-dsh-runtime.mjs
       - name: Verify exact generated source and package
         if: steps.release.outputs.exists == 'false'
         run: |
+          node --test scripts/release-policy.test.mjs scripts/link-dsh-runtime.test.mjs
           node scripts/check-generated.mjs
           npm run typecheck
           npm test
           npm run test:schema
           git diff --exit-code
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.release.outputs.exists == 'false'
         with:
           name: verified-public-package
@@ -75,7 +70,7 @@ jobs:
       - name: Publish verified artifact with provenance
         if: steps.release.outputs.exists == 'false'
         run: |
-          npm install --global npm@latest
+          npm install --global npm@11.17.0
           npm publish "$RUNNER_TEMP/dsh-lcx-codex-$RELEASE_VERSION.tgz" --provenance --tag prelatest --ignore-scripts
       - name: Verify stable tag remains unchanged
         run: |

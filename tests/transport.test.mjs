@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchJsonWithRetry, fetchSseWithRetry } from '../lib/transport.js'
+import { consumeSse, fetchJsonWithRetry, fetchSseWithRetry } from '../lib/transport.js'
 
 for (const [name, transport, status, limit] of [
   ['JSON success', fetchJsonWithRetry, 200, 4],
@@ -94,6 +94,49 @@ test('credential transports reject redirects and do not expose provider bodies',
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('consumeSse releases its reader after normal, error and cancellation settlement', async () => {
+  const complete = new Response('data: {"type":"test"}\n\n')
+  const events = []
+  await consumeSse(complete, event => events.push(event))
+  assert.deepEqual(events, [{ type: 'test' }])
+  assert.equal(complete.body.locked, false)
+
+  const malformed = new Response('data: {not-json}\n\n')
+  await assert.rejects(consumeSse(malformed, () => {}), error => error.code === 'LCX_INVALID_SSE')
+  assert.equal(malformed.body.locked, false)
+
+  let cancellations = 0
+  const oversized = new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(4)) },
+    cancel() { cancellations += 1 },
+  }, { highWaterMark: 0 }))
+  await assert.rejects(
+    consumeSse(oversized, () => {}, { maxResponseBytes: 3 }),
+    error => error.code === 'LCX_RESPONSE_TOO_LARGE',
+  )
+  assert.equal(cancellations, 1)
+  assert.equal(oversized.body.locked, false)
+})
+
+test('successful retry backoff removes its abort listener', async t => {
+  const controller = new AbortController()
+  const signal = controller.signal
+  const add = signal.addEventListener.bind(signal)
+  const remove = signal.removeEventListener.bind(signal)
+  let added = 0, removed = 0, requests = 0
+  signal.addEventListener = (...args) => { if (args[0] === 'abort') added += 1; return add(...args) }
+  signal.removeEventListener = (...args) => { if (args[0] === 'abort') removed += 1; return remove(...args) }
+  t.mock.method(globalThis, 'fetch', async () => {
+    requests += 1
+    return requests === 1
+      ? new Response('retry', { status: 503, headers: { 'retry-after-ms': '1' } })
+      : new Response('{}', { status: 200 })
+  })
+  assert.deepEqual(await fetchJsonWithRetry('https://example.invalid', {}, {}, signal, undefined, { maxAttempts: 2 }), {})
+  assert.equal(added, 1)
+  assert.equal(removed, 1)
 })
 
 test('single-attempt transports preserve bounded provider retry guidance', async () => {

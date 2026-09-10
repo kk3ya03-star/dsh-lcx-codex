@@ -8,6 +8,7 @@ export interface WebRunLink {
   id: number;
   label: string;
   domain?: string;
+  url?: string;
 }
 
 export interface WebRunLine {
@@ -164,6 +165,26 @@ export function outputLinks(blocks: WebRunBlock[]): WebRunLink[] {
   const links: WebRunLink[] = [];
   for (const block of blocks) for (const link of block.links) {
     if (!links.some((value) => value.id === link.id)) links.push({ ...link });
+  }
+  return links;
+}
+
+export function mergeWebRunLinks(base: WebRunLink[], extra: WebRunLink[]): WebRunLink[] {
+  const links: WebRunLink[] = [];
+  for (const link of [...base, ...extra]) {
+    if (!Number.isSafeInteger(link.id) || !link.label) continue;
+    const existing = links.find((value) => value.id === link.id);
+    if (!existing) {
+      links.push({
+        id: link.id,
+        label: link.label,
+        ...(link.domain ? { domain: link.domain } : {}),
+        ...(link.url ? { url: link.url } : {}),
+      });
+      continue;
+    }
+    if (!existing.domain && link.domain) existing.domain = link.domain;
+    if (!existing.url && link.url) existing.url = link.url;
   }
   return links;
 }

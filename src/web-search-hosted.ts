@@ -1,8 +1,9 @@
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
-import type { JsonSchemaNode } from "@deepseek-ai/dsh-tools";
+import type { JsonSchemaNode, ToolOutputDefinition } from "@deepseek-ai/dsh-tools";
 import { outputDomains, outputLineRange, parseWebRunOutput } from "./web-run-output.js";
 
 type RecordValue = Record<string, unknown>;
+type PresentationValue = ReturnType<NonNullable<ToolOutputDefinition["presentationMeta"]>>;
 type SearchContextSize = "low" | "medium" | "high";
 type ReturnTokenBudget = "default" | "unlimited";
 type SearchContentType = "text" | "image";
@@ -11,9 +12,17 @@ interface ImageSettings { maxResults?: number; caption?: boolean }
 interface HostedSearchArgs { query: string; searchContextSize?: SearchContextSize; allowedDomains?: string[]; blockedDomains?: string[]; userLocation?: UserLocation; externalWebAccess?: boolean; returnTokenBudget?: ReturnTokenBudget; searchContentTypes?: SearchContentType[]; imageSettings?: ImageSettings }
 interface Source { url: string; title?: string; snippet?: string; publishedAt?: string; refId?: string }
 interface ImageResult { imageUrl: string; thumbnailUrl?: string; sourceWebsiteUrl?: string; caption?: string }
+export type HostedMediaCandidate = {
+  kind: "image";
+  url: string;
+  previewUrl?: string;
+  sourceUrl?: string;
+  caption?: string;
+  structured: true;
+}
 
 export const HOSTED_SEARCH_PARAMETERS = { type: "object", properties: { query: { type: "string", description: "Advanced Responses Hosted Web Search query. Use DSH web_search for ordinary searches." }, searchContextSize: { type: "string", enum: ["low", "medium", "high"] }, allowedDomains: { type: "array", items: { type: "string" } }, blockedDomains: { type: "array", items: { type: "string" } }, userLocation: { type: "object", properties: { country: { type: "string" }, city: { type: "string" }, region: { type: "string" }, timezone: { type: "string" } }, additionalProperties: false }, externalWebAccess: { type: "boolean" }, returnTokenBudget: { type: "string", enum: ["default", "unlimited"] }, searchContentTypes: { type: "array", items: { type: "string", enum: ["text", "image"] } }, imageSettings: { type: "object", properties: { maxResults: { type: "integer" }, caption: { type: "boolean" } }, additionalProperties: false } }, required: ["query"], additionalProperties: false } satisfies JsonSchemaNode;
-export const HOSTED_SEARCH_OUTPUT = { type: "object", properties: { mode: { type: "string", enum: ["hosted"] }, action: { type: "string" }, emulation: { type: "string", enum: ["native"] }, content: { type: "string" }, sources: { type: "array", items: { type: "object" } }, citations: { type: "array", items: { type: "object" } }, images: { type: "array", items: { type: "object" } }, warnings: { type: "array", items: { type: "string" } }, outputBlocks: { type: "array", items: { type: "object" } }, domains: { type: "array", items: { type: "string" } }, lineRange: { type: "object" }, requestId: { type: "string" }, responseId: { type: "string" }, retrievedAt: { type: "string" }, truncated: { type: "boolean" } }, required: ["mode", "action", "emulation", "content", "sources", "citations", "images", "warnings", "requestId", "retrievedAt", "truncated"], additionalProperties: false } satisfies JsonSchemaNode;
+export const HOSTED_SEARCH_OUTPUT = { type: "object", properties: { mode: { type: "string", enum: ["hosted"] }, action: { type: "string" }, emulation: { type: "string", enum: ["native"] }, content: { type: "string" }, sources: { type: "array", items: { type: "object" } }, citations: { type: "array", items: { type: "object" } }, images: { type: "array", items: { type: "object" } }, warnings: { type: "array", items: { type: "string" } }, outputBlocks: { type: "array", items: { type: "object" } }, domains: { type: "array", items: { type: "string" } }, lineRange: { type: "object" }, requestId: { type: "string" }, responseId: { type: "string" }, retrievedAt: { type: "string" }, truncated: { type: "boolean" }, usage: { type: "object", properties: { inputTokens: { type: "number" }, outputTokens: { type: "number" }, totalTokens: { type: "number" }, cachedInputTokens: { type: "number" }, actionCount: { type: "number" }, serverWebSearchCalls: { type: "number" } }, additionalProperties: false } }, required: ["mode", "action", "emulation", "content", "sources", "citations", "images", "warnings", "requestId", "retrievedAt", "truncated"], additionalProperties: false } satisfies JsonSchemaNode;
 
 function failure(message: string | undefined, code = "WEB_INVALID_REQUEST"): Error & { code: string } { return Object.assign(new Error(message), { code }); }
 function isRecord(value: unknown): value is RecordValue { return value !== null && typeof value === "object" && !Array.isArray(value); }
@@ -95,6 +104,54 @@ function imageFrom(value: unknown): ImageResult | undefined { if (!isRecord(valu
 function responseArtifacts(response: unknown): { sources: Source[]; citations: Source[]; images: ImageResult[]; actions: string[] } { const sources: Source[] = []; const citations: Source[] = []; const images: ImageResult[] = []; const actions: string[] = []; if (!isRecord(response) || !Array.isArray(response.output)) return { sources, citations, images, actions }; for (const item of response.output) { if (!isRecord(item)) continue; if (item.type === "web_search_call") { const action = isRecord(item.action) && typeof item.action.type === "string" ? item.action.type : "search"; actions.push(action); if (isRecord(item.action) && Array.isArray(item.action.sources)) for (const value of item.action.sources) { const source = sourceFrom(value); if (source) sources.push(source); } if (Array.isArray(item.results)) for (const value of item.results) { const image = imageFrom(value); if (image) images.push(image); } } if (item.type === "message" && Array.isArray(item.content)) for (const part of item.content) if (isRecord(part) && part.type === "output_text" && Array.isArray(part.annotations)) for (const annotation of part.annotations) if (isRecord(annotation) && annotation.type === "url_citation") { const source = sourceFrom(annotation); if (source) { citations.push(source); sources.push(source); } } } return { sources, citations, images, actions }; }
 function canonicalUrl(value: unknown): string | undefined { const url = httpUrl(value); if (!url) return undefined; url.hash = ""; for (const key of [...url.searchParams.keys()]) if (/^(utm_|gclid$|fbclid$)/iu.test(key)) url.searchParams.delete(key); return url.toString(); }
 function uniqueByUrl<T extends { url: string }>(values: T[]): T[] { const result: T[] = []; const seen = new Set<string>(); for (const value of values) { const key = canonicalUrl(value.url); if (!key || seen.has(key)) continue; seen.add(key); result.push(value); } return result; }
+function nonNegativeInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+function hostedUsageFrom(response: unknown, actionCount: number) {
+  const usage = isRecord(response) && isRecord(response.usage) ? response.usage : undefined;
+  const inputDetails = usage && isRecord(usage.input_tokens_details)
+    ? usage.input_tokens_details
+    : usage && isRecord(usage.prompt_tokens_details)
+      ? usage.prompt_tokens_details
+      : undefined;
+  const serverDetails = usage && isRecord(usage.server_side_tool_usage_details)
+    ? usage.server_side_tool_usage_details
+    : undefined;
+  const result: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cachedInputTokens?: number;
+    actionCount?: number;
+    serverWebSearchCalls?: number;
+  } = {};
+  const inputTokens = usage ? nonNegativeInt(usage.input_tokens ?? usage.prompt_tokens) : undefined;
+  const outputTokens = usage ? nonNegativeInt(usage.output_tokens ?? usage.completion_tokens) : undefined;
+  const totalTokens = usage ? nonNegativeInt(usage.total_tokens) : undefined;
+  const cachedInputTokens = inputDetails ? nonNegativeInt(inputDetails.cached_tokens) : undefined;
+  const serverWebSearchCalls = serverDetails ? nonNegativeInt(serverDetails.web_search_calls) : undefined;
+  if (inputTokens !== undefined) result.inputTokens = inputTokens;
+  if (outputTokens !== undefined) result.outputTokens = outputTokens;
+  if (totalTokens !== undefined) result.totalTokens = totalTokens;
+  // cachedInputTokens is a subset of inputTokens (cache hits), not an extra addend.
+  if (cachedInputTokens !== undefined) result.cachedInputTokens = cachedInputTokens;
+  if (actionCount > 0) result.actionCount = actionCount;
+  if (serverWebSearchCalls !== undefined) result.serverWebSearchCalls = serverWebSearchCalls;
+  return Object.keys(result).length ? result : undefined;
+}
+function sourceLine(source: RecordValue): string {
+  return `- [${String(source.title ?? source.url ?? "")}](${String(source.url ?? "")})${source.snippet ? ` — ${String(source.snippet)}` : ""}`;
+}
+function usageLine(usage: RecordValue): string {
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined) parts.push(`input=${String(usage.inputTokens)}`);
+  if (usage.outputTokens !== undefined) parts.push(`output=${String(usage.outputTokens)}`);
+  if (usage.totalTokens !== undefined) parts.push(`total=${String(usage.totalTokens)}`);
+  if (usage.cachedInputTokens !== undefined) parts.push(`cachedInput=${String(usage.cachedInputTokens)}`);
+  if (usage.actionCount !== undefined) parts.push(`actionCount=${String(usage.actionCount)}`);
+  if (usage.serverWebSearchCalls !== undefined) parts.push(`serverWebSearchCalls=${String(usage.serverWebSearchCalls)}`);
+  return parts.length ? `用量：${parts.join(" ")}` : "";
+}
 
 export function parseHostedSearchResponse(response: unknown, requestId: string, maxResults = 8, retrievedAt = new Date().toISOString()) {
   if (!isRecord(response)) throw failure("Hosted Web Search returned an invalid response", "WEB_RESPONSE_INCOMPLETE");
@@ -105,10 +162,72 @@ export function parseHostedSearchResponse(response: unknown, requestId: string, 
   const output = typeof response.output_text === "string" ? response.output_text : textFrom(response.output ?? response.content);
   const outputBlocks = parseWebRunOutput(output); const artifacts = responseArtifacts(response);
   if (!artifacts.actions.length) throw failure("Hosted Web Search completed without web_search", "WEB_SEARCH_NOT_EXECUTED");
-  const sources = uniqueByUrl([...artifacts.sources, ...outputBlocks.flatMap((block) => block.url ? [{ url: block.url, ...(block.title ? { title: block.title } : {}) }] : [])]);
-  const citations = uniqueByUrl(artifacts.citations); const limited = sources.slice(0, Math.max(1, maxResults)); const images = artifacts.images.slice(0, Math.max(1, maxResults));
+  const citations = uniqueByUrl(artifacts.citations);
+  const discovered = uniqueByUrl([...artifacts.sources, ...outputBlocks.flatMap((block) => block.url ? [{ url: block.url, ...(block.title ? { title: block.title } : {}) }] : [])]);
+  const ranked = uniqueByUrl([...citations, ...discovered]);
+  const limited = ranked.slice(0, Math.max(1, maxResults));
+  const images = artifacts.images.slice(0, Math.max(1, maxResults));
+  const usage = hostedUsageFrom(response, artifacts.actions.length);
   if (!output && !limited.length && !images.length) throw failure("Hosted Web Search returned no output", "WEB_NO_SOURCES");
-  return { mode: "hosted", action: artifacts.actions[0], emulation: "native", content: output, sources: limited, citations, images, warnings: artifacts.actions.length > 1 ? [`Multiple hosted search actions were returned: ${artifacts.actions.join(", ")}`] : [], outputBlocks, domains: outputDomains(outputBlocks), ...(outputLineRange(outputBlocks) ? { lineRange: outputLineRange(outputBlocks) } : {}), requestId, ...(typeof response.id === "string" ? { responseId: response.id } : {}), retrievedAt, truncated: sources.length > limited.length || artifacts.images.length > images.length };
+  return { mode: "hosted", action: artifacts.actions[0], emulation: "native", content: output, sources: limited, citations, images, warnings: artifacts.actions.length > 1 ? [`Multiple hosted search actions were returned: ${artifacts.actions.join(", ")}`] : [], outputBlocks, domains: outputDomains(outputBlocks), ...(outputLineRange(outputBlocks) ? { lineRange: outputLineRange(outputBlocks) } : {}), requestId, ...(typeof response.id === "string" ? { responseId: response.id } : {}), retrievedAt, truncated: ranked.length > limited.length || artifacts.images.length > images.length, ...(usage ? { usage } : {}) };
 }
 
-export function renderHostedSearchResult(value: unknown): ContentBlock[] { const data = isRecord(value) ? value : {}; const parts: string[] = []; if (typeof data.content === "string" && data.content) parts.push(data.content); if (Array.isArray(data.sources) && data.sources.length) parts.push(`来源：\n${data.sources.filter(isRecord).map((source) => `- [${String(source.title ?? source.url ?? "")}](${String(source.url ?? "")})${source.snippet ? ` — ${String(source.snippet)}` : ""}`).join("\n")}`); if (Array.isArray(data.images) && data.images.length) parts.push(`图片：\n${data.images.filter(isRecord).map((image) => `- [${String(image.caption ?? image.imageUrl ?? "")}](${String(image.imageUrl ?? "")})`).join("\n")}`); if (Array.isArray(data.warnings) && data.warnings.length) parts.push(data.warnings.map((warning) => `警告：${String(warning)}`).join("\n")); parts.push(`检索时间：${String(data.retrievedAt ?? "")}`); return [{ type: "text", text: parts.filter(Boolean).join("\n\n") }]; }
+export type HostedMediaTool = "web_search" | "websearch_gpt_advanced";
+
+/** Project Hosted image results into LCX-owned, tool-private, replayable UI metadata. */
+export function hostedMediaPresentationMeta(
+  value: unknown,
+  tool: HostedMediaTool,
+  base: PresentationValue = {},
+): PresentationValue {
+  const inherited = base !== null && typeof base === "object" && !Array.isArray(base) ? base : {};
+  if (!isRecord(value) || !Array.isArray(value.images)) return inherited;
+  const candidates = value.images.flatMap((entry): HostedMediaCandidate[] => {
+    if (!isRecord(entry)) return [];
+    const imageUrl = httpUrl(entry.imageUrl);
+    if (!imageUrl) return [];
+    const previewUrl = httpUrl(entry.thumbnailUrl);
+    const sourceUrl = httpUrl(entry.sourceWebsiteUrl);
+    return [{
+      kind: "image",
+      url: imageUrl.toString(),
+      ...(previewUrl ? { previewUrl: previewUrl.toString() } : {}),
+      ...(sourceUrl ? { sourceUrl: sourceUrl.toString() } : {}),
+      ...(typeof entry.caption === "string" && entry.caption ? { caption: entry.caption } : {}),
+      structured: true,
+    }];
+  });
+  return candidates.length
+    ? { ...inherited, lcxHostedMedia: { version: 1, tool, candidates } }
+    : inherited;
+}
+
+export function renderHostedSearchResult(value: unknown): ContentBlock[] {
+  const data = isRecord(value) ? value : {};
+  const parts: string[] = [];
+  if (typeof data.content === "string" && data.content) parts.push(data.content);
+  const citations = Array.isArray(data.citations) ? data.citations.filter(isRecord) : [];
+  const citationUrls = new Set(citations.map((source) => String(source.url ?? "")).filter(Boolean));
+  if (citations.length) parts.push(`引用：\n${citations.map(sourceLine).join("\n")}`);
+  const extraSources = Array.isArray(data.sources)
+    ? data.sources.filter(isRecord).filter((source) => !citationUrls.has(String(source.url ?? "")))
+    : [];
+  if (extraSources.length) parts.push(`来源：\n${extraSources.map(sourceLine).join("\n")}`);
+  if (Array.isArray(data.images) && data.images.length) {
+    parts.push(`图片：\n${data.images.filter(isRecord).map((image) => {
+      const caption = String(image.caption ?? image.imageUrl ?? "");
+      const imageUrl = String(image.imageUrl ?? "");
+      const sourcePage = typeof image.sourceWebsiteUrl === "string" && image.sourceWebsiteUrl
+        ? ` 来源页: ${image.sourceWebsiteUrl}`
+        : "";
+      return `- [${caption}](${imageUrl})${sourcePage}`;
+    }).join("\n")}`);
+  }
+  if (Array.isArray(data.warnings) && data.warnings.length) parts.push(data.warnings.map((warning) => `警告：${String(warning)}`).join("\n"));
+  if (isRecord(data.usage)) {
+    const renderedUsage = usageLine(data.usage);
+    if (renderedUsage) parts.push(renderedUsage);
+  }
+  parts.push(`检索时间：${String(data.retrievedAt ?? "")}`);
+  return [{ type: "text", text: parts.filter(Boolean).join("\n\n") }];
+}

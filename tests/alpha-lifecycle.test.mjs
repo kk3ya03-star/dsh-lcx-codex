@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -72,4 +72,39 @@ test('registered Alpha tool conforms to DSH output schema while persisting priva
   assert.ok(recovered.refs.includes('turn1time0'))
   handlers.get('session/disposed')(agent.session)
   assert.equal(definitions.has('websearch_alpha'), false)
+})
+
+test('plugin apply accepts a valid V1 ref store while Alpha is disabled without rewriting it', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-v1-disabled-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const refPath = join(directory, 'refs.json')
+  const source = `${JSON.stringify({
+    version: 1,
+    sessions: {
+      'legacy-session': {
+        routeFingerprint: 'legacy-route',
+        updatedAt: '2026-09-09T00:00:00.000Z',
+        refs: { turn0search0: { refId: 'turn0search0', url: 'https://example.com/docs' } },
+      },
+    },
+  }, null, 2)}\n`
+  writeFileSync(refPath, source)
+  const ctx = {
+    llm: {}, sessions: {}, attachments: {}, fs: {}, tools: { register() {} }, credentials: {},
+    web: { searchProviderId: 'native', registerSearchProvider() {} },
+    settings: {
+      get: () => ({ providers: {} }),
+      installSection(_owner, _key, _schema, _base, hooks) {
+        hooks.setSource(() => ({ enabled: true, webSearch: true, advancedHostedSearch: false, alphaSearch: false }))
+        hooks.onChange()
+      },
+    },
+    on() {}, get(name) { return this[name] }, inject() {}, effect() {},
+    logger: { info() {}, warn() {} },
+  }
+  assert.doesNotThrow(() => apply(ctx, {
+    alphaRefPath: refPath,
+    alphaCapabilityPath: join(directory, 'capabilities.json'),
+  }))
+  assert.equal(readFileSync(refPath, 'utf8'), source)
 })

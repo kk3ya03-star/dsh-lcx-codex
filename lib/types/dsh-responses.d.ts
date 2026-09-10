@@ -68,7 +68,7 @@ export declare function resolvePiResponsesModel(options: {
     } | undefined;
 };
 export declare function serializeDshMessages(messages: readonly Message[], ctx: DshContext | undefined, options?: SerializeOptions): Promise<{
-    input: import("openai/resources/responses/responses.js").ResponseInput;
+    input: unknown[];
     imageMap: Map<string, import("@deepseek-ai/dsh-attachment").ImageAttachmentRef>;
     tools: import("openai/resources/responses/responses.js").Tool[] | undefined;
     model: PiModel<"openai-responses">;

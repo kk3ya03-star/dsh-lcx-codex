@@ -81,7 +81,7 @@ test('removed config and stored settings fields are absent, not migration aliase
     assert.equal(Object.hasOwn(fields, field), false, field)
   }
   const h = harness()
-  assert.deepEqual(Object.keys(h.schema.dict).sort(), ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'webSearch'])
+  assert.deepEqual(Object.keys(h.schema.dict).sort(), ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'searchMediaPreview', 'webSearch'])
   for (const path of ['src/legacy-v3.ts', 'lib/legacy-v3.js', 'lib/types/legacy-v3.d.ts']) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, path)
   }

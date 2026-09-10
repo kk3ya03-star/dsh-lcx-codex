@@ -2,6 +2,7 @@ export interface WebRunLink {
     id: number;
     label: string;
     domain?: string;
+    url?: string;
 }
 export interface WebRunLine {
     text: string;
@@ -25,5 +26,6 @@ export declare function outputLineRange(blocks: WebRunBlock[]): {
 } | undefined;
 export declare function outputDomains(blocks: WebRunBlock[]): string[];
 export declare function outputLinks(blocks: WebRunBlock[]): WebRunLink[];
+export declare function mergeWebRunLinks(base: WebRunLink[], extra: WebRunLink[]): WebRunLink[];
 export declare function outputPdfRefs(blocks: WebRunBlock[]): string[];
 export declare function blockPlainText(block: Pick<WebRunBlock, "lines">): string;

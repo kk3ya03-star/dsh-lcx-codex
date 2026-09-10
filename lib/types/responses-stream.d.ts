@@ -1,4 +1,4 @@
-import { type Model as PiModel } from "@earendil-works/pi-ai";
+import type { Model as PiModel } from "@earendil-works/pi-ai";
 import type { StreamChunk } from "@deepseek-ai/dsh-llm";
 import { type GrokNativeReplayRoute } from "./grok-native-search.js";
 type UnknownRecord = Record<string, unknown>;
@@ -31,6 +31,8 @@ type StreamRequestOptions = {
     maxAttempts?: number;
     maxResponseBytes?: number;
     serverToolTypes?: ReadonlySet<string>;
+    isServerToolItem?: (item: unknown) => boolean;
+    declaredToolNames?: ReadonlySet<string>;
     nativeReplayRoute?: GrokNativeReplayRoute;
     onServerToolUsage?: (usage: ServerToolUsage) => void;
 };
@@ -60,5 +62,5 @@ export declare function managedFailureChunk(error: unknown, signal?: AbortLike):
  * @param {ReadonlySet<string>} [options.serverToolTypes]
  * @param {(usage: ServerToolUsage) => void} [options.onServerToolUsage]
  */
-export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, applyDefaultTimeout, streamIdleTimeoutMs, maxAttempts, maxResponseBytes, serverToolTypes, nativeReplayRoute, onServerToolUsage, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, unknown>;
+export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, applyDefaultTimeout, streamIdleTimeoutMs, maxAttempts, maxResponseBytes, serverToolTypes, isServerToolItem, declaredToolNames, nativeReplayRoute, onServerToolUsage, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, unknown>;
 export {};

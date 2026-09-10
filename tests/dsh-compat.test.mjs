@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { symbols as cordisSymbols } from '@deepseek-ai/cordis'
+import { Context, symbols as cordisSymbols } from '@deepseek-ai/cordis'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { InvocationPolicyScope } from '../lib/invocation-policy-scope.js'
 import { ServiceMutex } from '../lib/service-mutex.js'
 import {
   agentSessionId,
@@ -48,7 +50,7 @@ test('scoped tool registration preserves the DSH service receiver and disposer',
   assert.equal(scopedToolRuntime({ ctx: {} }), undefined)
 })
 
-test('agent route and Sessions access use the DSH 0.1.3 public shape', () => {
+test('agent route and Sessions access use the DSH 0.1.5 public shape', () => {
   const requestConfig = { provider: 'header-provider', model: 'header-model' }
   const options = { provider: 'selected-provider', model: 'selected-model' }
   const agentSession = { id: 'session-compat', requestHeader: () => ({ config: requestConfig }) }
@@ -107,6 +109,7 @@ test('web provider selection is reversible and fails closed on inaccessible host
 test('compaction patches deduplicate by concrete identity and restore only their own wrapper', async () => {
   const original = async function original() { return 'original' }
   const concrete = { compactIfNeeded: original }
+  const originalDescriptor = Object.getOwnPropertyDescriptor(concrete, 'compactIfNeeded')
   const proxy = { [cordisSymbols.original]: concrete }
   const records = new Map()
   assert.equal(concreteService(proxy), concrete)
@@ -118,6 +121,7 @@ test('compaction patches deduplicate by concrete identity and restore only their
       records,
       candidate,
       new ServiceMutex(),
+      new InvocationPolicyScope(),
       new AbortController(),
       async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
     ),
@@ -125,10 +129,18 @@ test('compaction patches deduplicate by concrete identity and restore only their
   )
   const wrapper = concrete.compactIfNeeded
   assert.notEqual(wrapper, original)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(concrete, 'compactIfNeeded'), {
+    ...originalDescriptor,
+    value: wrapper,
+  })
   assert.equal(await wrapper({}, 'test', new AbortController().signal), 'original')
   assert.equal(compactionPatchCandidate(proxy, records), undefined)
   restoreCompactionPatches(records)
   assert.equal(concrete.compactIfNeeded, original)
+  assert.deepEqual(
+    Object.getOwnPropertyDescriptor(concrete, 'compactIfNeeded'),
+    originalDescriptor,
+  )
   assert.equal(records.size, 0)
 
   const secondRecords = new Map()
@@ -138,6 +150,7 @@ test('compaction patches deduplicate by concrete identity and restore only their
     secondRecords,
     second,
     new ServiceMutex(),
+    new InvocationPolicyScope(),
     new AbortController(),
     async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
   )
@@ -145,6 +158,95 @@ test('compaction patches deduplicate by concrete identity and restore only their
   concrete.compactIfNeeded = external
   restoreCompactionPatches(secondRecords)
   assert.equal(concrete.compactIfNeeded, external)
+})
+
+test('formal BasicCompactionEngine unload restores prototype lookup and preserves host replacements', async () => {
+  const engine = new BasicCompactionEngine(new Context(), { auto: false })
+  const prototype = BasicCompactionEngine.prototype
+  const prototypeDescriptor = Object.getOwnPropertyDescriptor(prototype, 'compactIfNeeded')
+  assert.ok(prototypeDescriptor)
+  assert.equal(Object.getOwnPropertyDescriptor(engine, 'compactIfNeeded'), undefined)
+
+  const unload = async records => {
+    const entries = [...records.values()]
+    const reason = new Error('test unload')
+    for (const record of entries) record.lifecycle.abort(reason)
+    await Promise.all(entries.flatMap(record => [
+      record.policyScope.close(reason),
+      record.mutex.close(reason),
+    ]))
+    restoreCompactionPatches(records, entries)
+    for (const record of entries) record.policyScope.restore()
+  }
+
+  try {
+    const records = new Map()
+    const candidate = compactionPatchCandidate(engine, records)
+    assert.ok(candidate)
+    assert.equal(candidate.originalOwnDescriptor, undefined)
+    assert.equal(installCompactionPatch(
+      records,
+      candidate,
+      new ServiceMutex(),
+      new InvocationPolicyScope(),
+      new AbortController(),
+      async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+    ), true)
+    const installed = Object.getOwnPropertyDescriptor(engine, 'compactIfNeeded')
+    assert.deepEqual({
+      configurable: installed?.configurable,
+      enumerable: installed?.enumerable,
+      writable: installed?.writable,
+      valueIsWrapper: installed?.value === engine.compactIfNeeded,
+    }, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      valueIsWrapper: true,
+    })
+
+    await unload(records)
+    assert.equal(Object.getOwnPropertyDescriptor(engine, 'compactIfNeeded'), undefined)
+    assert.equal(engine.compactIfNeeded, prototypeDescriptor.value)
+
+    const prototypeUpdate = async function prototypeUpdate() { return 'prototype-update' }
+    Object.defineProperty(prototype, 'compactIfNeeded', {
+      ...prototypeDescriptor,
+      value: prototypeUpdate,
+    })
+    assert.equal(engine.compactIfNeeded, prototypeUpdate)
+    assert.equal(await engine.compactIfNeeded(), 'prototype-update')
+
+    const replacementRecords = new Map()
+    const replacementCandidate = compactionPatchCandidate(engine, replacementRecords)
+    assert.ok(replacementCandidate)
+    assert.equal(replacementCandidate.originalOwnDescriptor, undefined)
+    assert.equal(installCompactionPatch(
+      replacementRecords,
+      replacementCandidate,
+      new ServiceMutex(),
+      new InvocationPolicyScope(),
+      new AbortController(),
+      async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+    ), true)
+    const hostReplacement = async function hostReplacement() { return 'host-replacement' }
+    const hostDescriptor = {
+      configurable: true,
+      enumerable: false,
+      writable: false,
+      value: hostReplacement,
+    }
+    Object.defineProperty(engine, 'compactIfNeeded', hostDescriptor)
+    await unload(replacementRecords)
+    assert.deepEqual(
+      Object.getOwnPropertyDescriptor(engine, 'compactIfNeeded'),
+      hostDescriptor,
+    )
+    assert.equal(engine.compactIfNeeded, hostReplacement)
+  } finally {
+    Object.defineProperty(prototype, 'compactIfNeeded', prototypeDescriptor)
+    Reflect.deleteProperty(engine, 'compactIfNeeded')
+  }
 })
 
 test('compatibility patch points fail safe when optional host writes are rejected', () => {
@@ -159,6 +261,7 @@ test('compatibility patch points fail safe when optional host writes are rejecte
       records,
       candidate,
       new ServiceMutex(),
+      new InvocationPolicyScope(),
       new AbortController(),
       async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
     ),
@@ -166,6 +269,48 @@ test('compatibility patch points fail safe when optional host writes are rejecte
   )
   assert.equal(readOnlyCompaction.compactIfNeeded, original)
   assert.equal(records.size, 0)
+
+  const inheritedMethod = async () => 'inherited'
+  const unsupportedPrototypes = [
+    Object.create(Object.prototype, {
+      compactIfNeeded: {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value: inheritedMethod,
+      },
+    }),
+    Object.create(Object.prototype, {
+      compactIfNeeded: {
+        configurable: true,
+        enumerable: false,
+        get: () => inheritedMethod,
+      },
+    }),
+  ]
+  for (const prototype of unsupportedPrototypes) {
+    const inheritedCompaction = Object.create(prototype)
+    const inheritedRecords = new Map()
+    const inheritedCandidate = compactionPatchCandidate(
+      inheritedCompaction,
+      inheritedRecords,
+    )
+    assert.ok(inheritedCandidate)
+    assert.equal(installCompactionPatch(
+      inheritedRecords,
+      inheritedCandidate,
+      new ServiceMutex(),
+      new InvocationPolicyScope(),
+      new AbortController(),
+      async (_agent, _trigger, signal, callOriginal) => callOriginal(signal),
+    ), false)
+    assert.equal(
+      Object.getOwnPropertyDescriptor(inheritedCompaction, 'compactIfNeeded'),
+      undefined,
+    )
+    assert.equal(inheritedCompaction.compactIfNeeded, inheritedMethod)
+    assert.equal(inheritedRecords.size, 0)
+  }
 
   const config = { thresholdRatio: 0.8 }
   const rejectedConfig = {

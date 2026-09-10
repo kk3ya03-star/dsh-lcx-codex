@@ -5,6 +5,7 @@ import {
   type SessionStore,
 } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
 
 type CompatMethod = (
@@ -34,8 +35,11 @@ interface CompactionService extends MutableService {
 export interface CompactionPatchRecord {
   compaction: CompactionService;
   original: CompatMethod;
+  originalOwnDescriptor: PropertyDescriptor | undefined;
+  installedOwnDescriptor: PropertyDescriptor;
   wrapper: CompatMethod;
   mutex: ServiceMutex;
+  policyScope: InvocationPolicyScope;
   lifecycle: AbortController;
 }
 
@@ -226,7 +230,10 @@ export function concreteService(value: unknown): unknown {
 export function compactionPatchCandidate(
   value: unknown,
   records: ReadonlyMap<object, CompactionPatchRecord>,
-): Pick<CompactionPatchRecord, "compaction" | "original"> | undefined {
+): Pick<
+  CompactionPatchRecord,
+  "compaction" | "original" | "originalOwnDescriptor"
+> | undefined {
   const compaction = concreteService(value);
   if (
     !mutableService(compaction) ||
@@ -234,41 +241,132 @@ export function compactionPatchCandidate(
     records.has(compaction)
   )
     return undefined;
+  let originalOwnDescriptor: PropertyDescriptor | undefined;
+  try {
+    originalOwnDescriptor = Object.getOwnPropertyDescriptor(
+      compaction,
+      "compactIfNeeded",
+    );
+  } catch {
+    return undefined;
+  }
   return {
     compaction: compaction as CompactionService,
     original: compaction.compactIfNeeded as CompatMethod,
+    originalOwnDescriptor,
   };
+}
+
+function inheritedPropertyDescriptor(
+  target: object,
+  key: PropertyKey,
+): PropertyDescriptor | undefined {
+  try {
+    for (
+      let current = Object.getPrototypeOf(target);
+      current;
+      current = Object.getPrototypeOf(current)
+    ) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor) return descriptor;
+    }
+  } catch {}
+  return undefined;
+}
+
+function sameDataDescriptor(
+  left: PropertyDescriptor | undefined,
+  right: PropertyDescriptor,
+): boolean {
+  return (
+    left !== undefined &&
+    "value" in left &&
+    "value" in right &&
+    left.value === right.value &&
+    left.writable === right.writable &&
+    left.enumerable === right.enumerable &&
+    left.configurable === right.configurable
+  );
 }
 
 export function installCompactionPatch(
   records: CompactionPatchRecords,
-  candidate: Pick<CompactionPatchRecord, "compaction" | "original">,
+  candidate: Pick<
+    CompactionPatchRecord,
+    "compaction" | "original" | "originalOwnDescriptor"
+  >,
   mutex: ServiceMutex,
+  policyScope: InvocationPolicyScope,
   lifecycle: AbortController,
   behavior: CompactionPatchBehavior,
 ): boolean {
-  const { compaction, original } = candidate;
+  const { compaction, original, originalOwnDescriptor } = candidate;
+  if (
+    originalOwnDescriptor &&
+    (!("value" in originalOwnDescriptor) || originalOwnDescriptor.writable !== true)
+  )
+    return false;
+  if (!originalOwnDescriptor) {
+    const inherited = inheritedPropertyDescriptor(
+      compaction,
+      "compactIfNeeded",
+    );
+    if (!inherited || !("value" in inherited) || inherited.writable !== true)
+      return false;
+  }
   const callOriginal = async (agent: unknown, trigger: string, signal: AbortSignal) => {
     const result = Reflect.apply(original, compaction, [agent, trigger, signal]);
     return Promise.resolve(result);
   };
-  const record: CompactionPatchRecord = {
-    compaction,
-    original,
-    mutex,
-    lifecycle,
-    wrapper: async function (agent, trigger, signal) {
-      return behavior(agent, trigger, signal, (activeSignal) =>
-        callOriginal(agent, trigger, activeSignal),
-      );
-    },
+  const wrapper: CompatMethod = async function (agent, trigger, signal) {
+    return behavior(agent, trigger, signal, (activeSignal) =>
+      callOriginal(agent, trigger, activeSignal),
+    );
   };
+  const installedOwnDescriptor: PropertyDescriptor = originalOwnDescriptor
+    ? { ...originalOwnDescriptor, value: wrapper }
+    : {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: wrapper,
+      };
   try {
-    compaction.compactIfNeeded = record.wrapper;
+    Object.defineProperty(
+      compaction,
+      "compactIfNeeded",
+      installedOwnDescriptor,
+    );
   } catch {
     return false;
   }
-  records.set(compaction, record);
+  if (
+    !sameDataDescriptor(
+      Object.getOwnPropertyDescriptor(compaction, "compactIfNeeded"),
+      installedOwnDescriptor,
+    )
+  ) {
+    try {
+      if (originalOwnDescriptor)
+        Object.defineProperty(
+          compaction,
+          "compactIfNeeded",
+          originalOwnDescriptor,
+        );
+      else Reflect.deleteProperty(compaction, "compactIfNeeded");
+    } catch {}
+    return false;
+  }
+  records.set(compaction, {
+    compaction,
+    original,
+    originalOwnDescriptor,
+    installedOwnDescriptor,
+    wrapper,
+    mutex,
+    policyScope,
+    lifecycle,
+  });
   return true;
 }
 
@@ -276,12 +374,22 @@ export function restoreCompactionPatches(
   records: Map<object, CompactionPatchRecord>,
   entries: Iterable<CompactionPatchRecord> = records.values(),
 ): void {
-  for (const record of entries)
-    if (record.compaction.compactIfNeeded === record.wrapper) {
-      try {
-        record.compaction.compactIfNeeded = record.original;
-      } catch {}
-    }
+  for (const record of entries) {
+    const current = Object.getOwnPropertyDescriptor(
+      record.compaction,
+      "compactIfNeeded",
+    );
+    if (!sameDataDescriptor(current, record.installedOwnDescriptor)) continue;
+    try {
+      if (record.originalOwnDescriptor)
+        Object.defineProperty(
+          record.compaction,
+          "compactIfNeeded",
+          record.originalOwnDescriptor,
+        );
+      else Reflect.deleteProperty(record.compaction, "compactIfNeeded");
+    } catch {}
+  }
   records.clear();
 }
 

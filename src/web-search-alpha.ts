@@ -2,12 +2,16 @@ import { createHash } from "node:crypto";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { JsonSchemaNode } from "@deepseek-ai/dsh-tools";
 import { isIP } from "node:net";
+import { ServiceMutex } from "./service-mutex.js";
+import { fetchJsonWithRetry } from "./transport.js";
 import {
+  mergeWebRunLinks,
   outputDomains,
   outputLineRange,
   outputLinks,
   outputPdfRefs,
   parseWebRunOutput,
+  type WebRunLink,
 } from "./web-run-output.js";
 
 export const ALPHA_ACTIONS = [
@@ -155,11 +159,18 @@ function integer(value: unknown, field: string, min = 0, max = 10000): number {
 }
 function date(value: unknown, field: string) {
   const normalized = text(value, field, 10);
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/u.test(normalized) ||
-    Number.isNaN(Date.parse(`${normalized}T00:00:00Z`))
-  )
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(normalized))
     throw failure(`websearch_alpha.${field} must use YYYY-MM-DD`);
+  const year = Number(normalized.slice(0, 4));
+  const month = Number(normalized.slice(5, 7));
+  const day = Number(normalized.slice(8, 10));
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() !== month - 1 ||
+    utc.getUTCDate() !== day
+  )
+    throw failure(`websearch_alpha.${field} must be a real calendar date`);
   return normalized;
 }
 function normalizeDomains(value: unknown): string[] {
@@ -583,18 +594,102 @@ function safeResult(value: unknown, seen = new Set<object>()): unknown {
   }
   return result;
 }
-function artifacts(results: unknown) {
-  const refs: string[] = [],
-    refRecords: { url?: string; refId: string }[] = [],
-    sources: { refId?: string; snippet?: string; title?: string; url: string }[] = [],
-    seenRefs = new Set<string>(),
-    seenSources = new Set<string>();
-  const visit = (value: unknown): void => {
+interface AlphaRefProvenance {
+  action: string;
+  originKind: "response" | "request";
+  originFingerprint: string;
+  artifactFingerprint?: string;
+}
+interface AlphaRefObservation { refId: string; url?: string; provenance: AlphaRefProvenance }
+interface AlphaArtifacts {
+  refs: string[];
+  refRecords: AlphaRefObservation[];
+  sources: { refId?: string; snippet?: string; title?: string; url: string }[];
+  observations: Map<string, AlphaRefObservation>;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value: unknown, seen = new Set<object>()): string | undefined {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : undefined;
+  if (typeof value !== "object" || seen.has(value)) return undefined;
+  seen.add(value);
+  let result: string | undefined;
+  if (Array.isArray(value)) {
+    const items = value.map(item => canonicalJson(item, seen));
+    if (items.every((item): item is string => item !== undefined)) result = `[${items.join(",")}]`;
+  } else {
+    const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+    const items: string[] = [];
+    for (const [key, item] of entries) {
+      const encoded = canonicalJson(item, seen);
+      if (encoded === undefined) { result = undefined; break; }
+      items.push(`${JSON.stringify(key)}:${encoded}`);
+      result = `{${items.join(",")}}`;
+    }
+    if (entries.length === 0) result = "{}";
+  }
+  seen.delete(value);
+  return result;
+}
+
+function explicitArtifactFingerprint(value: RecordValue): string | undefined {
+  const explicit = Object.fromEntries(
+    ["provenance", "provider_provenance"]
+      .filter(key => Object.hasOwn(value, key))
+      .map(key => [key, value[key]]),
+  );
+  if (Object.keys(explicit).length === 0) return undefined;
+  const canonical = canonicalJson(explicit);
+  return canonical === undefined ? sha256("invalid-explicit-provenance") : sha256(canonical);
+}
+
+function alphaRefCollision(refId: string): Error & { code: string } {
+  return Object.assign(new Error(`Alpha reference collision in one provider response: ${refId}`), {
+    code: "LCX_ALPHA_REF_COLLISION",
+  });
+}
+
+function addRefObservation(artifacts: AlphaArtifacts, observation: AlphaRefObservation): void {
+  const accepted = artifacts.observations.get(observation.refId);
+  if (!accepted) {
+    artifacts.observations.set(observation.refId, observation);
+    artifacts.refs.push(observation.refId);
+    artifacts.refRecords.push(observation);
+    return;
+  }
+  if ((accepted.url && observation.url && accepted.url !== observation.url) ||
+      (accepted.provenance.artifactFingerprint && observation.provenance.artifactFingerprint &&
+       accepted.provenance.artifactFingerprint !== observation.provenance.artifactFingerprint)) {
+    throw alphaRefCollision(observation.refId);
+  }
+  const merged: AlphaRefObservation = {
+    refId: accepted.refId,
+    ...(accepted.url || observation.url ? { url: accepted.url ?? observation.url } : {}),
+    provenance: {
+      ...accepted.provenance,
+      ...(accepted.provenance.artifactFingerprint || observation.provenance.artifactFingerprint
+        ? { artifactFingerprint: accepted.provenance.artifactFingerprint ?? observation.provenance.artifactFingerprint }
+        : {}),
+    },
+  };
+  artifacts.observations.set(observation.refId, merged);
+  artifacts.refRecords[artifacts.refRecords.indexOf(accepted)] = merged;
+}
+
+function artifacts(results: unknown, provenance: AlphaRefProvenance): AlphaArtifacts {
+  const result: AlphaArtifacts = { refs: [], refRecords: [], sources: [], observations: new Map() };
+  const seenSources = new Set<string>();
+  const visit = (value: unknown, inheritedArtifact?: string): void => {
     if (!isObject(value) && !Array.isArray(value)) return;
     if (Array.isArray(value)) {
-      value.forEach(visit);
+      value.forEach(item => visit(item, inheritedArtifact));
       return;
     }
+    const artifactFingerprint = explicitArtifactFingerprint(value) ?? inheritedArtifact;
     const candidate =
       typeof value.ref_id === "string" && value.ref_id
         ? value.ref_id
@@ -605,14 +700,14 @@ function artifacts(results: unknown) {
     const url = httpUrl(
       value.url ?? value.source_url ?? value.source_website_url ?? candidate,
     );
-    if (refId && !seenRefs.has(refId)) {
-      seenRefs.add(refId);
-      refs.push(refId);
-      refRecords.push({ refId, ...(url ? { url } : {}) });
-    }
+    if (refId) addRefObservation(result, {
+      refId,
+      ...(url ? { url } : {}),
+      provenance: { ...provenance, ...(artifactFingerprint ? { artifactFingerprint } : {}) },
+    });
     if (url && !seenSources.has(url)) {
       seenSources.add(url);
-      sources.push({
+      result.sources.push({
         url,
         ...(typeof value.title === "string" ? { title: value.title } : {}),
         ...(typeof value.snippet === "string"
@@ -621,10 +716,50 @@ function artifacts(results: unknown) {
         ...(refId ? { refId } : {}),
       });
     }
+    Object.entries(value)
+      .filter(([key]) => key !== "encrypted_output" && key !== "encrypted_content")
+      .forEach(([, item]) => visit(item, artifactFingerprint));
+  };
+  visit(results);
+  return result;
+}
+function structuredLinks(results: unknown): WebRunLink[] {
+  const links: WebRunLink[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!isObject(value)) return;
+    if (Array.isArray(value.links)) {
+      for (const item of value.links) {
+        if (!isObject(item)) continue;
+        const id = item.id ?? item.link_id ?? item.linkId;
+        if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
+        const url = httpUrl(item.url ?? item.href);
+        const label =
+          (typeof item.label === "string" && item.label.trim()) ||
+          (typeof item.title === "string" && item.title.trim()) ||
+          url ||
+          String(id);
+        const domain =
+          typeof item.domain === "string" && item.domain.trim()
+            ? item.domain.trim().slice(0, 253)
+            : undefined;
+        if (!links.some((link) => link.id === id)) {
+          links.push({
+            id,
+            label: String(label).slice(0, 500),
+            ...(domain ? { domain } : {}),
+            ...(url ? { url } : {}),
+          });
+        }
+      }
+    }
     Object.values(value).forEach(visit);
   };
   visit(results);
-  return { refs, refRecords, sources };
+  return links;
 }
 const ACTION_ERROR =
   /^\s*(?:Error parsing function call\b|Invalid function_name=|Invalid function call\b)/iu;
@@ -632,16 +767,21 @@ const ALPHA_SEMANTIC_FAILURE =
   /^\s*(?:reference(?: id)?\s+(?:is\s+)?(?:invalid|unavailable)\b|unable to access requested content\b|service unavailable\b)/iu;
 const ALPHA_COMMAND_ERROR_ENVELOPE =
   /^\s*Internal Error\s*\([^\r\n)]*\)\s*(?:\r?\n[ \t]*)+(?:\uE200cite\uE202[^\uE201\r\n]+\uE201[ \t]*(?:\[wordlim:\s*\d+\][ \t]*)?)?Unable to resolve (open|find|click|screenshot) call\s*:/iu;
+const ALPHA_FETCH_FAILURE_ENVELOPE =
+  /^\s*Internal Error\s*\([^\r\n)]*\)\s*(?:\r?\n[ \t]*)+(?:\uE200cite\uE202[^\uE201\r\n]+\uE201[ \t]*(?:\[wordlim:\s*\d+\][ \t]*)?)?Source:\s*(open|find|click|screenshot)\s*\([^\r\n]*\)\s*;\s*Total lines:\s*\d+\s*(?:\r?\n)L0:[ \t]*Failed to fetch \S+:[ \t]*\(\d{3}\)/iu;
 const ALPHA_REFERENCE_ERROR_ENVELOPE =
   /^\s*(?:\*\*Result:\*\*[ \t]*)?Unable to (?:execute[ \t]+)?`?(open|find|click|screenshot)`?(?=[\s:])([^\r\n]*)/iu;
 function alphaCommandErrorEnvelope(
   output: unknown,
   action: string | undefined,
 ) {
-  const match = String(output ?? "").match(ALPHA_COMMAND_ERROR_ENVELOPE);
-  if (match && match[1].toLowerCase() === action) return true;
+  const text = String(output ?? "");
+  const command = text.match(ALPHA_COMMAND_ERROR_ENVELOPE);
+  if (command && command[1].toLowerCase() === action) return true;
+  const fetchFailure = text.match(ALPHA_FETCH_FAILURE_ENVELOPE);
+  if (fetchFailure && fetchFailure[1].toLowerCase() === action) return true;
   // Match the action failure header, never error phrases quoted inside a page.
-  const reference = String(output ?? "").match(ALPHA_REFERENCE_ERROR_ENVELOPE);
+  const reference = text.match(ALPHA_REFERENCE_ERROR_ENVELOPE);
   return Boolean(
     reference &&
       reference[1].toLowerCase() === action &&
@@ -679,7 +819,14 @@ export function parseAlphaSearchResponse(
       "LCX_ALPHA_ACTION_FAILED",
     );
   const results = safeResult(response.results ?? []);
-  const a = artifacts(results);
+  const originKind = typeof response.id === "string" && response.id ? "response" : "request";
+  const originValue = originKind === "response" ? String(response.id) : String(options.requestId ?? "");
+  const provenance: AlphaRefProvenance = {
+    action: action ?? "unknown",
+    originKind,
+    originFingerprint: sha256(originValue),
+  };
+  const a = artifacts(response.results ?? [], provenance);
   const outputBlocks = parseWebRunOutput(response.output);
   for (const block of outputBlocks)
     if (block.url) {
@@ -690,12 +837,11 @@ export function parseAlphaSearchResponse(
   for (const block of outputBlocks)
     for (const ref of block.references ?? []) {
       if (isAlphaHttpUrl(ref)) continue;
-      if (!a.refs.includes(ref)) a.refs.push(ref);
-      if (!a.refRecords.some((item) => item.refId === ref))
-        a.refRecords.push({
-          refId: ref,
-          ...(block.url ? { url: block.url } : {}),
-        });
+      addRefObservation(a, {
+        refId: ref,
+        ...(block.url ? { url: block.url } : {}),
+        provenance,
+      });
     }
   for (const source of outputBlocks.flatMap((b) =>
     b.url ? [{ url: b.url, ...(b.title ? { title: b.title } : {}) }] : [],
@@ -712,7 +858,7 @@ export function parseAlphaSearchResponse(
     sources: a.sources,
     citations: a.sources.map((s) => ({ ...s })),
     outputBlocks,
-    links: outputLinks(outputBlocks),
+    links: mergeWebRunLinks(outputLinks(outputBlocks), structuredLinks(results)),
     pdfRefs: outputPdfRefs(outputBlocks),
     domains: outputDomains(outputBlocks),
     ...(outputLineRange(outputBlocks)
@@ -732,16 +878,97 @@ export function parseAlphaSearchResponse(
     refRecords: a.refRecords,
   };
 }
+function opaqueRefList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((ref): ref is string => typeof ref === "string" && Boolean(ref) && !isAlphaHttpUrl(ref))
+    : [];
+}
+function sourceUrlForRef(sources: RecordValue[], refId: string): string | undefined {
+  const match = sources.find((source) => source.refId === refId && typeof source.url === "string" && source.url);
+  return typeof match?.url === "string" ? match.url : undefined;
+}
 export function renderAlphaSearchResult(value: unknown): ContentBlock[] {
   const data = isObject(value) ? value : {};
   const parts: string[] = [];
   if (typeof data.content === "string") parts.push(data.content);
-  if (Array.isArray(data.sources) && data.sources.length)
-    parts.push(`来源：\n${data.sources.filter(isObject).map((source) => `- [${String(source.title ?? source.url ?? "")}](${String(source.url ?? "")})`).join("\n")}`);
+  const sources = Array.isArray(data.sources) ? data.sources.filter(isObject) : [];
+  const refs = opaqueRefList(data.refs);
+  if (refs.length) {
+    parts.push(`可继续操作的引用：\n${refs.map((ref) => {
+      const url = sourceUrlForRef(sources, ref);
+      return url ? `- opaqueRef=${ref} url=${url}` : `- opaqueRef=${ref}`;
+    }).join("\n")}`);
+  }
+  const links = Array.isArray(data.links)
+    ? data.links.filter((link): link is RecordValue => isObject(link) && Number.isSafeInteger(link.id))
+    : [];
+  if (links.length) {
+    parts.push(`可点击链接：\n${links.map((link) => {
+      const bits = [`linkId=${String(link.id)}`];
+      if (typeof link.label === "string" && link.label) bits.push(`label=${link.label}`);
+      if (typeof link.domain === "string" && link.domain) bits.push(`domain=${link.domain}`);
+      if (typeof link.url === "string" && link.url) bits.push(`url=${link.url}`);
+      return `- ${bits.join(" ")}`;
+    }).join("\n")}`);
+  }
+  const pdfRefs = opaqueRefList(data.pdfRefs);
+  if (pdfRefs.length)
+    parts.push(`PDF引用：\n${pdfRefs.map((ref) => `- opaqueRef=${ref}`).join("\n")}`);
+  if (sources.length)
+    parts.push(`来源：\n${sources.map((source) => `- [${String(source.title ?? source.url ?? "")}](${String(source.url ?? "")})`).join("\n")}`);
   if (Array.isArray(data.warnings) && data.warnings.length)
     parts.push(data.warnings.map((warning) => `警告：${String(warning)}`).join("\n"));
   parts.push(`检索时间：${String(data.retrievedAt ?? "")}`);
   return [{ type: "text", text: parts.filter(Boolean).join("\n\n") }];
+}
+export const ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS = 1;
+const alphaSessionLocks = new Map<string, { mutex: ServiceMutex; users: number }>();
+export function alphaSearchRetryOptions(maxResponseBytes?: number) {
+  return {
+    maxAttempts: ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS,
+    ...(typeof maxResponseBytes === "number" ? { maxResponseBytes } : {}),
+  };
+}
+export async function runWithAlphaSessionLock<T>(
+  sessionId: unknown,
+  signal: AbortSignal | undefined,
+  task: () => T | Promise<T>,
+): Promise<T> {
+  if (typeof sessionId !== "string" || !sessionId)
+    throw failure("websearch_alpha requires a DSH session", "LCX_ALPHA_SESSION_REQUIRED");
+  let entry = alphaSessionLocks.get(sessionId);
+  if (!entry) {
+    entry = { mutex: new ServiceMutex(), users: 0 };
+    alphaSessionLocks.set(sessionId, entry);
+  }
+  entry.users += 1;
+  try {
+    return await entry.mutex.run(signal, task);
+  } finally {
+    entry.users -= 1;
+    if (entry.users === 0 && alphaSessionLocks.get(sessionId) === entry)
+      alphaSessionLocks.delete(sessionId);
+  }
+}
+export async function fetchAlphaSearchJson(options: {
+  url: string;
+  body: Record<string, unknown>;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  sessionId: unknown;
+}) {
+  return runWithAlphaSessionLock(options.sessionId, options.signal, () =>
+    fetchJsonWithRetry(
+      options.url,
+      options.body,
+      options.headers,
+      options.signal,
+      options.timeoutMs,
+      alphaSearchRetryOptions(options.maxResponseBytes),
+    ),
+  );
 }
 function probeFailureState(error: unknown): "unsupported" | "unknown" {
   const detail = isObject(error) ? error : {};

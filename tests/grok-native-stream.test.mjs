@@ -53,6 +53,8 @@ test('ordinary Grok bridge emits exact native tools and preserves DSH controls',
       () => { throw new Error('DSH adapter must not run') },
     ))
     assert.equal(chunks.at(-1).reason.kind, 'stop')
+    assert.equal(chunks.at(-1).replayState.response.lcxUsage.inputTokenScope, 'request')
+    assert.equal('inputTokenScope' in chunks.find(chunk => chunk.type === 'usage').usage, false)
     assert.deepEqual(h.imageOptions, [{ maxPixels: 40_000_000, maxBytes: 4_000_000 }])
   }
   assert.equal(requests.length, 3)
@@ -117,17 +119,17 @@ test('server search items stay opaque inside additive replay while citations and
   const text = chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')
   const clientCall = chunks.find(chunk => chunk.type === 'block-end' && chunk.block?.type === 'tool-call')?.block
   const finish = chunks.find(chunk => chunk.type === 'finish')
-  assert.match(text, /https:\/\/example\.com\/source/)
+  assert.equal(text, 'Current result')
   assert.equal(clientCall.name, 'workspace_read')
   assert.equal(clientCall.id, 'call_client_1|fc_client_1')
   assert.equal(finish.reason.kind, 'tool-calls')
+  assert.equal(chunks.at(-1).replayState.response.lcxUsage.inputTokenScope, 'aggregate')
   assert.doesNotMatch(JSON.stringify(finish.replayState.blocks), /web_search_call|ws_server_1/)
   assert.deepEqual(
     finish.replayState.grokNative.output.map(item => item.type),
     ['web_search_call', 'message', 'function_call'],
   )
-  assert.equal(finish.replayState.grokNative.visibleAdditions.length, 1)
-  assert.match(finish.replayState.grokNative.visibleAdditions[0].textSha256, /^[0-9a-f]{64}$/)
+  assert.equal(finish.replayState.grokNative.version, 3)
   assert.deepEqual(h.logs, ['[lcx-codex] Grok native search used 1 server-side tool call(s) (web=1, x=0)'])
 })
 
@@ -162,6 +164,7 @@ test('X usage is reported once from terminal aggregate without x_search_call eve
   assert.match(text, /https:\/\/x\.com\/example\/status\/1/)
   assert.equal(chunks.at(-1).reason.kind, 'stop')
   assert.deepEqual(h.logs, ['[lcx-codex] Grok native search used 4 server-side tool call(s) (web=0, x=4)'])
+  assert.equal(chunks.at(-1).replayState.response.lcxUsage.inputTokenScope, 'aggregate')
 })
 
 test('Grok reasoning wire matches Pi built-ins, profile defaults, aliases, and disabled custom models', async t => {
@@ -352,11 +355,30 @@ for (const mode of ['uncited', 'cited', 'inline', 'discarded-stream-citation']) 
     assert.equal(chunks.at(-1).reason.kind, 'stop')
     const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
     assert.doesNotMatch(text, /unused-/)
-    assert.equal(text.includes('Sources:'), mode === 'cited')
-    assert.equal(text.split('https://example.com/cited').length - 1, ['cited', 'inline'].includes(mode) ? 1 : 0)
+    assert.equal(text.includes('Sources:'), false)
+    assert.equal(text.split('https://example.com/cited').length - 1, mode === 'inline' ? 1 : 0)
     assert.deepEqual(chunks.at(-1).replayState.grokNative.output, output, 'Provider replay retains complete original search data')
   })
 }
+
+test('Grok native search strips provider renderer artifacts and trailing Sources while preserving answer text', async t => {
+  const server = { type: 'web_search_call', id: 'ws_artifacts', status: 'completed' }
+  const message = {
+    type: 'message', id: 'msg_artifacts', role: 'assistant', status: 'completed',
+    content: [{ type: 'output_text', text: 'Answer {render_inline_citation(citation_id=7)} stays. render_inline_citation speach-citation_id="9"ve render_inline_citation succitation_id受0 stateless_invoke render_inline_citation with citation_id is 8 [[1]](https://example.com/cited)<|eos|>\nSources:\n- https://example.com/raw', annotations: [] }],
+  }
+  t.mock.method(globalThis, 'fetch', async () => sseResponse([{ type: 'response.completed', response: {
+    id: 'resp_artifacts', model: 'grok-4.6', status: 'completed', output: [server, message],
+    usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+  } }]))
+  const h = grokHarness({ nativeWeb: true })
+  const chunks = await collect(h.stream(requestOptions([{ type: 'text', text: 'search' }]), () => { throw new Error('Unexpected adapter') }))
+  assert.equal(chunks.at(-1).reason.kind, 'stop')
+  const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
+  assert.equal(text, 'Answer stays. [[1]](https://example.com/cited)')
+  assert.doesNotMatch(text, /Sources:|render_inline_citation|stateless_invoke/)
+  assert.deepEqual(chunks.at(-1).replayState.grokNative.output, [server, message])
+})
 
 for (const framed of [false, true]) {
   test(`Grok hides empty encrypted reasoning while retaining visible thoughts and replay (${framed ? 'streamed' : 'terminal'})`, async t => {

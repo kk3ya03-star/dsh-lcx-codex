@@ -8,8 +8,7 @@ import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   getBuiltinModels,
   getBuiltinProviders,
-  type BuiltinProvider,
-} from "@earendil-works/pi-ai/providers/all";
+} from "./pi-responses-runtime.js";
 
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
@@ -150,6 +149,25 @@ export function settingsValue(
   return asLlmSettingsSection(ctx?.settings?.get(namespace));
 }
 
+/** Alpha.2 exposes deferred provider diagnostics separately from saved settings. */
+function providerDirectoryUsable(
+  ctx: RouteContext | null | undefined,
+  provider: string,
+): boolean {
+  const llm = ctx?.llm;
+  const list = llm?.listConfigurableProviders;
+  if (typeof list !== "function") return true;
+  try {
+    const entry = list.call(llm).find(
+      (candidate) =>
+        candidate.provider === provider && candidate.settingsNs === "llm-pi-ai",
+    );
+    return typeof entry?.error !== "string" || entry.error.trim() === "";
+  } catch {
+    return false;
+  }
+}
+
 /** @type {Set<keyof ResponsesCompat>} */
 const RESPONSES_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "sessionAffinityFormat", "supportsStrictMode", "supportsLongCacheRetention", "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch", "supportsExplicitPromptCacheMode", "supportsMaxOutputTokens"]);
 /** @param {ResponsesCompat} target @param {unknown} source */
@@ -169,7 +187,7 @@ function builtinResponsesModel(
   modelId: unknown,
 ): PiResponsesModel | undefined {
   const providerName = String(provider ?? "");
-  const builtinProvider: BuiltinProvider | undefined = getBuiltinProviders().find(
+  const builtinProvider = getBuiltinProviders().find(
     (candidate) => candidate === providerName,
   );
   if (builtinProvider === undefined) return undefined;
@@ -261,7 +279,7 @@ function isLcxCapabilityRoute(
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
-  if (!provider.trim() || !/^gpt-/iu.test(model)) return undefined;
+  if (!provider.trim() || !/^gpt-/iu.test(model) || !providerDirectoryUsable(ctx, provider)) return undefined;
   const section = settingsValue(ctx, "llm-pi-ai"); const profile = section?.providers?.[provider];
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
@@ -319,7 +337,7 @@ export function resolveGrokResponsesRouteConfig(
 ): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? "");
   const model = String(options?.model ?? "");
-  if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
+  if (!provider.trim() || !/^grok/iu.test(model) || !providerDirectoryUsable(ctx, provider)) return undefined;
   const section = settingsValue(ctx, "llm-pi-ai");
   const configured = section?.providers?.[provider];
   if (!isRecord(configured)) return undefined;

@@ -405,7 +405,7 @@ test('Alpha response parser strips encrypted fields and keeps refs', () => {
   assert.equal(parsed.sources[0].url, 'https://example.com/')
 })
 
-test('DSH 0.1.3 request-image projection covers user and tool-result images', async () => {
+test('DSH 0.1.5 request-image projection covers user and tool-result images', async () => {
   let policy
   let readImageCalls = 0
   const ref = { attachmentId: 'sha256:test', mediaType: 'image/png', bytes: 2_000_000, width: 2048, height: 2048 }
@@ -482,6 +482,40 @@ test('Alpha URL-only search output remains a source, not a synthetic provider re
   assert.equal(refOnly.sources[0].url, 'https://example.com/ref-only')
 })
 
+test('Alpha parser fingerprints response and explicit artifact provenance before ref deduplication', () => {
+  const parsed = parseAlphaSearchResponse({
+    id: 'provider-response-secret',
+    output: 'Example',
+    results: [
+      { ref_id: 'turn0search1', url: 'https://example.com/docs', provenance: { source: 'search-a' } },
+      { ref_id: 'turn0search1', url: 'https://example.com/docs', provenance: { source: 'search-a' } },
+    ],
+  }, { action: 'search_query', capability: 'command-capable', requestId: 'request-secret' })
+  assert.equal(parsed.refRecords.length, 1)
+  assert.equal(parsed.refRecords[0].provenance.action, 'search_query')
+  assert.equal(parsed.refRecords[0].provenance.originKind, 'response')
+  assert.match(parsed.refRecords[0].provenance.originFingerprint, /^[a-f0-9]{64}$/)
+  assert.match(parsed.refRecords[0].provenance.artifactFingerprint, /^[a-f0-9]{64}$/)
+  assert.equal(JSON.stringify(parsed.refRecords).includes('provider-response-secret'), false)
+  assert.equal(JSON.stringify(parsed.refRecords).includes('search-a'), false)
+
+  assert.throws(() => parseAlphaSearchResponse({
+    id: 'same-response', output: 'Example', results: [
+      { ref_id: 'turn0search1', url: 'https://example.com/one' },
+      { ref_id: 'turn0search1', url: 'https://example.com/two' },
+    ],
+  }, { action: 'search_query', capability: 'command-capable', requestId: 'req-url-collision' }),
+  (error) => error?.code === 'LCX_ALPHA_REF_COLLISION')
+
+  assert.throws(() => parseAlphaSearchResponse({
+    id: 'same-response', output: 'Example', results: [
+      { ref_id: 'turn0search1', provenance: { source: 'search-a' } },
+      { ref_id: 'turn0search1', provenance: { source: 'search-b' } },
+    ],
+  }, { action: 'search_query', capability: 'command-capable', requestId: 'req-provenance-collision' }),
+  (error) => error?.code === 'LCX_ALPHA_REF_COLLISION')
+})
+
 test('Alpha parser and ref store retain real opaque refs only in the originating session and route', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-'))
   try {
@@ -492,7 +526,11 @@ test('Alpha parser and ref store retain real opaque refs only in the originating
     }, { action: 'search_query', capability: 'command-capable', requestId: 'req-real', retrievedAt: '2026-08-23T00:00:00.000Z' })
     const store = new AlphaRefStore(join(directory, 'refs.json'))
     store.record('session-a', 'route-a', parsed.refRecords)
-    assert.deepEqual(store.assertUsable('session-a', 'route-a', 'turn0search1'), { refId: 'turn0search1', url: 'https://example.com/docs' })
+    const accepted = store.assertUsable('session-a', 'route-a', 'turn0search1')
+    assert.equal(accepted.refId, 'turn0search1')
+    assert.equal(accepted.url, 'https://example.com/docs')
+    assert.equal(accepted.provenance.action, 'search_query')
+    assert.match(accepted.provenance.originFingerprint, /^[a-f0-9]{64}$/)
     assert.throws(() => store.assertUsable('session-b', 'route-a', 'turn0search1'), (error) => error?.code === 'LCX_ALPHA_REF_UNAVAILABLE')
     assert.throws(() => store.assertUsable('session-a', 'route-b', 'turn0search1'), (error) => error?.code === 'LCX_ALPHA_REF_UNAVAILABLE')
   } finally {
@@ -518,7 +556,11 @@ test('Alpha click rejects URL-shaped refs even if a stale ref store contains the
   try {
     const url = 'https://example.com/docs'
     const store = new AlphaRefStore(join(directory, 'refs.json'))
-    store.record('session-a', 'route-a', [{ refId: url, url }])
+    store.record('session-a', 'route-a', [{
+      refId: url,
+      url,
+      provenance: { action: 'search_query', originKind: 'request', originFingerprint: '0'.repeat(64) },
+    }])
     assert.equal(store.assertUsable('session-a', 'route-a', url).refId, url)
     assert.throws(
       () => normalizeAlphaSearchArgs({ action: 'click', refId: url, linkId: 7 }),
@@ -727,6 +769,7 @@ test('Alpha parser rejects real Internal Error command envelopes for click and s
   for (const [action, output, results] of [
     ['click', 'Internal Error ()\nUnable to resolve click call: target could not be resolved due to invalid arguments', [{ ref_id: 'turn0view-error', line_number: 8 }]],
     ['screenshot', 'Internal Error ()\n\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Unable to resolve screenshot call: target content type is not application/pdf and web screenshot is not enabled', [{ ref_id: 'turn0pdf-error', page_number: 0 }]],
+    ['open', 'Internal Error ()\n\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Source: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1\nL0: Failed to fetch https://platform.openai.com/docs/quickstart/make-your-first-api-request: (404) Not Found', [{ ref_id: 'turn1view0' }]],
   ]) assert.throws(
     () => parseAlphaSearchResponse({ output, results }, { action, capability: 'command-capable', requestId: `req-${action}-internal-error`, retrievedAt: '2026-08-28T00:00:00.000Z' }),
     (error) => error?.code === 'LCX_ALPHA_ACTION_FAILED',

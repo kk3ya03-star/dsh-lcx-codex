@@ -47,7 +47,7 @@ export function grokHarness({
   const logs = []
   const imageOptions = []
   const modelInfoRequests = []
-  let schema
+  let schema, settingsEntry, settingsChanged
   const ctx = {
     logger: { info(message) { logs.push(message) }, warn() {} },
     sessions: { get: () => undefined },
@@ -76,8 +76,9 @@ export function grokHarness({
       get: namespace => namespace === 'llm-pi-ai' ? { providers: profiles } : undefined,
       installSection(_owner, _namespace, valueSchema, value, hooks) {
         schema = valueSchema
-        const entry = { ...value, enabled, grokNativeWebSearch: nativeWeb, grokNativeXSearch: nativeX }
-        hooks.setSource(() => entry)
+        settingsEntry = { ...value, enabled, grokNativeWebSearch: nativeWeb, grokNativeXSearch: nativeX }
+        settingsChanged = hooks.onChange
+        hooks.setSource(() => settingsEntry)
         hooks.onChange()
       },
     },
@@ -90,5 +91,9 @@ export function grokHarness({
   return {
     ctx, handlers, logs, imageOptions, modelInfoRequests, schema,
     stream: handlers.get('llm/stream'),
+    setMediaPreview(value) {
+      settingsEntry.searchMediaPreview = Boolean(value)
+      settingsChanged()
+    },
   }
 }

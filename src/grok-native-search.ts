@@ -22,19 +22,15 @@ export type GrokNativeReplayRoute = {
 
 type WireTool = Record<string, unknown>;
 type WireItem = Record<string, unknown> & { type: string };
-type GrokNativeVisibleAddition = {
-  kind: "citation-sources";
-  textSha256: string;
-};
 type GrokNativeReplayEnvelope = {
   kind: "xai-responses-native-search";
-  version: 2;
+  version: 3;
   provider: string;
   model: string;
   sourceSessionId: string;
   routeAuthorityFingerprint: string;
+  serverSearchEchoCallIds?: string[];
   output: WireItem[];
-  visibleAdditions: GrokNativeVisibleAddition[];
 };
 
 const GROK_EXCLUDED_SEARCH_FUNCTIONS = new Set([
@@ -42,6 +38,13 @@ const GROK_EXCLUDED_SEARCH_FUNCTIONS = new Set([
   "websearch_gpt_advanced",
   "websearch_alpha",
 ]);
+const GROK_NATIVE_X_EXTENSION_NAMES = new Set([
+  "x_user_search",
+  "x_keyword_search",
+  "x_semantic_search",
+  "x_thread_fetch",
+]);
+const GROK_NATIVE_WEB_EXTENSION_NAMES = new Set(["browse_page"]);
 const GROK_NATIVE_VISIBLE_ITEM_TYPES = new Set([
   "message",
   "reasoning",
@@ -50,9 +53,104 @@ const GROK_NATIVE_VISIBLE_ITEM_TYPES = new Set([
 ]);
 const GROK_NATIVE_REPLAY_MAX_ITEMS = 256;
 const GROK_NATIVE_REPLAY_MAX_CHARS = 8 * 1024 * 1024;
+const GROK_RENDER_MARKER = /(?:\bstateless_invoke\s+)?\{?render_inline_citation(?:\s*\(\s*citation_id\s*=\s*\d+\s*\)|\s+with\s+citation_id\s+is\s+\d+)\}?[ \t]*/giu;
+const GROK_CITATION_ID_MARKER = /([ \t]?)\{render_inline_citation:citation_id=(\d+)\}/giu;
+const GROK_UI_CITATION_MARKER = /render_inline_citation[^\r\n]*[ \t]*/giu;
+const GROK_PRIVATE_RENDER_MARKER = /[\uE000-\uF8FF]render_inline_citation[^\uE000-\uF8FF\r\n]*[\uE000-\uF8FF][ \t]*/giu;
+const GROK_EOS_MARKER = /<\|eos\|>/giu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function citationId(annotation: Record<string, unknown>): string | undefined {
+  const value = annotation.citation_id ?? annotation.citationId ?? annotation.id;
+  return typeof value === "string" || typeof value === "number"
+    ? String(value)
+    : undefined;
+}
+
+function citationUrl(annotation: Record<string, unknown>): string | undefined {
+  if (annotation.type !== "url_citation" || typeof annotation.url !== "string")
+    return undefined;
+  try {
+    const parsed = new URL(annotation.url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return annotation.url.replace(/\)/gu, "%29");
+  } catch {
+    return undefined;
+  }
+}
+
+function stripTrailingSourcesList(value: string): string {
+  const newline = value.includes("\r\n") ? "\r\n" : "\n";
+  const lines = value.split(/\r?\n/u);
+  let fence: "```" | "~~~" | undefined;
+  for (let index = 0; index < lines.length; index += 1) {
+    const fenceMatch = /^\s*(```|~~~)/u.exec(lines[index] ?? "");
+    if (fenceMatch) {
+      const marker = fenceMatch[1] as "```" | "~~~";
+      fence = fence === marker ? undefined : fence ?? marker;
+      continue;
+    }
+    if (fence !== undefined || !/^\s*Sources:[ \t]*$/iu.test(lines[index] ?? ""))
+      continue;
+    let sourceCount = 0;
+    let validTail = true;
+    for (const line of lines.slice(index + 1)) {
+      if (!line.trim()) continue;
+      if (/^\s*[-*][ \t]+.*https?:\/\/\S+/iu.test(line)) sourceCount += 1;
+      else {
+        validTail = false;
+        break;
+      }
+    }
+    if (validTail && sourceCount > 0) return lines.slice(0, index).join(newline);
+  }
+  return value;
+}
+
+export function grokPendingSourcesStart(value: string): number | undefined {
+  const lines = value.split(/(?<=\n)/u);
+  let offset = 0;
+  let fence: "```" | "~~~" | undefined;
+  let candidate: number | undefined;
+  for (const lineWithEnding of lines) {
+    const line = lineWithEnding.replace(/\r?\n$/u, "");
+    const fenceMatch = /^\s*(```|~~~)/u.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1] as "```" | "~~~";
+      fence = fence === marker ? undefined : fence ?? marker;
+    } else if (fence === undefined && /^\s*Sources:[ \t]*$/iu.test(line)) {
+      candidate = offset;
+    }
+    offset += lineWithEnding.length;
+  }
+  return candidate;
+}
+
+export function sanitizeGrokVisibleText(
+  value: string,
+  annotations: readonly unknown[] = [],
+): string {
+  const citations = new Map<string, string>();
+  for (const candidate of annotations) {
+    if (!isRecord(candidate)) continue;
+    const id = citationId(candidate);
+    const url = citationUrl(candidate);
+    if (id !== undefined && url !== undefined && !citations.has(id)) citations.set(id, url);
+  }
+  let text = value
+    .replace(GROK_CITATION_ID_MARKER, (_marker, leading: string, id: string) => {
+      const url = citations.get(id);
+      return url === undefined ? "" : `${leading}[[${id}]](${url})`;
+    })
+    .replace(GROK_RENDER_MARKER, "")
+    .replace(GROK_UI_CITATION_MARKER, "")
+    .replace(GROK_PRIVATE_RENDER_MARKER, "")
+    .replace(GROK_EOS_MARKER, "");
+  text = stripTrailingSourcesList(text);
+  return text.trimEnd();
 }
 
 function canonicalHeaders(headers: Record<string, string> | undefined) {
@@ -91,6 +189,22 @@ export function grokVisibleFunctionTools(
     !(state.x && tool.name === "x_search"));
 }
 
+export function isGrokNativeServerToolItem(
+  value: unknown,
+  state: GrokNativeSearchState,
+  declaredToolNames: ReadonlySet<string>,
+): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (GROK_NATIVE_SERVER_TOOL_TYPES.has(value.type)) return true;
+  if (value.type !== "custom_tool_call" || typeof value.name !== "string" ||
+      declaredToolNames.has(value.name) || typeof value.id !== "string" ||
+      !value.id.startsWith("ctc_") || typeof value.call_id !== "string") return false;
+  if (state.x && GROK_NATIVE_X_EXTENSION_NAMES.has(value.name) &&
+      value.call_id.startsWith("xs_call-")) return true;
+  return state.web && GROK_NATIVE_WEB_EXTENSION_NAMES.has(value.name) &&
+    (value.call_id.startsWith("ws_call-") || value.call_id.startsWith("web_search_call-"));
+}
+
 export function grokWireTools(
   tools: readonly unknown[] | undefined,
   state: GrokNativeSearchState,
@@ -124,39 +238,6 @@ function validVisibleItem(item: WireItem): boolean {
   return false;
 }
 
-function textSha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function lcxCitationAddition(item: WireItem): GrokNativeVisibleAddition | undefined {
-  if (
-    item.type !== "message" ||
-    typeof item.id !== "string" ||
-    !item.id.startsWith("msg_lcx_sources_")
-  )
-    return undefined;
-  const text = itemText(item);
-  return text.startsWith("\n\nSources:\n")
-    ? { kind: "citation-sources", textSha256: textSha256(text) }
-    : undefined;
-}
-
-function validVisibleAdditions(value: unknown): GrokNativeVisibleAddition[] | undefined {
-  if (!Array.isArray(value) || value.length > GROK_NATIVE_REPLAY_MAX_ITEMS) return undefined;
-  const additions: GrokNativeVisibleAddition[] = [];
-  for (const candidate of value) {
-    if (
-      !isRecord(candidate) ||
-      candidate.kind !== "citation-sources" ||
-      typeof candidate.textSha256 !== "string" ||
-      !/^[0-9a-f]{64}$/u.test(candidate.textSha256)
-    )
-      return undefined;
-    additions.push({ kind: "citation-sources", textSha256: candidate.textSha256 });
-  }
-  return additions;
-}
-
 function readGrokNativeReplayEnvelope(
   value: unknown,
   route: GrokNativeReplayRoute,
@@ -164,7 +245,7 @@ function readGrokNativeReplayEnvelope(
   if (
     !isRecord(value) ||
     value.kind !== "xai-responses-native-search" ||
-    (value.version !== 1 && value.version !== 2)
+    value.version !== 3
   )
     return undefined;
   if (
@@ -188,15 +269,15 @@ function readGrokNativeReplayEnvelope(
   const output: WireItem[] = [];
   const itemKinds = new Map<string, string>();
   const callIds = new Set<string>();
-  const migratedAdditions: GrokNativeVisibleAddition[] = [];
+  if (value.serverSearchEchoCallIds !== undefined &&
+      (!Array.isArray(value.serverSearchEchoCallIds) ||
+       !value.serverSearchEchoCallIds.every((id) => typeof id === "string" && id.length > 0) ||
+       new Set(value.serverSearchEchoCallIds).size !== value.serverSearchEchoCallIds.length))
+    return undefined;
+  const serverSearchEchoCallIds = new Set(value.serverSearchEchoCallIds ?? []);
   for (const candidate of value.output) {
     if (!isRecord(candidate) || typeof candidate.type !== "string") return undefined;
     const item = candidate as WireItem;
-    const legacyAddition = value.version === 1 ? lcxCitationAddition(item) : undefined;
-    if (legacyAddition) {
-      migratedAdditions.push(legacyAddition);
-      continue;
-    }
     if (GROK_NATIVE_SERVER_TOOL_TYPES.has(item.type)) {
       if (typeof item.id !== "string" || item.id.length === 0) return undefined;
     } else if (!GROK_NATIVE_VISIBLE_ITEM_TYPES.has(item.type) || !validVisibleItem(item)) {
@@ -218,49 +299,49 @@ function readGrokNativeReplayEnvelope(
     output.push(structuredClone(item));
   }
   if (output.length === 0) return undefined;
-  const visibleAdditions = value.version === 1
-    ? migratedAdditions
-    : validVisibleAdditions(value.visibleAdditions);
-  if (!visibleAdditions) return undefined;
+  for (const id of serverSearchEchoCallIds)
+    if (!output.some((item) => item.type === "custom_tool_call" && item.call_id === id))
+      return undefined;
   return {
     kind: "xai-responses-native-search",
-    version: 2,
+    version: 3,
     provider: route.provider,
     model: route.model,
     sourceSessionId: route.sessionId,
     routeAuthorityFingerprint: grokNativeReplayRouteFingerprint(route),
+    ...(serverSearchEchoCallIds.size > 0 ? { serverSearchEchoCallIds: [...serverSearchEchoCallIds] } : {}),
     output,
-    visibleAdditions,
   };
 }
 
 export function createGrokNativeReplayEnvelope(
   output: readonly unknown[] | undefined,
   route: GrokNativeReplayRoute | undefined,
-  visibleAdditions: readonly unknown[] = [],
+  serverSearchEchoCallIds: readonly string[] = [],
 ): GrokNativeReplayEnvelope | undefined {
   if (!route || !Array.isArray(output)) return undefined;
-  const additions = visibleAdditions.map((candidate) =>
-    isRecord(candidate) && typeof candidate.type === "string"
-      ? lcxCitationAddition(candidate as WireItem)
-      : undefined);
-  if (additions.some((addition) => addition === undefined)) return undefined;
   return readGrokNativeReplayEnvelope({
     kind: "xai-responses-native-search",
-    version: 2,
+    version: 3,
     provider: route.provider,
     model: route.model,
     sourceSessionId: route.sessionId,
     routeAuthorityFingerprint: grokNativeReplayRouteFingerprint(route),
+    ...(serverSearchEchoCallIds.length > 0 ? { serverSearchEchoCallIds: [...serverSearchEchoCallIds] } : {}),
     output,
-    visibleAdditions: additions,
   }, route);
 }
 
-function itemText(item: WireItem): string {
+function itemText(item: WireItem, visible = false): string {
   if (item.type === "message")
     return (Array.isArray(item.content) ? item.content : [])
-      .map((part) => isRecord(part) ? String(part.text ?? part.refusal ?? "") : "")
+      .map((part) => {
+        if (!isRecord(part)) return "";
+        const text = String(part.text ?? part.refusal ?? "");
+        return visible
+          ? sanitizeGrokVisibleText(text, Array.isArray(part.annotations) ? part.annotations : [])
+          : text;
+      })
       .join("");
   if (item.type === "reasoning") {
     const parts = Array.isArray(item.summary) && item.summary.length > 0
@@ -272,7 +353,7 @@ function itemText(item: WireItem): string {
 }
 
 function visibleItemMatchesBlock(item: WireItem, block: Record<string, unknown>): boolean {
-  if (item.type === "message") return block.type === "text" && block.text === itemText(item);
+  if (item.type === "message") return block.type === "text" && block.text === itemText(item, true);
   if (item.type === "reasoning") return block.type === "reasoning" && block.text === itemText(item);
   if (item.type === "function_call")
     return block.type === "tool-call" && block.id === `${String(item.call_id)}|${String(item.id)}` &&
@@ -291,33 +372,12 @@ function visibleItemMatchesInput(item: WireItem, candidate: unknown): boolean {
   return true;
 }
 
-function additionMatchesBlock(
-  addition: GrokNativeVisibleAddition,
-  candidate: unknown,
-): boolean {
-  return isRecord(candidate) && candidate.type === "text" &&
-    typeof candidate.text === "string" &&
-    candidate.text.startsWith("\n\nSources:\n") &&
-    textSha256(candidate.text) === addition.textSha256;
-}
-
-function additionMatchesInput(
-  addition: GrokNativeVisibleAddition,
-  candidate: unknown,
-): boolean {
-  if (!isRecord(candidate) || candidate.type !== "message") return false;
-  if (typeof candidate.id !== "string" || !candidate.id.startsWith("msg_lcx_sources_"))
-    return false;
-  return textSha256(itemText(candidate as WireItem)) === addition.textSha256;
-}
-
 function replayForMessage(
   message: Message,
   route: GrokNativeReplayRoute,
 ): {
   envelope: GrokNativeReplayEnvelope;
   visible: WireItem[];
-  additions: GrokNativeVisibleAddition[];
 } | undefined {
   if (message.role !== "assistant" || message.source.kind !== "model") return undefined;
   if (message.source.provider !== route.provider || message.source.model !== route.model)
@@ -326,7 +386,10 @@ function replayForMessage(
   if (!isRecord(replayState)) return undefined;
   const envelope = readGrokNativeReplayEnvelope(replayState.grokNative, route);
   if (!envelope) return undefined;
-  const visible = envelope.output.filter((item) => !GROK_NATIVE_SERVER_TOOL_TYPES.has(item.type));
+  const serverSearchEchoCallIds = new Set(envelope.serverSearchEchoCallIds ?? []);
+  const visible = envelope.output.filter((item) =>
+    !GROK_NATIVE_SERVER_TOOL_TYPES.has(item.type) &&
+    !(item.type === "custom_tool_call" && serverSearchEchoCallIds.has(String(item.call_id))));
   if (visible.length === 0) return undefined;
   const reasoningCounts = new Map<string, number>();
   for (const item of visible)
@@ -344,16 +407,11 @@ function replayForMessage(
       return undefined;
     }
   }
-  // Empty Grok reasoning has no UI block; older histories can still contain it.
-  // Pi can coalesce repeated reasoning IDs in terminal-only gateway responses.
-  // Match every provider-visible DSH block and only the hashed LCX additions.
+  // Empty Grok reasoning has no UI block. Pi can coalesce repeated reasoning IDs
+  // in terminal-only gateway responses; every actual DSH-visible block must still match.
   if (anchors.length === 0) return undefined;
-  for (const addition of envelope.visibleAdditions) {
-    if (!additionMatchesBlock(addition, message.content[blockIndex])) return undefined;
-    blockIndex += 1;
-  }
   if (blockIndex !== message.content.length) return undefined;
-  return { envelope, visible: anchors, additions: envelope.visibleAdditions };
+  return { envelope, visible: anchors };
 }
 
 export function restoreGrokNativeReplay(
@@ -367,15 +425,13 @@ export function restoreGrokNativeReplay(
   for (const message of messages) {
     const replay = replayForMessage(message, route);
     if (!replay) continue;
-    const { envelope, visible, additions } = replay;
-    const replacedLength = visible.length + additions.length;
+    const { envelope, visible } = replay;
+    const replacedLength = visible.length;
     let start = -1;
     for (let index = cursor; index <= restored.length - replacedLength; index += 1) {
       if (
         visible.every((item, offset) =>
-          visibleItemMatchesInput(item, restored[index + offset])) &&
-        additions.every((addition, offset) =>
-          additionMatchesInput(addition, restored[index + visible.length + offset]))
+          visibleItemMatchesInput(item, restored[index + offset]))
       ) {
         start = index;
         break;

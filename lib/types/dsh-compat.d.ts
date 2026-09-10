@@ -1,5 +1,6 @@
 import { Session, type SessionStore } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
 type CompatMethod = (this: object, agent: unknown, trigger: string, signal: AbortSignal) => Promise<unknown>;
 type PrunerMethod = (...args: unknown[]) => unknown;
@@ -10,8 +11,11 @@ interface CompactionService extends MutableService {
 export interface CompactionPatchRecord {
     compaction: CompactionService;
     original: CompatMethod;
+    originalOwnDescriptor: PropertyDescriptor | undefined;
+    installedOwnDescriptor: PropertyDescriptor;
     wrapper: CompatMethod;
     mutex: ServiceMutex;
+    policyScope: InvocationPolicyScope;
     lifecycle: AbortController;
 }
 export type CompactionPatchRecords = Map<object, CompactionPatchRecord>;
@@ -51,8 +55,8 @@ export declare function resolveContextService(ctx: unknown, name: string): unkno
 export declare function resolveScopedService(agent: unknown, name: string): unknown;
 export declare function resolveAgentService(ctx: unknown, agent: unknown, name: string): unknown;
 export declare function concreteService(value: unknown): unknown;
-export declare function compactionPatchCandidate(value: unknown, records: ReadonlyMap<object, CompactionPatchRecord>): Pick<CompactionPatchRecord, "compaction" | "original"> | undefined;
-export declare function installCompactionPatch(records: CompactionPatchRecords, candidate: Pick<CompactionPatchRecord, "compaction" | "original">, mutex: ServiceMutex, lifecycle: AbortController, behavior: CompactionPatchBehavior): boolean;
+export declare function compactionPatchCandidate(value: unknown, records: ReadonlyMap<object, CompactionPatchRecord>): Pick<CompactionPatchRecord, "compaction" | "original" | "originalOwnDescriptor"> | undefined;
+export declare function installCompactionPatch(records: CompactionPatchRecords, candidate: Pick<CompactionPatchRecord, "compaction" | "original" | "originalOwnDescriptor">, mutex: ServiceMutex, policyScope: InvocationPolicyScope, lifecycle: AbortController, behavior: CompactionPatchBehavior): boolean;
 export declare function restoreCompactionPatches(records: Map<object, CompactionPatchRecord>, entries?: Iterable<CompactionPatchRecord>): void;
 export declare function toolResultPrunerState(value: unknown): {
     pruner: PrunerService | undefined;

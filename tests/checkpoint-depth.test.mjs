@@ -13,7 +13,7 @@ test('portable replay preserves history after 25 real DSH compaction replacement
     const start = session.append('compaction/start', { compactionId: id, turn: null })
     const summary = session.append('compaction/summary', { compactionId: id, shadowedSeqs: [previous], shadowedRange: { start: previous, end: previous }, shadowedTokenCount: 10, summary: 'checkpoint', provider: 'fixture', model: 'gpt-fixture' })
     previous = session.append('user/message', { role: 'user', id, source: compactCheckpointSource(id), content: [{ type: 'text', text: 'checkpoint' }] }, {
-      surfaceOp: { op: 'replace', start: previous, end: previous }, sourceEventSeqs: [start.seq, summary.seq, previous],
+      surfaceOp: { op: 'replace', startSeq: previous, endSeq: previous }, sourceEventSeqs: [start.seq, summary.seq, previous],
     }).seq
     session.append('compaction/end', { compactionId: id, turn: null })
   }

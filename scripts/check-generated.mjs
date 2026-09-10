@@ -14,6 +14,7 @@ const before = snapshot()
 rmSync(lib, { recursive: true })
 for (const args of [
   ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json'],
+  ['scripts/build-pi-runtime.mjs'],
   ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.client.json'],
   ['scripts/build-client.mjs'],
 ]) execFileSync(process.execPath, args, { cwd: root, stdio: 'inherit' })

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
 function fixture(browserLanguage = 'en', activeLanguage = 'en') {
-  let client, injection, snapshot, listener, render
+  let client, injection, snapshot, listener, render, mediaSnapshot
   const dictionaries = new Map(), disposers = []
   let localeNamespace
   const values = {
@@ -36,9 +36,18 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
           createElement: (type, props, ...children) => ({ type, props, children }),
           useState: () => [true, () => {}],
         }
-        if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore(value) {
-          snapshot = value
-          return { set(next) { snapshot = next } }
+        if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore(value, options) {
+          const media = !Object.hasOwn(value,'available')
+          if (media) mediaSnapshot = value
+          else snapshot = value
+          return {
+            getSnapshot() { return media ? mediaSnapshot : snapshot },
+            subscribe() { return () => {} },
+            set(next) {
+              if (media) mediaSnapshot = next
+              else snapshot = next
+            },
+          }
         } }
         throw new Error(`Unexpected client import: ${name}`)
       })
@@ -51,9 +60,15 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
       return () => dictionaries.delete(language)
     } },
     settingsScope: scope,
+    uiConversation: { events: { register() { return () => {} } } },
     slots: {
       inject(_slot, callback) { callback() },
-      register(definition, component) { localeNamespace = definition.locale; injection = definition.inject(); render = component },
+      register(definition, component) {
+        if (definition.name !== 'settings.plugin.item') return
+        localeNamespace = definition.locale
+        injection = definition.inject()
+        render = component
+      },
     },
     effect(setup) { disposers.push(setup()) },
   })
@@ -61,7 +76,12 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     injection, scope, values, writes,
     state: () => snapshot,
     refresh: () => listener(),
-    render: () => render({ ...injection, t: key => dictionaries.get(activeLanguage)?.[key] ?? dictionaries.get('en')[key], useLcxCard: () => snapshot }),
+    render: () => render({
+      ...injection,
+      t: key => dictionaries.get(activeLanguage)?.[key] ?? dictionaries.get('en')[key],
+      useLcxCard: () => snapshot,
+      useMediaPreview: selector => selector(mediaSnapshot),
+    }),
     setLocale: language => { activeLanguage = language },
     localeNamespace: () => localeNamespace,
     dictionaries,

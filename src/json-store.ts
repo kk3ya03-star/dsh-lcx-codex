@@ -20,6 +20,7 @@ export class JsonStore<T> {
   readonly empty: () => T;
   readonly validate: (data: unknown) => data is T;
   readonly corruptCode: string;
+  readonly migrate?: (data: unknown) => T | undefined;
   data: T;
 
   constructor(
@@ -27,11 +28,13 @@ export class JsonStore<T> {
     empty: () => T,
     validate: (data: unknown) => data is T,
     corruptCode = "LCX_STORE_CORRUPT",
+    migrate?: (data: unknown) => T | undefined,
   ) {
     this.file = file;
     this.empty = empty;
     this.validate = validate;
     this.corruptCode = corruptCode;
+    this.migrate = migrate;
     this.data = empty();
     this.refresh();
   }
@@ -39,8 +42,12 @@ export class JsonStore<T> {
   refresh(): void {
     try {
       const parsed: unknown = JSON.parse(readFileSync(this.file, "utf8"));
-      if (!this.validate(parsed)) throw new Error("invalid store");
-      this.data = parsed;
+      if (this.validate(parsed)) this.data = parsed;
+      else {
+        const migrated = this.migrate?.(parsed);
+        if (migrated === undefined || !this.validate(migrated)) throw new Error("invalid store");
+        this.data = migrated;
+      }
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
         this.data = this.empty();

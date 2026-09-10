@@ -1,5 +1,33 @@
 import type { ClientModuleLoaderTarget } from "@deepseek-ai/dsh-client-modules/client";
 import type { LocaleRuntime } from "@deepseek-ai/dsh-client-locale/client";
+import type {
+  ConversationLocation,
+  ConversationNodeDefinition,
+} from "@deepseek-ai/dsh-client-ui-conversation/client";
+import type { ChatConversationViewNode } from "@deepseek-ai/dsh-client-ui-chat/client";
+import {
+  extractSearchMedia,
+  mergeSearchMedia,
+  structuredSearchMedia,
+  type SearchMediaItem,
+  type StructuredMediaTool,
+} from "./search-media.js";
+import { installInlineMedia, inlineMediaCss } from "./inline-media.js";
+import { installUsageSlots, searchUsageDefinition } from "./search-usage-ui.js";
+
+const SEARCH_MEDIA_KIND = "lcx-search-media";
+
+type SearchMediaData = {
+  readonly items: readonly SearchMediaItem[];
+  readonly provider: string;
+  readonly model: string;
+};
+
+declare module "@deepseek-ai/dsh-client-ui-chat/client" {
+  interface ChatNodeDataMap {
+    "lcx-search-media": SearchMediaData;
+  }
+}
 
 type Field =
   | "enabled"
@@ -7,7 +35,8 @@ type Field =
   | "advancedHostedSearch"
   | "alphaSearch"
   | "grokNativeWebSearch"
-  | "grokNativeXSearch";
+  | "grokNativeXSearch"
+  | "searchMediaPreview";
 
 type Values = Record<Field, boolean>;
 
@@ -25,23 +54,37 @@ type SettingsScope = {
 };
 
 type Store<T> = {
+  getSnapshot(): T;
+  subscribe(listener: () => void): () => void;
   set(value: T): void;
 };
 
 type StoreFactory = {
-  createSnapshotStore<T>(value: T): Store<T>;
+  createSnapshotStore<T>(
+    value: T,
+    options?: { persist?: { name: string } },
+  ): Store<T>;
+};
+
+type MediaPreference = {
+  readonly enabled: boolean;
 };
 
 type ControllerInjection = {
-  hooks: { lcxCard: Store<CardState> };
+  hooks: {
+    lcxCard: Store<CardState>;
+    mediaPreview: Store<MediaPreference>;
+  };
+  setMediaPreview(value: boolean): void;
   edit(field: Field, value: boolean): void;
   save(): void;
   discard(): void;
 };
 
 type ReactModule = {
+  useEffect(effect: () => void | (() => void), deps: unknown[]): void;
   createElement(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown;
-  useState<T>(initialState: T): [T, (value: T) => void];
+  useState<T>(initialState: T): [T, (value: T | ((previous: T) => T)) => void];
 };
 
 type CardState = {
@@ -55,6 +98,10 @@ type CardState = {
 type CardProps = {
   t(key: string): string;
   useLcxCard(selector: (state: CardState) => CardState): CardState;
+  useMediaPreview(
+    selector: (state: MediaPreference) => boolean,
+  ): boolean;
+  setMediaPreview(value: boolean): void;
   edit(field: Field, value: boolean): void;
   save(): void;
   discard(): void;
@@ -65,24 +112,33 @@ type ModuleExports = {
   inject?: string[];
 };
 
+type UiConversation = {
+  events: {
+    register(definition: ConversationNodeDefinition): () => void;
+  };
+};
+
 type PluginContext = {
   locale?: LocaleRuntime;
   slots?: Slots;
   settingsScope?: SettingsScope;
+  uiConversation?: UiConversation;
   get(key: "slots"): Slots | undefined;
   get(key: "settingsScope"): SettingsScope | undefined;
   get(key: "locale"): LocaleRuntime | undefined;
-  effect(cleanup: () => () => void, name: string): void;
+  get(key: "uiConversation"): UiConversation | undefined;
+  effect(setup: () => () => void, name: string): void;
 };
 
 type Slots = {
+  entriesOfSlot?: Parameters<typeof installUsageSlots>[0]['entriesOfSlot'];
   inject(name: string, callback: () => unknown): unknown;
-  register(definition: {
+  register<Props>(definition: {
     name: string;
     key: string;
     locale: string;
-    inject(): ControllerInjection;
-  }, component: (props: CardProps) => unknown): unknown;
+    inject(): unknown;
+  }, component: (props: Props) => unknown): unknown;
 };
 
 type Require = (specifier: string) => unknown;
@@ -103,6 +159,9 @@ window.__ModuleLoader__.load({
       "@deepseek-ai/dsh-client-store",
     ) as StoreFactory;
     const NAMESPACE = "lcx-codex";
+    const mediaStore = createSnapshotStore<MediaPreference>(
+      { enabled: false },
+    );
     const FIELDS: Field[] = [
       "enabled",
       "webSearch",
@@ -110,19 +169,21 @@ window.__ModuleLoader__.load({
       "alphaSearch",
       "grokNativeWebSearch",
       "grokNativeXSearch",
+      "searchMediaPreview",
     ];
     const DEFAULTS: Values = Object.fromEntries(
       FIELDS.map((field) => [field, false]),
     ) as Values;
-    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}`;
-    if (
-      typeof document !== "undefined" &&
-      !document.querySelector('style[data-plugin-css="dsh-lcx-codex"]')
-    ) {
+    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}` + inlineMediaCss;
+    function mountCss(): () => void {
+      if (typeof document === "undefined") return () => {};
+      if (document.querySelector('style[data-plugin-css="dsh-lcx-codex"]'))
+        return () => {};
       const tag = document.createElement("style");
       tag.dataset.pluginCss = "dsh-lcx-codex";
       tag.textContent = css;
       document.head.appendChild(tag);
+      return () => tag.remove();
     }
     const copy = {
       zh: {
@@ -140,6 +201,18 @@ window.__ModuleLoader__.load({
         alpha: "启用 Alpha command（websearch_alpha）",
         alphaHelp:
           "仅 capability probe 对当前 route/schema 验证通过后才真正注册。",
+        mediaPreview: "搜索媒体预览",
+        mediaPreviewHelp:
+          "在回答下显示可用的搜索图片或直链预览，点击放大或播放；不可预览时保留原始回答与网页链接。此设置只改变界面显示。",
+        mediaTitle: "媒体预览",
+        mediaPlay: "播放视频",
+        mediaEnlarge: "放大图片", mediaClose: "关闭预览",
+        mediaMore: "展开其余 {count} 项", mediaLess: "收起预览", mediaPrevious: "上一张", mediaNext: "下一张",
+        mediaResolve: "加载素材预览",
+        mediaLoading: "正在获取媒体…",
+        mediaUnavailable: "暂不能预览",
+        mediaAll:"全部",mediaImages:"图片",mediaVideos:"视频",mediaImage:"图片",mediaVideo:"视频",mediaFilter:"媒体类型",
+        mediaOpen: "打开原始媒体",
         grokTitle: "Grok 原生搜索",
         grokDesc: "使用 DSH 当前选择的 Grok 模型及其服务配置；与 GPT 功能开关独立。开启任一搜索后，Grok 仅使用原生搜索，网页读取和其他工具仍可用。",
         grokWeb: "启用原生 Web Search",
@@ -165,6 +238,18 @@ window.__ModuleLoader__.load({
           "Only for native Hosted controls such as domains, location, context size and image search; off by default for stable tool schemas.",
         alpha: "Enable Alpha command (websearch_alpha)",
         alphaHelp: "Registered only after a matching capability probe.",
+        mediaPreview: "Search media previews",
+        mediaPreviewHelp:
+          "Preview available search images or direct media links below the answer. Unavailable media leaves the original answer and links intact. This setting changes presentation only.",
+        mediaTitle: "Media previews",
+        mediaPlay: "Play video",
+        mediaEnlarge: "Enlarge image", mediaClose: "Close preview",
+        mediaMore: "Show {count} more", mediaLess: "Show fewer", mediaPrevious: "Previous image", mediaNext: "Next image",
+        mediaResolve: "Load media preview",
+        mediaLoading: "Resolving media…",
+        mediaUnavailable: "Preview unavailable",
+        mediaAll:"All",mediaImages:"Photos",mediaVideos:"Videos",mediaImage:"Photo",mediaVideo:"Video",mediaFilter:"Media type",
+        mediaOpen: "Open original media",
         grokTitle: "Grok native search",
         grokDesc: "Uses the Grok model and provider profile currently selected in DSH, independently of the GPT switch. When either search is enabled, Grok uses native search while page reading and other tools remain available.",
         grokWeb: "Enable native Web Search",
@@ -186,6 +271,120 @@ window.__ModuleLoader__.load({
         ) as Values),
       };
     }
+    type SearchMediaState = SearchMediaData & {
+      readonly anchorSeq: number;
+      readonly location: ConversationLocation;
+      readonly structuredItems: readonly SearchMediaItem[];
+      readonly pending: Readonly<Record<string, StructuredMediaTool>>;
+      readonly ready: boolean;
+    };
+    const hostedMediaTool = (value: unknown): value is StructuredMediaTool =>
+      value === "web_search" || value === "websearch_gpt_advanced";
+
+    const searchMediaDefinition: ConversationNodeDefinition<SearchMediaState> = {
+      kind: SEARCH_MEDIA_KIND,
+      target: "chat",
+      match(event) {
+        if (event.type === "turn/start")
+          return { id: String(event.data.turn), role: "start" };
+        if (event.type === "tool/result" || event.type === "tool/call")
+          return { id: String(event.data.turn), role: "update" };
+        if (
+          event.type !== "assistant/message" ||
+          event.surfaceOp !== "append" ||
+          event.data.interrupted === true
+        )
+          return null;
+        const source = event.data.message.source;
+        if (source.kind !== "model" || !/^(?:gpt|grok)/i.test(source.model))
+          return null;
+        return { id: String(event.data.turn), role: "update" };
+      },
+      start(_context, match) {
+        if (match.event.type !== "turn/start")
+          throw new Error("search media state requires turn/start");
+        return {
+          anchorSeq: 0,
+          location: match.location,
+          items: [],
+          structuredItems: [],
+          provider: "",
+          model: "",
+          pending: {},
+          ready: false,
+        };
+      },
+      update(context, match) {
+        if (match.event.type === "tool/call") {
+          if (!hostedMediaTool(match.event.data.name)) return context.state;
+          return {
+            ...context.state,
+            pending: {
+              ...context.state.pending,
+              [match.event.data.callId]: match.event.data.name,
+            },
+          };
+        }
+        if (match.event.type === "tool/result") {
+          const callId = match.event.data.message.source.callId;
+          const tool = context.state.pending[callId];
+          if (tool === undefined) return context.state;
+          const pending = { ...context.state.pending };
+          delete pending[callId];
+          return {
+            ...context.state,
+            pending,
+            structuredItems: mergeSearchMedia(
+              context.state.structuredItems,
+              structuredSearchMedia(match.event.data.meta, tool),
+            ),
+          };
+        }
+        if (match.event.type !== "assistant/message") return context.state;
+        const message = match.event.data.message;
+        const source = message.source;
+        if (source.kind !== "model") return context.state;
+        const text = message.content
+          .flatMap((block) => (block.type === "text" ? [block.text] : []))
+          .join("\n");
+        return {
+          ...context.state,
+          anchorSeq: match.event.seq,
+          location: match.location,
+          items: context.state.structuredItems.length
+            ? context.state.structuredItems
+            : extractSearchMedia(text),
+          provider: source.provider,
+          model: source.model,
+          ready: true,
+        };
+      },
+      publication: (match) =>
+        match.event.type === "assistant/message" ? "immediate" : "none",
+      buildViewNode(context) {
+        const state = context.state;
+        if (state === undefined || !state.ready || state.items.length === 0) return null;
+        const node: ChatConversationViewNode & {
+          readonly kind: typeof SEARCH_MEDIA_KIND;
+          readonly data: SearchMediaData;
+        } = {
+          key: context.key,
+          kind: SEARCH_MEDIA_KIND,
+          id: context.id,
+          target: "chat",
+          anchorSeq: state.anchorSeq,
+          location: state.location,
+          visibility: "visible",
+          data: {
+            items: state.items,
+            provider: state.provider,
+            model: state.model,
+          },
+        };
+        return node;
+      },
+    };
+
     class Controller {
       scope: SettingsScope;
       draft: Partial<Values> | null;
@@ -202,6 +401,7 @@ window.__ModuleLoader__.load({
         this.saving = false;
         this.saveError = false;
         this.store = createSnapshotStore(this.projection());
+        mediaStore.set({ enabled: this.value().searchMediaPreview });
         this.stop = scope.subscribe(() => {
           if (!this.dirty) this.draft = null;
           this.publish();
@@ -232,6 +432,7 @@ window.__ModuleLoader__.load({
         };
       }
       publish(): void {
+        mediaStore.set({ enabled: this.value().searchMediaPreview });
         this.store.set(this.projection());
       }
       edit(field: Field, value: boolean): void {
@@ -280,7 +481,11 @@ window.__ModuleLoader__.load({
       }
       inject(): ControllerInjection {
         return {
-          hooks: { lcxCard: this.store },
+          hooks: {
+            lcxCard: this.store,
+            mediaPreview: mediaStore,
+          },
+          setMediaPreview: (value: boolean) => this.edit("searchMediaPreview", value),
           edit: (field: Field, value: boolean) => this.edit(field, value),
           save: () => void this.save(),
           discard: () => this.discard(),
@@ -345,6 +550,14 @@ window.__ModuleLoader__.load({
               "div",
               { className: "lcx-body" },
               React.createElement("p", { className: "lcx-help" }, t("desc")),
+              React.createElement(Row, {
+                id: "lcx-media-preview",
+                label: t("mediaPreview"),
+                help: t("mediaPreviewHelp"),
+                checked: s.searchMediaPreview.value,
+                disabled,
+                onChange: props.setMediaPreview,
+              }),
               React.createElement(Row, {
                 id: "lcx-enabled",
                 label: t("enabled"),
@@ -425,16 +638,62 @@ window.__ModuleLoader__.load({
           : null,
       );
     }
-    const inject = ["slots", "locale", "settingsScope"];
+    type MediaNodeProps = {
+      node: ChatConversationViewNode & {
+        readonly kind: typeof SEARCH_MEDIA_KIND;
+        readonly data: SearchMediaData;
+      };
+      t(key: string): string;
+      useMediaPreview(
+        selector: (state: MediaPreference) => boolean,
+      ): boolean;
+    };
+
+    function InlineMedia({node,t}: {node:MediaNodeProps['node'];t:(key:string)=>string}):unknown {
+      const [marker,setMarker]=React.useState<HTMLElement|null>(null);
+      React.useEffect(()=>{
+        if (!marker) return;
+        return installInlineMedia(marker,node.data.items,{image:t('mediaEnlarge'),video:t('mediaPlay'),close:t('mediaClose'),source:t('mediaOpen'),more:t('mediaMore'),less:t('mediaLess'),previous:t('mediaPrevious'),next:t('mediaNext')});
+      },[marker,node.data.items,t]);
+      return React.createElement('span',{ref:setMarker,'aria-hidden':true});
+    }
+    function MediaNode(props: MediaNodeProps): unknown {
+      const enabled=props.useMediaPreview(state=>state?.enabled===true);
+      return enabled?React.createElement(InlineMedia,{node:props.node,t:props.t}):null;
+    }
+
+    const inject = ["slots", "locale", "settingsScope", "uiConversation"];
     function apply(ctx: PluginContext): void {
       const slots = ctx.slots ?? ctx.get("slots"),
         svc = ctx.settingsScope ?? ctx.get("settingsScope"),
-        locale = ctx.locale ?? ctx.get("locale");
-      if (!slots || !svc || !locale) return;
+        locale = ctx.locale ?? ctx.get("locale"),
+        uiConversation =
+          ctx.uiConversation ?? ctx.get("uiConversation");
+      if (!slots || !svc || !locale || !uiConversation) return;
+      if (typeof slots.entriesOfSlot === 'function') {
+        ctx.effect(() => uiConversation.events.register(searchUsageDefinition), 'lcx search billing data');
+        ctx.effect(() => installUsageSlots(slots as Parameters<typeof installUsageSlots>[0], React.createElement), 'lcx search billing slots');
+      }
+      ctx.effect(mountCss, "lcx-codex styles");
       for (const language of ["zh", "en"] as const)
         ctx.effect(() => locale.register(NAMESPACE, language, copy[language]), `lcx-codex ${language} dictionary`);
+      ctx.effect(
+        () => uiConversation.events.register(searchMediaDefinition),
+        "lcx-codex search media definition",
+      );
+      const installSlot = (
+        name: string,
+        label: string,
+        register: () => unknown,
+      ) =>
+        ctx.effect(() => {
+          const cleanup = slots.inject(name, register);
+          return () => {
+            if (typeof cleanup === "function") cleanup();
+          };
+        }, label);
       const controller = new Controller(svc.bind({ namespace: NAMESPACE }));
-      slots.inject("settings.plugin.item", () =>
+      installSlot("settings.plugin.item", "lcx-codex settings slot", () =>
         slots.register(
           {
             name: "settings.plugin.item",
@@ -443,6 +702,17 @@ window.__ModuleLoader__.load({
             inject: () => controller.inject(),
           },
           Card,
+        ),
+      );
+      installSlot("conversation.chat.node", "lcx-codex media slot", () =>
+        slots.register(
+          {
+            name: "conversation.chat.node",
+            key: SEARCH_MEDIA_KIND,
+            locale: NAMESPACE,
+            inject: () => ({ hooks: { mediaPreview: mediaStore } }),
+          },
+          MediaNode,
         ),
       );
       ctx.effect(() => () => controller.stop(), "lcx-codex settings card");

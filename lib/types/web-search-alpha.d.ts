@@ -1,4 +1,5 @@
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
+import { type WebRunLink } from "./web-run-output.js";
 export declare const ALPHA_ACTIONS: string[];
 export declare const ALPHA_SEARCH_PARAMETERS: {
     type: "object";
@@ -223,6 +224,17 @@ export declare function isPublicAlphaTarget(url: URL): boolean;
 export declare function isAlphaHttpUrl(value: unknown): value is string;
 export declare function isAlphaContinuationUrl(value: unknown): value is string;
 export declare function alphaRefRequiresStore(action: string, refId: unknown): boolean;
+interface AlphaRefProvenance {
+    action: string;
+    originKind: "response" | "request";
+    originFingerprint: string;
+    artifactFingerprint?: string;
+}
+interface AlphaRefObservation {
+    refId: string;
+    url?: string;
+    provenance: AlphaRefProvenance;
+}
 export declare function parseAlphaSearchResponse(response: AlphaResponse, options: {
     action: unknown;
     capability: unknown;
@@ -249,7 +261,7 @@ export declare function parseAlphaSearchResponse(response: AlphaResponse, option
         url: string;
     }[];
     outputBlocks: import("./web-run-output.js").WebRunBlock[];
-    links: import("./web-run-output.js").WebRunLink[];
+    links: WebRunLink[];
     pdfRefs: string[];
     domains: string[];
     lineRange?: {
@@ -260,12 +272,24 @@ export declare function parseAlphaSearchResponse(response: AlphaResponse, option
     responseId?: string | undefined;
     retrievedAt: {};
     warnings: string[];
-    refRecords: {
-        url?: string;
-        refId: string;
-    }[];
+    refRecords: AlphaRefObservation[];
 };
 export declare function renderAlphaSearchResult(value: unknown): ContentBlock[];
+export declare const ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS = 1;
+export declare function alphaSearchRetryOptions(maxResponseBytes?: number): {
+    maxAttempts: number;
+    maxResponseBytes?: number | undefined;
+};
+export declare function runWithAlphaSessionLock<T>(sessionId: unknown, signal: AbortSignal | undefined, task: () => T | Promise<T>): Promise<T>;
+export declare function fetchAlphaSearchJson(options: {
+    url: string;
+    body: Record<string, unknown>;
+    headers?: HeadersInit;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    maxResponseBytes?: number;
+    sessionId: unknown;
+}): Promise<any>;
 export declare function probeAlphaCapabilities({ invoke, schemaFingerprint, trustedNativeProvenance, actionProbes, clickProbeRef, screenshotProbeRef, }: {
     invoke: AlphaInvoke;
     schemaFingerprint: unknown;

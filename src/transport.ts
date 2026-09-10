@@ -2,7 +2,7 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ERROR_BYTES = 512 * 1024;
 
-type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener">;
+type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener" | "removeEventListener">;
 type TransportError = Error & { code?: string; retryable?: boolean };
 type RetryOptions = { maxAttempts?: number; maxResponseBytes?: number };
 type SseRetryOptions<T = Response> = RetryOptions & {
@@ -42,6 +42,15 @@ function retryableStatus(status: number) {
     (status >= 500 && status <= 599)
   );
 }
+// Retain only an allowlisted class, never upstream messages or account balances.
+function isQuotaError(text: string): boolean {
+  try {
+    const code = JSON.parse(text)?.error?.code;
+    return code === "insufficient_user_quota" || code === "insufficient_quota";
+  } catch {
+    return false;
+  }
+}
 function retryAfterFromHeaders(headers: Headers) {
   const rawMillis = headers?.get?.("retry-after-ms");
   const millis = Number(rawMillis);
@@ -71,17 +80,18 @@ function delayFromHeaders(headers: Headers, attempt: number) {
 }
 async function sleep(ms: number | undefined, signal: AbortLike | undefined) {
   if (ms === undefined || ms <= 0) return;
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason);
-      },
-      { once: true },
-    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 function combinedSignal(signal: AbortSignal | undefined, timeoutMs: unknown): AbortSignal | undefined {
@@ -153,11 +163,12 @@ export async function fetchJsonWithRetry(
         response.ok ? maxResponseBytes : Math.min(maxResponseBytes, MAX_ERROR_BYTES),
       );
       if (!response.ok) {
-        const retryable = retryableStatus(response.status);
+        const quota = isQuotaError(text);
+        const retryable = !quota && retryableStatus(response.status);
         const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
         const error = makeError(
           `HTTP ${response.status}`,
-          retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
+          quota ? "LCX_INSUFFICIENT_QUOTA" : retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
           {
             status: response.status,
             retryable,
@@ -247,15 +258,16 @@ export async function fetchSseWithRetry<T = Response>(
         redirect: "error",
       });
       if (!response.ok) {
-        await readLimited(
+        const text = await readLimited(
           response,
           Math.min(options.maxResponseBytes ?? DEFAULT_MAX_BYTES, MAX_ERROR_BYTES),
         );
-        const retryable = retryableStatus(response.status);
+        const quota = isQuotaError(text);
+        const retryable = !quota && retryableStatus(response.status);
         const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
         const error = makeError(
           `HTTP ${response.status}`,
-          retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
+          quota ? "LCX_INSUFFICIENT_QUOTA" : retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
           {
             status: response.status,
             retryable,
@@ -358,6 +370,15 @@ export async function consumeSse(
       dataLines.push(pending.slice(5).replace(/^ /u, ""));
     dispatch();
   } finally {
-    await reader.cancel().catch(() => undefined);
+    try {
+      await reader.cancel();
+    } catch {
+      // Cleanup must not replace the stream/parse/cancellation outcome.
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // The acquired reader owns no further work after settlement.
+    }
   }
 }

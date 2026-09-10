@@ -9,7 +9,8 @@ await mkdir(dirname(outputPath), { recursive: true })
 await build({
   entryPoints: [sourcePath],
   bundle: true,
-  format: 'esm',
+  // DSH can concatenate client entries. Keep imported helper names private.
+  format: 'iife',
   jsx: 'automatic',
   outfile: outputPath,
   platform: 'browser',

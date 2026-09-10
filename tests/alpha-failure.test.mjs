@@ -21,6 +21,21 @@ test('Alpha rejects action-specific reference failure envelopes, even with echoe
   }
 })
 
+const OPEN_FETCH_FAILURE = [
+  'Internal Error ()',
+  '\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Source: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1',
+  'L0: Failed to fetch https://platform.openai.com/docs/quickstart/make-your-first-api-request: (404) Not Found',
+].join('\n')
+
+test('Alpha rejects the top-level open fetch-failure envelope before returning refs', () => {
+  for (const results of [[], [{ ref_id: 'turn1view0' }]]) {
+    assert.throws(
+      () => parse('open', OPEN_FETCH_FAILURE, results),
+      { code: 'LCX_ALPHA_ACTION_FAILED' },
+    )
+  }
+})
+
 test('Alpha does not mistake quoted page content, other actions or no-match results for failures', () => {
   for (const [action, output] of [
     ['open', 'Reference troubleshooting\nL1: Unable to open turn0view0: reference unavailable.'],
@@ -30,7 +45,14 @@ test('Alpha does not mistake quoted page content, other actions or no-match resu
     ['open', 'Unable to open a window is the title of this guide.'],
     ['click', failures[0][1]],
     ['search_query', failures[0][1]],
-  ]) assert.doesNotThrow(() => parse(action, output))
+    ['open', 'Opened docs (https://example.com/errors)\n\uE200cite\uE202turn0view0\uE201\nL1: Internal Error ()\nL2: Failed to fetch https://example.com: (404) Not Found'],
+    ['open', '> Internal Error ()\n> Source: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1\n> L0: Failed to fetch https://example.com: (404) Not Found'],
+    ['open', '```text\nInternal Error ()\nSource: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1\nL0: Failed to fetch https://example.com: (404) Not Found\n```'],
+    ['open', 'Internal Error ()\nThis runbook quotes Failed to fetch https://example.com: (404) Not Found for operators.'],
+    ['find', OPEN_FETCH_FAILURE],
+    ['click', OPEN_FETCH_FAILURE],
+    ['search_query', OPEN_FETCH_FAILURE],
+  ]) assert.doesNotThrow(() => parse(action, output, [{ ref_id: 'turn0real' }]))
 })
 
 test('Alpha probe rejects the same reference error envelope without requiring a production parser', async () => {

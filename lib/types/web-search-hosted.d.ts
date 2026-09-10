@@ -1,4 +1,6 @@
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
+import type { ToolOutputDefinition } from "@deepseek-ai/dsh-tools";
+type PresentationValue = ReturnType<NonNullable<ToolOutputDefinition["presentationMeta"]>>;
 type SearchContextSize = "low" | "medium" | "high";
 type ReturnTokenBudget = "default" | "unlimited";
 type SearchContentType = "text" | "image";
@@ -36,6 +38,14 @@ interface ImageResult {
     sourceWebsiteUrl?: string;
     caption?: string;
 }
+export type HostedMediaCandidate = {
+    kind: "image";
+    url: string;
+    previewUrl?: string;
+    sourceUrl?: string;
+    caption?: string;
+    structured: true;
+};
 export declare const HOSTED_SEARCH_PARAMETERS: {
     type: "object";
     properties: {
@@ -175,6 +185,30 @@ export declare const HOSTED_SEARCH_OUTPUT: {
         truncated: {
             type: "boolean";
         };
+        usage: {
+            type: "object";
+            properties: {
+                inputTokens: {
+                    type: "number";
+                };
+                outputTokens: {
+                    type: "number";
+                };
+                totalTokens: {
+                    type: "number";
+                };
+                cachedInputTokens: {
+                    type: "number";
+                };
+                actionCount: {
+                    type: "number";
+                };
+                serverWebSearchCalls: {
+                    type: "number";
+                };
+            };
+            additionalProperties: false;
+        };
     };
     required: string[];
     additionalProperties: false;
@@ -241,6 +275,17 @@ export declare function parseHostedSearchResponse(response: unknown, requestId: 
     responseId?: string | undefined;
     retrievedAt: string;
     truncated: boolean;
+    usage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+        cachedInputTokens?: number;
+        actionCount?: number;
+        serverWebSearchCalls?: number;
+    } | undefined;
 };
+export type HostedMediaTool = "web_search" | "websearch_gpt_advanced";
+/** Project Hosted image results into LCX-owned, tool-private, replayable UI metadata. */
+export declare function hostedMediaPresentationMeta(value: unknown, tool: HostedMediaTool, base?: PresentationValue): PresentationValue;
 export declare function renderHostedSearchResult(value: unknown): ContentBlock[];
 export {};

@@ -1,16 +1,20 @@
 // @ts-check
 
+import type {
+  AssistantMessageEvent,
+  Model as PiModel,
+} from "@earendil-works/pi-ai";
 import {
   createAssistantMessageEventStream,
-  type AssistantMessageEvent,
-  type Model as PiModel,
-} from "@earendil-works/pi-ai";
-import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-responses-shared";
+  processResponsesStream,
+} from "./pi-responses-runtime.js";
 import { ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry } from "./transport.js";
 import {
   createGrokNativeReplayEnvelope,
+  grokPendingSourcesStart,
+  sanitizeGrokVisibleText,
   type GrokNativeReplayRoute,
 } from "./grok-native-search.js";
 
@@ -21,12 +25,15 @@ type PiResponsesModel = PiModel<"openai-responses">;
 type FailureCode =
   | "ABORTED"
   | "AUTH"
+  | "INSUFFICIENT_QUOTA"
   | "UNSUPPORTED_OPTION"
   | "NO_ADAPTER"
   | "RATE_LIMIT"
   | "SERVER"
   | "INVALID_REQUEST"
   | "CONTEXT_WINDOW_EXCEEDED"
+  | "UNSUPPORTED_CONTENT"
+  | "GROK_NATIVE_PROTOCOL_ERROR"
   | "TIMEOUT"
   | "TRANSPORT"
   | "RESPONSES_ERROR";
@@ -63,7 +70,8 @@ type StreamOptions = {
 type ResponseWireMeta = {
   responseModel?: string;
   nativeOutput?: unknown[];
-  nativeVisibleAdditions?: unknown[];
+  nativeServerSearchEchoCallIds?: string[];
+  inputTokenScope?: "request" | "aggregate";
 };
 export type ServerToolUsage = {
   webSearchCalls: number;
@@ -86,6 +94,8 @@ type StreamRequestOptions = {
   maxAttempts?: number;
   maxResponseBytes?: number;
   serverToolTypes?: ReadonlySet<string>;
+  isServerToolItem?: (item: unknown) => boolean;
+  declaredToolNames?: ReadonlySet<string>;
   nativeReplayRoute?: GrokNativeReplayRoute;
   onServerToolUsage?: (usage: ServerToolUsage) => void;
 };
@@ -201,11 +211,17 @@ export function managedFailure(
     code = "ABORTED";
   else if (sourceCodes.has("LCX_RESPONSES_UNSUPPORTED_OPTION"))
     code = "UNSUPPORTED_OPTION";
+  else if (sourceCodes.has("LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT"))
+    code = "UNSUPPORTED_CONTENT";
+  else if (sourceCodes.has("LCX_GROK_NATIVE_PROTOCOL_ERROR"))
+    code = "GROK_NATIVE_PROTOCOL_ERROR";
   else if (
     sourceCodes.has("LCX_RESPONSES_ROUTE_UNAVAILABLE") ||
     sourceCodes.has("LCX_RESPONSES_MODEL_UNAVAILABLE")
   )
     code = "NO_ADAPTER";
+  else if (sourceCodes.has("LCX_INSUFFICIENT_QUOTA"))
+    code = "INSUFFICIENT_QUOTA";
   else if (
     facts.status === 401 ||
     facts.status === 403 ||
@@ -250,6 +266,7 @@ export function managedFailure(
   const messages = /** @type {Record<string, string>} */ {
     ABORTED: "Responses request was aborted",
     AUTH: "Responses request was rejected by authentication",
+    INSUFFICIENT_QUOTA: "服务商额度不足或未满足请求预留额度，请检查中转额度（并非 API 密钥无效） / Provider quota is insufficient for this request",
     UNSUPPORTED_OPTION: "LCX Responses does not support this request option",
     NO_ADAPTER: "LCX could not resolve the selected Responses route",
     RATE_LIMIT: "Responses provider rate limit was reached",
@@ -259,6 +276,8 @@ export function managedFailure(
       : "Responses provider rejected the request",
     CONTEXT_WINDOW_EXCEEDED:
       "Responses request exceeded the model context window",
+    UNSUPPORTED_CONTENT: "LCX cannot serialize a DSH content block for this Responses route",
+    GROK_NATIVE_PROTOCOL_ERROR: "Grok returned an unrecognized client tool call while native search was enabled",
     TIMEOUT: "Responses request timed out",
     TRANSPORT: "Responses transport failed",
     RESPONSES_ERROR: "Responses request failed",
@@ -678,6 +697,30 @@ function itemText(item: Pick<
   return "";
 }
 
+function itemAnnotations(item: WireItem): unknown[] {
+  if (item.type !== "message" || !Array.isArray(item.content)) return [];
+  return item.content.flatMap((part) =>
+    isObject(part) && Array.isArray(part.annotations) ? part.annotations : []);
+}
+
+function sanitizeGrokTerminalItem(item: WireItem, index: number): WireItem {
+  const normalized = normalizedTerminalItem(item, index);
+  if (normalized.type !== "message" || !Array.isArray(normalized.content)) return normalized;
+  return {
+    ...normalized,
+    content: normalized.content.map((part) => {
+      if (!isObject(part) || (part.type !== "output_text" && part.type !== "refusal")) return structuredClone(part);
+      const text = sanitizeGrokVisibleText(
+        String(part.text ?? part.refusal ?? ""),
+        Array.isArray(part.annotations) ? part.annotations : [],
+      );
+      return part.type === "output_text"
+        ? { ...structuredClone(part), text }
+        : { ...structuredClone(part), refusal: text };
+    }),
+  };
+}
+
 /** @param {UnknownRecord} item @param {number} index */
 function normalizedTerminalItem(item: WireItem, index: number): WireItem {
   if (item.type === "message")
@@ -785,42 +828,65 @@ async function* normalizedResponseEvents(
   meta: ResponseWireMeta = {},
   options: {
     serverToolTypes?: ReadonlySet<string>;
+    isServerToolItem?: (item: unknown) => boolean;
+    declaredToolNames?: ReadonlySet<string>;
     onServerToolUsage?: (usage: ServerToolUsage) => void;
   } = {},
 ): AsyncGenerator<UnknownRecord> {
   const open = new Map<number, { kind: string | undefined; item: WireItem; text: string }>();
-  const completed = new Set<string>();
-  const completedWireItems = new Map<number, unknown>();
-  const serverToolIds = new Map<string, Set<string>>();
-  const citations = new Map<string, string>();
-  const observeCitation = (candidate: unknown) => {
-    if (!isObject(candidate)) return;
-    try {
-      const url = new URL(String(candidate.url ?? ""));
-      if (url.protocol !== "http:" && url.protocol !== "https:") return;
-      const title = typeof candidate.title === "string"
-        ? candidate.title.replace(/[\r\n]+/gu, " ").trim()
-        : "";
-      if (!citations.has(url.href)) citations.set(url.href, title);
-    } catch {}
-  };
-  const observeCitations = (item: unknown) => {
-    if (!isObject(item)) return;
-    if (item.type === "message" && Array.isArray(item.content)) {
-      for (const part of item.content) {
-        if (!isObject(part) || part.type !== "output_text" || !Array.isArray(part.annotations))
-          continue;
-        for (const annotation of part.annotations)
-          if (isObject(annotation) && annotation.type === "url_citation")
-            observeCitation(annotation);
+  const grokTextProjection = new Map<number, { raw: string; emitted: string }>();
+  const hiddenPrefixTokens = ["sources:", "render_inline_citation", "{render_inline_citation", "render_inline_citation", "stateless_invoke", "[[", "<|eos|>"];
+  const safeGrokRawPrefix = (raw: string, final: boolean): string => {
+    if (final) return raw;
+    const lower = raw.toLowerCase();
+    let holdStart = raw.length;
+    const pendingSource = grokPendingSourcesStart(raw);
+    if (pendingSource !== undefined) holdStart = Math.min(holdStart, pendingSource);
+    for (const token of hiddenPrefixTokens) {
+      const complete = lower.lastIndexOf(token);
+      if (complete >= 0) {
+        const tail = raw.slice(complete);
+        if (sanitizeGrokVisibleText(tail).toLowerCase().includes(token.replace(/^\{/u, "")))
+          holdStart = Math.min(holdStart, complete);
+      }
+      const max = Math.min(token.length - 1, lower.length);
+      for (let size = max; size > 0; size -= 1) {
+        if (lower.endsWith(token.slice(0, size))) {
+          holdStart = Math.min(holdStart, raw.length - size);
+          break;
+        }
       }
     }
-    // Search candidates are not answer citations. Only output_text annotations qualify.
+    return raw.slice(0, holdStart);
   };
+  const grokProjectionDelta = (
+    index: number,
+    rawText: string,
+    final = false,
+    annotations: readonly unknown[] = [],
+  ): string => {
+    let state = grokTextProjection.get(index);
+    if (!state) { state = { raw: "", emitted: "" }; grokTextProjection.set(index, state); }
+    state.raw = rawText;
+    const target = sanitizeGrokVisibleText(safeGrokRawPrefix(rawText, final), annotations);
+    if (!target.startsWith(state.emitted)) return "";
+    const delta = target.slice(state.emitted.length);
+    state.emitted = target;
+    if (final) grokTextProjection.delete(index);
+    return delta;
+  };
+  const completed = new Set<string>();
+  const completedWireItems = new Map<number, unknown>();
+  const hiddenServerToolIndexes = new Set<number>();
+  const serverToolIds = new Map<string, Set<string>>();
+  const nativeServerSearchEchoCallIds = new Set<string>();
   const isServerToolItem = (value: unknown): value is WireItem =>
-    isObject(value) && options.serverToolTypes?.has(String(value.type ?? "")) === true;
+    isObject(value) && (options.serverToolTypes?.has(String(value.type ?? "")) === true ||
+      options.isServerToolItem?.(value) === true);
   const observeServerTool = (item: WireItem) => {
     const type = String(item.type);
+    if (type === "custom_tool_call" && typeof item.call_id === "string")
+      nativeServerSearchEchoCallIds.add(item.call_id);
     let ids = serverToolIds.get(type);
     if (!ids) {
       ids = new Set();
@@ -860,8 +926,16 @@ async function* normalizedResponseEvents(
       isServerToolItem(event.item)
     ) {
       observeServerTool(event.item);
+      if (event.type === "response.output_item.added") hiddenServerToolIndexes.add(index);
+      else hiddenServerToolIndexes.delete(index);
       continue;
     }
+    if (hiddenServerToolIndexes.has(index) &&
+        (event.type === "response.custom_tool_call_input.delta" ||
+         event.type === "response.custom_tool_call_input.done" ||
+         event.type === "response.function_call_arguments.delta" ||
+         event.type === "response.function_call_arguments.done"))
+      continue;
     // Grok may send many encrypted reasoning items with no visible summary.
     // Keep them in completedWireItems/nativeOutput, but do not open empty UI blocks.
     if (
@@ -871,9 +945,10 @@ async function* normalizedResponseEvents(
       !itemText(event.item as WireItem).trim() && !open.get(index)?.text.trim()
     ) continue;
     if (event.type === "response.output_item.added" && isObject(event.item)) {
-      const item = normalizedTerminalItem(event.item as WireItem, index);
-      open.set(index, { kind: itemKind(item), item, text: itemText(item) });
-      yield { ...event, item };
+      const rawItem = normalizedTerminalItem(event.item as WireItem, index);
+      const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
+      open.set(index, { kind: itemKind(item), item: rawItem, text: itemText(rawItem) });
+      yield { ...event, item: options.serverToolTypes ? addedShell(item, index) : item };
       continue;
     }
     if (event.type === "response.output_text.delta") {
@@ -895,7 +970,11 @@ async function* normalizedResponseEvents(
         record = next.value;
       }
       record.text = String(record.text ?? "") + String(event.delta ?? "");
-      yield event;
+      if (!options.serverToolTypes) yield event;
+      else {
+        const delta = grokProjectionDelta(index, record.text);
+        if (delta) yield { ...event, delta };
+      }
       continue;
     }
     if (
@@ -980,7 +1059,12 @@ async function* normalizedResponseEvents(
       continue;
     }
     if (event.type === "response.output_item.done" && isObject(event.item)) {
-      const item = normalizedTerminalItem(event.item as WireItem, index);
+      const rawItem = normalizedTerminalItem(event.item as WireItem, index);
+      const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
+      if (options.serverToolTypes && item.type === "message") {
+        const delta = grokProjectionDelta(index, itemText(rawItem), true, itemAnnotations(rawItem));
+        if (delta) yield { type: "response.output_text.delta", output_index: index, content_index: 0, item_id: item.id, delta };
+      }
       const identity = itemIdentity(item);
       if (identity) completed.add(identity);
       open.delete(index);
@@ -1001,10 +1085,20 @@ async function* normalizedResponseEvents(
             .sort(([left], [right]) => left - right)
             .map(([, item]) => item);
       const nativeOutput = terminalOutput.map((item) => structuredClone(item));
-      const nativeVisibleAdditions: unknown[] = [];
       for (const item of terminalOutput) {
-        observeCitations(item);
+        if (isServerToolItem(item) && isObject(item) && item.type === "custom_tool_call" &&
+            item.status !== "completed")
+          throw Object.assign(
+            new Error("Grok native custom search item did not complete on the server"),
+            { code: "LCX_GROK_NATIVE_PROTOCOL_ERROR" },
+          );
         if (isServerToolItem(item)) observeServerTool(item);
+        else if (options.serverToolTypes && isObject(item) && item.type === "custom_tool_call" &&
+                 typeof item.name === "string" && options.declaredToolNames?.has(item.name) !== true)
+          throw Object.assign(
+            new Error(`Grok returned undeclared client custom tool "${item.name}"`),
+            { code: "LCX_GROK_NATIVE_PROTOCOL_ERROR" },
+          );
       }
       const output = terminalOutput
         .filter((item) => !isServerToolItem(item))
@@ -1012,44 +1106,24 @@ async function* normalizedResponseEvents(
           item.type === "reasoning" && !itemText(item as WireItem).trim()))
         .map((item: unknown, terminalIndex: number) =>
           isObject(item)
-            ? normalizedTerminalItem(item as WireItem, terminalIndex)
+            ? (options.serverToolTypes
+                ? sanitizeGrokTerminalItem(item as WireItem, terminalIndex)
+                : normalizedTerminalItem(item as WireItem, terminalIndex))
             : item,
         );
-      if (options.serverToolTypes && citations.size > 0) {
-        const visibleText = output
-          .filter(isObject)
-          .map((item) => itemText(item as WireItem))
-          .join("\n");
-        const missing = [...citations].filter(([url]) => !visibleText.includes(url));
-        if (missing.length > 0) {
-          const suffix = missing
-            .map(([url, title]) => `- ${title ? `${title}: ` : ""}${url}`)
-            .join("\n");
-          const responseId = String(response.id ?? "native")
-            .replace(/[^A-Za-z0-9_-]/gu, "_")
-            .slice(0, 40);
-          const fallbackItem = {
-            type: "message",
-            id: `msg_lcx_sources_${responseId}`.slice(0, 64),
-            role: "assistant",
-            status: "completed",
-            content: [{
-              type: "output_text",
-              text: `\n\nSources:\n${suffix}`,
-              annotations: [],
-            }],
-          };
-          output.push(fallbackItem);
-          nativeVisibleAdditions.push(structuredClone(fallbackItem));
-        }
-      }
       if (
         event.type === "response.completed" &&
         response.status === "completed" &&
         options.serverToolTypes
       ) {
         meta.nativeOutput = nativeOutput;
-        meta.nativeVisibleAdditions = nativeVisibleAdditions;
+        meta.nativeServerSearchEchoCallIds = [...nativeServerSearchEchoCallIds];
+        const usage = isObject(response.usage) ? response.usage : {};
+        const details = isObject(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
+        meta.inputTokenScope = serverToolIds.size > 0 || nativeOutput.some(isServerToolItem)
+          || Number(usage.num_server_side_tools_used ?? 0) > 0
+          || Number(details.web_search_calls ?? 0) > 0 || Number(details.x_search_calls ?? 0) > 0
+          ? "aggregate" : "request";
       }
       const used = new Set();
       for (const [streamIndex, record] of open) {
@@ -1072,6 +1146,10 @@ async function* normalizedResponseEvents(
             ? output[terminalIndex] as WireItem
             : normalizedTerminalItem(record.item, streamIndex);
         if (terminalIndex >= 0) used.add(terminalIndex);
+        if (options.serverToolTypes && item.type === "message") {
+          const delta = grokProjectionDelta(streamIndex, itemText(item), true, itemAnnotations(item));
+          if (delta) yield { type: "response.output_text.delta", output_index: streamIndex, content_index: 0, item_id: item.id, delta };
+        }
         yield {
           type: "response.output_item.done",
           output_index: streamIndex,
@@ -1081,6 +1159,7 @@ async function* normalizedResponseEvents(
         if (identity) completed.add(identity);
       }
       open.clear();
+      grokTextProjection.clear();
       for (const [terminalIndex, candidate] of output.entries()) {
         if (
           !isObject(candidate) ||
@@ -1186,15 +1265,19 @@ function isManagedFailure(value: unknown): value is ManagedFailure {
 
 function dshUsage(usage: unknown) {
   const value = /** @type {UnknownRecord} */ isObject(usage) ? usage : {};
+  const inputTokens = Number(value.input ?? 0);
+  const outputTokens = Number(value.output ?? 0);
+  const cacheReadTokens = Number(value.cacheRead ?? 0);
+  const cacheWriteTokens = Number(value.cacheWrite ?? 0);
+  const reportedTotal = Number(value.totalTokens);
   return {
-    inputTokens: Number(value.input ?? 0),
-    outputTokens: Number(value.output ?? 0),
-    ...(Number(value.cacheRead ?? 0) > 0
-      ? { cacheReadTokens: Number(value.cacheRead) }
-      : {}),
-    ...(Number(value.cacheWrite ?? 0) > 0
-      ? { cacheWriteTokens: Number(value.cacheWrite) }
-      : {}),
+    inputTokens,
+    outputTokens,
+    totalTokens: Number.isSafeInteger(reportedTotal) && reportedTotal >= 0
+      ? reportedTotal
+      : inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
     ...(Number(value.reasoning ?? 0) > 0
       ? { reasoningTokens: Number(value.reasoning) }
       : {}),
@@ -1214,8 +1297,8 @@ function rawArguments(value: unknown) {
 function replayState(
   message: UnknownRecord,
   nativeOutput?: readonly unknown[],
-  nativeVisibleAdditions?: readonly unknown[],
   nativeReplayRoute?: GrokNativeReplayRoute,
+  nativeServerSearchEchoCallIds: readonly string[] = [],
 ) {
   if (!isObject(message)) return undefined;
   const content: UnknownRecord[] = Array.isArray(message.content)
@@ -1229,7 +1312,7 @@ function replayState(
   const grokNative = createGrokNativeReplayEnvelope(
     nativeOutput,
     nativeReplayRoute,
-    nativeVisibleAdditions,
+    nativeServerSearchEchoCallIds,
   );
   return {
     response: {
@@ -1422,13 +1505,16 @@ async function* toDshChunks(
           : replayState(
               message,
               wireMeta?.nativeOutput,
-              wireMeta?.nativeVisibleAdditions,
               nativeReplayRoute,
+              wireMeta?.nativeServerSearchEchoCallIds,
             );
         yield {
           type: "finish",
           reason,
-          ...(replay === undefined ? {} : { replayState: replay }),
+          ...(replay === undefined && !nativeReplayRoute ? {} : { replayState: {
+            ...replay,
+            response: {...replay?.response,...(nativeReplayRoute ? {lcxUsage:{version:1,inputTokenScope:wireMeta?.inputTokenScope ?? "aggregate"}} : {})},
+          } }),
         };
         return;
       }
@@ -1467,6 +1553,7 @@ async function* toDshChunks(
             normalizedFailure.code === "ABORTED"
               ? { kind: "aborted", failure: normalizedFailure }
               : { kind: "error", failure: normalizedFailure },
+          ...(nativeReplayRoute ? {replayState:{response:{lcxUsage:{version:1,inputTokenScope:"aggregate"}}}} : {}),
         };
         return;
       }
@@ -1516,6 +1603,8 @@ export async function* streamResponsesRequest({
   maxAttempts = 1,
   maxResponseBytes,
   serverToolTypes,
+  isServerToolItem,
+  declaredToolNames,
   nativeReplayRoute,
   onServerToolUsage,
 }: StreamRequestOptions) {
@@ -1557,7 +1646,7 @@ export async function* streamResponsesRequest({
                 maxResponseBytes,
               }),
               wireMeta,
-              { serverToolTypes, onServerToolUsage },
+              { serverToolTypes, isServerToolItem, declaredToolNames, onServerToolUsage },
             ),
           ),
           output,

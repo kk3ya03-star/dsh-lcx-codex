@@ -180,7 +180,7 @@ test('done-item fallback captures ordered native replay when terminal output is 
   assert.deepEqual(restored, originalOutput)
 })
 
-test('empty reasoning, split output text, and source fallback remain replayable end to end', async t => {
+test('empty reasoning and split output text remain replayable without visible source fallback', async t => {
   const message = {
     type: 'message', id: 'msg_split_59', role: 'assistant', status: 'completed',
     content: [
@@ -202,7 +202,6 @@ test('empty reasoning, split output text, and source fallback remain replayable 
   const assistant = assistantFrom(first)
   assert.deepEqual(assistant.content.map(block => [block.type, block.text ?? block.name]), [
     ['text', 'Part A and B'], ['tool-call', 'workspace_read'],
-    ['text', '\n\nSources:\n- Source 7: https://example.com/source-7'],
   ])
   await collect(h.stream(options([prompt, JSON.parse(JSON.stringify(assistant)), toolResult()]), () => { throw new Error('DSH adapter must not run') }))
   const second = requests[1].input
@@ -211,7 +210,7 @@ test('empty reasoning, split output text, and source fallback remain replayable 
   assert.equal(second[start + originalOutput.length].type, 'function_call_output')
   assert.equal(second.some(item => item?.id?.startsWith('msg_lcx_sources_')), false)
   assert.deepEqual(assistant.source.replayState.grokNative.output, originalOutput)
-  assert.equal(assistant.source.replayState.grokNative.version, 2)
+  assert.equal(assistant.source.replayState.grokNative.version, 3)
 })
 
 async function capturedHistory(t) {
@@ -228,18 +227,9 @@ async function capturedHistory(t) {
   return [prompt, assistantFrom(chunks), toolResult()]
 }
 
-test('legacy v1 citation items migrate to display-only anchors on cold continuation', async t => {
+test('old Grok replay envelope versions are not restored', async t => {
   const history = await capturedHistory(t)
-  const assistant = history[1]
-  const envelope = assistant.source.replayState.grokNative
-  const originalOutput = structuredClone(envelope.output)
-  const sourceText = assistant.content.find(block => block.type === 'text' && block.text.includes('Sources:')).text
-  envelope.version = 1
-  delete envelope.visibleAdditions
-  envelope.output.push({
-    type: 'message', id: 'msg_lcx_sources_resp_native_first', role: 'assistant', status: 'completed',
-    content: [{ type: 'output_text', text: sourceText, annotations: [] }],
-  })
+  history[1].source.replayState.grokNative.version = 2
   let request
   globalThis.fetch.mock.mockImplementation(async (_url, init) => {
     request = JSON.parse(String(init.body))
@@ -248,12 +238,8 @@ test('legacy v1 citation items migrate to display-only anchors on cold continuat
   const h = grokHarness({ nativeWeb: true })
   const chunks = await collect(h.stream(options(JSON.parse(JSON.stringify(history))), () => { throw new Error('Unexpected fallback') }))
   assert.equal(chunks.at(-1).reason.kind, 'stop')
-  const start = request.input.findIndex(item => item.id === reasoningItem.id)
-  assert.ok(start >= 0)
-  assert.deepEqual(request.input.slice(start, start + originalOutput.length), originalOutput)
-  assert.equal(request.input[start + originalOutput.length].type, 'function_call_output')
-  assert.equal(request.input.some(item => item.id?.startsWith('msg_lcx_sources_')), false)
-  assert.equal(assistant.content.find(block => block.type === 'text' && block.text.includes('Sources:')).text, sourceText)
+  assert.equal(request.input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(request.input.filter(item => item?.type === 'function_call' && item.call_id === clientCall.call_id).length, 1)
 })
 
 for (const framed of [false, true])
@@ -278,7 +264,7 @@ test(`opaque X without client call preserves every original item after cold reop
   const chunks = await collect(h.stream(options([prompt]), () => { throw new Error('Unexpected fallback') }))
   const finish = chunks.find(chunk => chunk.type === 'finish')
   assert.equal(finish.reason.kind, 'stop')
-  assert.equal(finish.replayState.grokNative.version, 2)
+  assert.equal(finish.replayState.grokNative.version, 3)
   assert.deepEqual(finish.replayState.grokNative.output, originalOutput)
   const assistant = {
     role: 'assistant', source: { kind: 'model', provider, model, replayState: finish.replayState },
@@ -321,7 +307,6 @@ for (const [name, corrupt] of [
   ['duplicate function call', envelope => envelope.output.push(structuredClone(clientCall))],
   ['server-only output', envelope => { envelope.output = [serverItem('web_search_call', 12)] }],
   ['invalid native item', envelope => envelope.output.push({ type: 'function_call', id: 'broken' })],
-  ['corrupt visible addition hash', envelope => { envelope.visibleAdditions[0].textSha256 = '0'.repeat(64) }],
   ['unknown envelope version', envelope => { envelope.version = 99 }],
 ]) {
   test(`corrupt replay guard rejects ${name} without duplicate execution`, async t => {

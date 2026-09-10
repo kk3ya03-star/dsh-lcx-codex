@@ -23,9 +23,9 @@ type AttachmentServices = {
 import {
   convertResponsesMessages,
   convertResponsesTools,
-} from "@earendil-works/pi-ai/api/openai-responses-shared";
-import { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
-import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+  createGrammarToolInputProperties,
+  getBuiltinModels,
+} from "./pi-responses-runtime.js";
 import type {
   AssistantMessage as PiAssistantMessage,
   Context as PiContextValue,
@@ -208,7 +208,7 @@ function attachmentResolver(ctx: DshContext | undefined, options: ImageOptions) 
   return async (block: { attachment: ImageAttachmentRef }, signal?: AbortSignal) => {
     if (attachments === undefined)
       throw error(
-        "LCX requires the DSH 0.1.3 request-image attachment API",
+        "LCX requires the DSH request-image attachment API",
         "LCX_COMPACT_IMAGE_API_UNAVAILABLE",
       );
     const request = await attachments.store.readImageRequest(
@@ -295,6 +295,56 @@ function replayBlockType(type: unknown): ReplayBlock["type"] | undefined {
   return type === "text" || type === "reasoning" || type === "tool-call" ? type : undefined;
 }
 
+function replayTextPhase(signature: unknown): "commentary" | "final_answer" | undefined {
+  if (typeof signature !== "string" || !signature.startsWith("{")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(signature);
+    if (!isObject(parsed) || parsed.v !== 1 || typeof parsed.id !== "string") return undefined;
+    return parsed.phase === "commentary" || parsed.phase === "final_answer"
+      ? parsed.phase
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function restorePortableAssistantPhases(
+  input: readonly unknown[],
+  messages: readonly PiMessage[],
+  target: { provider: string; id: string; api: string },
+): unknown[] {
+  const slots: Array<{ text: string; phase?: "commentary" | "final_answer" }> = [];
+  for (const message of messages) {
+    if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted")
+      continue;
+    const sameProviderAndApi = message.provider === target.provider && message.api === target.api;
+    const sameModel = sameProviderAndApi && message.model === target.id;
+    for (const block of message.content) {
+      if (block.type === "text") {
+        const phase = sameProviderAndApi && !sameModel
+          ? replayTextPhase(block.textSignature)
+          : undefined;
+        slots.push({ text: block.text, ...(phase === undefined ? {} : { phase }) });
+      } else if (block.type === "thinking" && !sameModel && !block.redacted && block.thinking.trim()) {
+        slots.push({ text: block.thinking });
+      }
+    }
+  }
+  const output = structuredClone(input) as unknown[];
+  let slotIndex = 0;
+  for (const [index, candidate] of output.entries()) {
+    if (!isObject(candidate) || candidate.type !== "message" || candidate.role !== "assistant" ||
+        !Array.isArray(candidate.content)) continue;
+    const slot = slots[slotIndex++];
+    if (slot?.phase === undefined) continue;
+    const text = candidate.content
+      .map((part) => isObject(part) && part.type === "output_text" ? String(part.text ?? "") : "")
+      .join("");
+    if (text === slot.text) output[index] = { ...candidate, phase: slot.phase };
+  }
+  return output;
+}
+
 export function readDshPiReplayState(value: unknown): { response: ReplayResponse; blocks: ReplayBlock[] } {
   if (!isObject(value)) throw invalidReplay("expected a replay envelope");
   const responseValue = value.response;
@@ -376,6 +426,7 @@ async function piToolContent(
   for (const block of blocks) {
     if (block.type === "text") content.push({ type: "text", text: block.text });
     else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap)));
+    else if (block.type === "reasoning") continue;
     else if (block.type === "tool-result") content.push(...(await piToolContent(block.content, ctx, options, imageMap)));
     else throw unsupportedContent(block.type);
   }
@@ -408,15 +459,32 @@ function projectFiles(
   }));
 }
 
+function flattenMessageText(message: Message): string {
+  return message.content
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("");
+}
+
 async function dshToPiMessages(messages: readonly Message[], ctx: DshContext | undefined, options: ImageOptions & { onReplayDegrade?: unknown }, imageMap: Map<string, ImageAttachmentRef>): Promise<PiMessage[]> {
   const result: PiMessage[] = [];
+  const toolNames = new Map<string, string>();
   for (const message of messages) {
-    if (message.role === "system") continue;
-    if (message.role === "assistant") { result.push(toPiAssistant(message, options.onReplayDegrade)); continue; }
+    if (message.role === "system") {
+      result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
+      continue;
+    }
+    if (message.role === "assistant") {
+      const assistant = toPiAssistant(message, options.onReplayDegrade);
+      for (const block of assistant.content)
+        if (block.type === "toolCall") toolNames.set(String(block.id), block.name);
+      result.push(assistant);
+      continue;
+    }
     const ordinary: ContentBlock[] = [];
     const toolResults: ContentBlock[] = [];
     for (const block of message.content) {
       if (block.type === "text" || block.type === "image") ordinary.push(block);
+      else if (block.type === "reasoning") continue;
       else if (block.type === "tool-result") toolResults.push(block);
       else throw unsupportedContent(block.type);
     }
@@ -430,7 +498,8 @@ async function dshToPiMessages(messages: readonly Message[], ctx: DshContext | u
     }
     for (const block of toolResults) {
       if (block.type !== "tool-result") continue;
-      result.push({ role: "toolResult", toolCallId: String(block.toolCallId), toolName: "unknown", content: await piToolContent(block.content, ctx, options, imageMap), addedToolNames: [], isError: block.isError === true, timestamp: 0 });
+      const toolCallId = String(block.toolCallId);
+      result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(block.content, ctx, options, imageMap), addedToolNames: [], isError: block.isError === true, timestamp: 0 });
     }
   }
   return result;
@@ -500,7 +569,8 @@ export async function serializeDshMessages(messages: readonly Message[], ctx: Ds
     tools: context.tools,
   };
   const piModel = model as PiModel<"openai-responses">;
-  const input = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, deferredTools: new Map<string, PiTool>(), deferredToolsMode, toolOptions });
+  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, deferredTools: new Map<string, PiTool>(), deferredToolsMode, toolOptions });
+  const input = restorePortableAssistantPhases(convertedInput, context.messages, { provider: model.provider, id: model.id, api: model.api });
   const tools = options.tools === undefined ? undefined : convertResponsesTools([...immediateTools.values()], toolOptions);
   return { input, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
 }

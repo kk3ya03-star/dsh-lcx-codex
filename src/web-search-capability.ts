@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ALPHA_PROBE_VERSION } from "./web-search-alpha.js";
+import { ALPHA_ACTIONS, ALPHA_PROBE_VERSION, ALPHA_SEARCH_PARAMETERS } from "./web-search-alpha.js";
 import { JsonStore } from "./json-store.js";
 
 const VERSION = 1;
@@ -59,6 +59,36 @@ export function alphaCapabilityFingerprint(config: Record<string, unknown>): str
 export function alphaCapabilityUsable(record: unknown): boolean {
   return validRecord(record) && record.probeVersion === ALPHA_PROBE_VERSION &&
     (record.classification === "native" || record.classification === "command-capable");
+}
+
+export function alphaActionState(record: unknown, action: unknown): ActionState | undefined {
+  if (!validRecord(record) || typeof action !== "string" || !action) return undefined;
+  const state = record.actions[action];
+  return isActionState(state) ? state : undefined;
+}
+
+export function assertAlphaActionAllowed(record: unknown, action: unknown): void {
+  if (alphaActionState(record, action) === "unsupported") {
+    throw Object.assign(
+      new Error(`Alpha action is unsupported for this verified route: ${String(action)}`),
+      { code: "LCX_ALPHA_ACTION_UNSUPPORTED" },
+    );
+  }
+}
+
+export function alphaAdvertisedActions(record: unknown): string[] {
+  if (!validRecord(record)) return [...ALPHA_ACTIONS];
+  return ALPHA_ACTIONS.filter((action) => record.actions[action] !== "unsupported");
+}
+
+export function alphaSearchParametersFor(record: unknown) {
+  return {
+    ...ALPHA_SEARCH_PARAMETERS,
+    properties: {
+      ...ALPHA_SEARCH_PARAMETERS.properties,
+      action: { type: "string" as const, enum: alphaAdvertisedActions(record) },
+    },
+  };
 }
 
 export class AlphaCapabilityStore {

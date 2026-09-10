@@ -1,54 +1,19 @@
-version: 0.4.3-pre.4
-state: RELEASED_PRERELEASE
+version: 0.4.3-pre.13
+state: REVIEW_ONLY
 approval:
-  product_owner: explicit_direct_release_instruction
-  date: 2026-09-08
-  reference: Product Owner approved publishing pre.4 after the two display fixes were merged and tested.
-  scope: prerelease_display_fixes_and_public_maintenance
-source:
-  repository: kk3ya03-star/dsh-lcx-codex
-  runtime_commit: c1f04c3ebde2fe23358a022983a5af509a21b5b6
-  sources_fix_pr: 15
-  empty_reasoning_fix_pr: 16
-  policy: Runtime is unchanged from the tested public source; release preparation changes metadata and documentation only.
+  product_owner: PENDING_CONTROLLER_APPROVAL
+readiness:
+  state: READY_FOR_PRODUCT_OWNER_APPROVAL
+  policy: Technical readiness is not release authorization.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.4.3-pre.4
+  tag: v0.4.3-pre.13
   npm_dist_tag: prelatest
   stable_latest_must_remain: 0.4.2
-verification:
-  regression_tests: 243/243 PASS
-  strict_types: PASS
-  schemas: 4/4 PASS
-  generated_output: PASS
-  package: PASS
-  live_scope: Prior pre.3 live coverage is inherited; the two new display fixes are verified by streamed, terminal-only and cold-replay regression fixtures.
-previous_release:
-  version: 0.4.3-pre.3
-  tag: v0.4.3-pre.3
-  public_commit: a11f63fb836797985737784d6687ba17aaa3ea4e
-  policy: Immutable tag and published npm version remain unchanged.
 runtime_basis:
-  dsh: 0.1.3-alpha.2
+  dsh: 0.1.5-alpha.2
   host_pi: 0.85.1
   plugin_pi: 0.85.1
-  qualification: bounded_live_tests_on_Windows_with_documented_host_loading_correction
-  remaining: xAI OAuth unsupported; provider-dependent citations; Alpha refs/screenshot delivery; proxy/NO_PROXY; broader concurrency/cancellation/background continuable subagents
-  legacy: 0.4.2 plugin config and v3/v4 checkpoints unsupported; current v5 retained
 publication:
-  state: RELEASED
-  policy: Publish a new prerelease only; never republish an existing version or alter stable latest.
-
-post_release_verification:
-  public_commit: 62510064dd860162964a9110adc7fa5cf32d6339
-  git_tag_target: 62510064dd860162964a9110adc7fa5cf32d6339
-  github_prerelease: true
-  npm_version: 0.4.3-pre.4
-  npm_prelatest: 0.4.3-pre.4
-  npm_latest: 0.4.2
-  npm_integrity: sha512-lEA/gG0fxKDtn7Jg8rldFFpTebEnKPdMjIgKTUkn0nFwbc12hZfNbuWTAAg9vU85sy9IIPMtRDCG2blgyFAJ1Q==
-  matches_checked_artifact: true
-  published_fix_modules_match: true
-  publish_workflow: 34276794741
-  release_branch: removed
+  state: BLOCKED

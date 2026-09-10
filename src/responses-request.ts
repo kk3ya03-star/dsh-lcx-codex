@@ -1,6 +1,6 @@
 // @ts-check
 
-import { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
+import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
 import { responsesTools } from "./dsh-responses.js";
 
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;

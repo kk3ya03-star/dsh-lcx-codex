@@ -1,4 +1,4 @@
-type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener">;
+type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener" | "removeEventListener">;
 type RetryOptions = {
     maxAttempts?: number;
     maxResponseBytes?: number;

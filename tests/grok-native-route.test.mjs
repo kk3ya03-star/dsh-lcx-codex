@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { grokVisibleFunctionTools, grokWireTools } from '../lib/grok-native-search.js'
-import { resolveGrokResponsesRouteConfig } from '../lib/route.js'
+import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
 import { functionTools, xaiProfile } from './grok-fixture.mjs'
 
 const policy = {
@@ -131,4 +131,22 @@ test('non-Grok, non-Responses, and incomplete selected profiles do not activate 
   assert.equal(resolve({ ...xaiProfile, apiKeyEnv: '' }), undefined)
   assert.equal(resolve({ api: 'openai-responses', apiKeyEnv: 'KEY' }), undefined)
   assert.equal(resolveGrokResponsesRouteConfig(routeContext({}), selected, policy), undefined)
+})
+
+test('alpha.2 configurable-provider diagnostics fail closed for GPT and Grok routes', () => {
+  const profiles = { relay: { ...xaiProfile, models: [{ id: 'grokCustom' }, { id: 'gpt-custom' }] } }
+  const ctx = {
+    settings: { get: () => ({ providers: profiles }) },
+    llm: { listConfigurableProviders: () => [{
+      provider: 'relay', displayName: 'Relay', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'relay'],
+      error: 'catalog entry is unusable',
+    }] },
+  }
+  assert.equal(resolveGrokResponsesRouteConfig(ctx, { provider: 'relay', model: 'grokCustom' }, policy), undefined)
+  assert.equal(resolveResponsesRouteConfig(ctx, { provider: 'relay', model: 'gpt-custom' }, policy), undefined)
+  ctx.llm.listConfigurableProviders = () => [{ provider: 'relay', displayName: 'Relay', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'relay'] }]
+  assert.ok(resolveGrokResponsesRouteConfig(ctx, { provider: 'relay', model: 'grokCustom' }, policy))
+  assert.ok(resolveResponsesRouteConfig(ctx, { provider: 'relay', model: 'gpt-custom' }, policy))
+  ctx.llm.listConfigurableProviders = () => { throw new Error('directory unavailable') }
+  assert.equal(resolveResponsesRouteConfig(ctx, { provider: 'relay', model: 'gpt-custom' }, policy), undefined)
 })
