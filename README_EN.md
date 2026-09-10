@@ -7,7 +7,7 @@
 **GPT Responses lifecycle capabilities plus native Web / X Search for Grok in DeepSeek Harness.**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.3--alpha.2-16803c)](#installation)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5--alpha.2-16803c)](#installation-and-compatibility)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 [简体中文](README.md) · **English** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
@@ -18,163 +18,87 @@ LCX Codex is a community plugin for [DeepSeek Harness](https://github.com/deepse
 
 Models, endpoints, API keys / credentials, sessions, and tools remain DSH-owned. GPT and Grok feature switches are independent. Grok native search currently supports API-key / API-gateway routes; xAI OAuth / SuperGrok login is outside this release.
 
-## Installation
+## Installation and Compatibility
 
-This page documents **`0.4.3-pre.4`**, targeting **DSH `0.1.3-alpha.2`**. Stable remains `0.4.2`; users on DSH `0.1.1-rc.2` should use the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md).
+This page describes **`dsh-lcx-codex@0.4.3-pre.13`**, targeting only **DSH `0.1.5-alpha.2` / Pi `0.85.1`**. Node.js requires `^22.19.0 || >=24.0.0`. Stable remains `0.4.2`; see the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md) for older installations.
 
-Before installing, make sure DSH Web starts correctly and that the GPT Responses or Grok Responses API route you intend to use is configured in DSH. Node.js requires `^22.19.0 || >=24.0.0`. On Windows, see [Troubleshooting](#troubleshooting) if DSH fails while loading `fs-ext`.
+First confirm that official DSH `0.1.5-alpha.2` Web starts and configure your GPT Responses or Grok Responses route and credentials in DSH. Once this candidate is published, install it with:
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.4
+dsh plugin --profile web add dsh-lcx-codex@0.4.3-pre.13
 dsh web
 ```
 
-For later prerelease updates, use `dsh plugin --profile web add dsh-lcx-codex@prelatest`. Installing without a version or dist-tag still selects stable, **not this prerelease**.
+For subsequent prerelease updates, use `dsh plugin --profile web add dsh-lcx-codex@prelatest`. Omitting a version or tag selects stable; during release preparation, `prelatest` may still resolve to the previous prerelease.
 
-**Upgrading from `0.4.2`:** old plugin configuration and v3/v4 compaction checkpoints are unsupported. Reconfigure the plugin and start a new session. Current v5 GPT checkpoints remain restart-safe.
+Clean-profile installation was validated on official, unmodified DSH `0.1.5-alpha.2`. The old Windows `fs-ext` workaround and manual approval of extra build scripts are not required. If an older DSH installation was patched, use clean target-version files instead of carrying those patches forward.
+
+This version supports the target DSH's Session V3 only. It does not migrate older DSH sessions, plugin settings, or old checkpoint/replay formats. Back up old settings and sessions, retain history for offline reference, and use a fresh session directory. Reopening a persisted session of the supported version and restoring its current v5 checkpoint are supported.
 
 ## Enable the Plugin
 
-Open DSH Web plugin settings, expand **Responses / Codex capabilities**, and enable only what you need:
+In DSH Web plugin settings, open **Responses / Codex capabilities**, enable the features you need, and save:
 
-| Switch | Use it when |
+| Switch | Purpose |
 | --- | --- |
-| Enable LCX | You want GPT Responses lifecycle ownership, Native V2 compaction, or GPT search features. |
-| GPT Hosted Search | The active model is GPT and needs ordinary web search. |
-| Advanced Hosted tool | GPT needs image search, domain filters, location, or other Hosted controls. |
-| Alpha | GPT needs stateful `open / find / click / screenshot` web actions; experimental. |
-| Grok native Web Search | The active model is Grok and should use xAI server-side web search. |
-| Grok native X Search | The active model is Grok and should search X directly. |
+| Enable LCX | GPT Responses lifecycle, Native V2 compaction and GPT search. |
+| GPT Hosted Search | Ordinary GPT web queries through the single `web_search` entrypoint. |
+| Advanced Hosted tool | Image search, domain/location filters and other GPT search controls. |
+| Alpha | Experimental upstream web actions; continuation remains limited, as described below. |
+| Grok native Web Search | xAI server-side web search. |
+| Grok native X Search | xAI server-side X search. |
+| Search media previews | Preview available image/video links in answers; presentation only. |
 
-**All six switches default off.** The four GPT features are governed by the GPT LCX switch; the two Grok switches are independent and do not require GPT lifecycle ownership. Model, reasoning level, image capability, endpoint, and credential remain configured in DSH.
+All switches default off. GPT capabilities depend on Enable LCX; Grok Web/X and media previews are independent. DSH still owns model, reasoning level, endpoint, credentials and image-input capability.
 
-Model switching requires no plugin restart:
+GPT uses its enabled LCX features. When Grok native search is enabled, the corresponding request omits DSH `web_search` but preserves `web_fetch`, `read` and other local/MCP tools. Other models stay on the native DSH path. Switching models does not require a plugin restart.
 
-- GPT → only the enabled GPT / LCX capabilities apply;
-- Grok → only the enabled native Web / X Search capabilities apply; when either Grok search is enabled, DSH `web_search` is not advertised on that request, while `web_fetch` and unrelated DSH/MCP tools remain available;
-- Claude, Gemini, DeepSeek, and other models → native DSH conversation, search, tool, and compaction behavior remains in control.
+## Search and Media
 
-## Web and Image Search
+**GPT Hosted Search** handles ordinary queries; use `websearch_gpt_advanced` for images or additional controls. For example: “Find a Golden Gate Bridge photo, display one and link to its source.” This searches existing images; it neither generates an image nor proves the model has read its pixels.
 
-### GPT Web Search
+**Grok native search** uses xAI Responses server-side `web_search` / `x_search` and can continue through local tools. API-key/API-gateway routes are supported; xAI OAuth / SuperGrok login is not. Normal links in model prose remain visible. LCX no longer appends synthetic Sources lists and filters known upstream renderer markers. Results depend on route capabilities.
 
-GPT keeps DSH's single ordinary `web_search` tool surface. With **GPT Hosted Search** enabled, LCX executes Hosted Search through the active GPT Responses route. Enable `websearch_gpt_advanced` only for controls such as domains, location, search context, or images.
+**Search media previews** prefer structured search-image metadata, then conservatively recognize direct media links in answers. Images have thumbnails and an enlarged view; direct videos use the native player. Ordinary pages remain source links. Failed media leaves the original prose and links intact. This setting does not alter model requests, prompts, tool contents, history, cache identity, usage or compaction, and adds no model/Alpha calls. Displaying media can still contact its origin.
 
-### Grok Native Web / X Search
+**Alpha** acts on upstream search-service content, not your local browser. Its interface offers `search / open / find / click / screenshot`, gated by route capability probes. Search and reference-collision protection are validated, but warm/cold opaque-reference `open/find` continuation remains unresolved; a complete `click` chain is not promised. Displayable screenshot delivery is also unverified. Unavailable or conflicting references fail closed, without guessed references or URL substitution. Ordinary Hosted and Grok search do not require Alpha.
 
-Grok receives xAI Responses server-side tools directly rather than function wrappers:
+## Long Conversations, Usage and Cache
 
-```text
-{ type: "web_search" }
-{ type: "x_search" }
-```
+With LCX enabled for GPT, ordinary requests, Native V2 remote compaction and compatible replay share one request path. DSH retains persistence, tool execution, compaction-range and transaction ownership. Compatible GPT routes normally prefer remote compaction at 90% context usage and permit emergency tool-result pruning at 95%; `/compact` is also available. Eligibility and upstream support still apply. Grok uses DSH's own compaction.
 
-When either native Grok search is enabled, DSH `web_search` is removed from that Grok request to avoid duplicate search semantics. `web_fetch`, `read`, and unrelated DSH/MCP function tools remain available. A native search can therefore flow into a local tool and continue in the same agentic workflow. Provider-native search state is replayed as xAI state, never as fake DSH local tool calls.
+Current v5 checkpoints are validated against session, model and route. Incompatible contexts use portable history without cross-session opaque-state reuse. Some recoverable first-checkpoint failures can fall back to DSH basic compaction; not every failure can. Reopening the same saved DSH session is distinct from Codex process-level rollout/restart-resume.
 
-This release supports **API-key / API-gateway** routes. xAI OAuth / SuperGrok / X Premium subscription login is not supported. Source URLs are preserved when available, but exact citation rendering can still depend on the compatible gateway's response format.
+GPT parents and children may share parent prompt-cache identity while retaining separate histories. Each Grok session has its own cache identity and replay state. Supported routes follow Pi `0.85.1`: explicit-mode long retention is `30m`; other routes supporting long retention can use `24h`; `none` omits the cache key. Cache hits are upstream decisions, and tool/history changes may rebuild the prefix.
 
-### Find and Display Images with GPT
+GPT auxiliary search usage is recorded separately from the main call and supplements UI totals without entering model text or main-call context pressure. Grok billing counters preserve provider totals. Upstream separation of aggregate billing and context occupancy remains limited; not every conservative compaction decision is eliminated.
 
-With the advanced Hosted tool enabled, ask naturally, for example:
+## Troubleshooting and Known Limits
 
-> Find a photo of the Golden Gate Bridge, display one result inline, and include the source page.
+- Install and start with the same `web` profile, and save the relevant switches. Working conversation alone does not establish Native V2, Hosted, Alpha or Grok search capability.
+- Reload open browser pages after host-profile plugin enable/disable changes. DSH's existing boot graph does not unload a mounted browser plugin solely because host inventory changes. LCX preview OFF and cleanup when its actual client disposer runs have been validated.
+- This npm package neither includes nor installs the standalone DSH pending-inbox patch, and does not claim to fix that issue in unmodified DSH Core.
+- Dynamic-tool cache invalidation, Grok aggregate billing/context pressure, and upstream media/usage UI compatibility remain tracked limits. DSH is an alpha runtime; compatibility with other DSH versions is not claimed.
 
-You do **not** need to write JSON arguments. The model selects the image-search parameters. These are existing web images, not image generation, and display still depends on the source URL being reachable.
+## Validation and Development
 
-### Alpha Web Actions
+Accepted pre.13 evidence covers **370/370 plugin tests, strict host/client types, 4/4 schemas and 51/51 reproducible generated files**, plus exact alpha.2 clean-profile installation and bounded GPT/Grok/search/compaction/reopen/subagent/cancellation and browser-media scenarios. It does not establish the unresolved capabilities above or exhaustive provider/gateway coverage.
 
-`websearch_alpha` supports `search / open / find / click / screenshot` for stateful GPT web reading. It acts on upstream search-service content, not your local browser or DSH UI.
-
-Alpha appears only after a matching capability probe. References may still fail intermittently, and screenshot delivery as a displayable image is not verified. Ordinary GPT search/image search and Grok native search do not require Alpha.
-
-## Long Conversations and Compaction
-
-With LCX enabled, the plugin sends DSH's compaction request to the upstream GPT route for **Native V2 remote compaction**, then feeds the result back into the current session. DSH still owns persistence, tool execution, and the compaction transaction.
-
-| Context usage | Behavior |
-| --- | --- |
-| Below `90%` | Continue normally without early tool-result pruning. |
-| `90%` to below `95%` | Prefer remote native compaction. |
-| At least `95%` | Allow DSH emergency tool-result pruning, then follow its compaction workflow. |
-
-Use `/compact` for manual compaction. These thresholds are fixed policy, not additional settings. Compaction requires an eligible history range and upstream support.
-
-You can continue after compaction, restart the session, or switch GPT models. For incompatible model or route configurations, LCX uses portable history instead of forcing native-state reuse. Some recoverable failures while creating the first checkpoint can fall back to DSH basic compaction; not every failure qualifies.
-
-## Caching
-
-Caching is implemented by the upstream provider; the plugin preserves provider-compatible cache/session identity.
-
-- **GPT:** keeps LCX's existing product policy. Foreground sessions and their subagents may share the parent's prompt-cache identity to reuse common request prefixes; their actual DSH Sessions, tools, and private history remain separate.
-- **Grok:** follows native DSH/Pi semantics. Each foreground or subagent uses its own DSH Session ID for prompt-cache/session-affinity identity, and sibling subagents cannot restore each other's opaque replay state.
-
-Pi `0.85.1` explicit cache mode supports a `30m` long-retention option. With `cacheRetention=none`, no prompt-cache key is sent. Compaction, model changes, or tool-schema changes may require a new cache prefix.
-
-## Troubleshooting
-
-**DSH fails to start on Windows with an `fs-ext` error?**
-
-DSH `0.1.3-alpha.2` loads `fs-ext` during startup even though Windows does not use it. If its native module is unavailable, DSH exits before startup completes. This is **a DSH dependency-loading problem, not broken plugin compaction or a broken session lock**.
-
-Windows tests for this release used a minimal DSH correction: load `fs-ext` only on non-Windows platforms, retaining the existing Win32 session lock. The plugin does not patch DSH automatically, and unmodified Windows startup is not guaranteed. Do not disable session locking to work around this error.
-
-
-Exact procedure (only for `@deepseek-ai/dsh-session-persistence-jsonl@0.1.3-alpha.2`):
-
-1. Stop DSH. Locate the actual `@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js` in the error stack, not another Node installation or DSH copy. For global installations, look under the DSH dependency tree inside the directory reported by `npm root -g`; the absolute stack path is authoritative.
-2. Check the adjacent package `package.json` reports `0.1.3-alpha.2`. Copy `lib/index.js` to `lib/index.js.before-win32-fs-ext.bak`, preserving any existing backup.
-3. In a text editor, replace this single line:
-
-   ```js
-   import { flock } from "fs-ext";
-   ```
-
-   with:
-
-   ```js
-   const flock = process.platform === "win32"
-     ? undefined
-     : (await import("fs-ext")).flock;
-   ```
-
-   Change only this module-loading line; retain the Win32 session lock and all other code. Stop if the version or original line differs.
-4. Save, restart `dsh web`, create a session and send a message to verify startup and session writes. This does not fix unrelated startup errors.
-5. To undo, stop DSH and restore `index.js` from the backup. Reinstalling or upgrading DSH may overwrite this local change; do not apply an old-version workaround blindly to a newer version.
-
-This is an optional local DSH compatibility correction, not a patch performed by the plugin installer. The project's Windows validation used exactly this loading change.
-
-**Nothing changes after installation?**
-
-Check that installation and startup use the same `web` profile, then verify the switches for the active model were saved. The GPT master switch and Grok Web/X switches are independent.
-
-**Conversation works, but search or compaction fails?**
-
-A working Responses chat does not guarantee Native V2, Hosted/Alpha, or Grok native Web/X Search support. Verify the selected route exposes the required server-side capability; a gateway product name alone does not guarantee it.
-
-## Versions and Test Coverage
-
-This release targets DSH `0.1.3-alpha.2`, DSH host Pi `0.85.1`, and plugin Pi `0.85.1`. The plugin carries its own Pi dependency and does not replace DSH's copy.
-
-The two display fixes pass streamed, terminal-only and cold-replay regression tests. The live coverage below is inherited from pre.3; it is not a claim that every online scenario was rerun.
-
-Release gates pass **243/243 tests**, strict host/client typechecks, and all four DSH schemas. Live coverage includes GPT Hosted/Native V2 regressions, native DSH DeepSeek search regression, Grok 4.5/4.6 native Web/X Search, Web/X → local `read` → continuation, provider-native replay, full DSH restart continuation, and Grok parent/child cache/session isolation. The existing GPT parent-cache-sharing policy remains unchanged.
-
-Prerelease boundaries remain: Windows DSH `0.1.3-alpha.2` needs the documented minimal `fs-ext` loading correction; Alpha references/screenshot display, proxy/NO_PROXY, broader concurrency/cancellation, and background continuable-subagent matrices are not fully covered; Grok OAuth is unsupported; citation presentation can still depend on gateway formatting. See the [v0.4.3-pre.4 release notes](https://github.com/kk3ya03-star/dsh-lcx-codex/releases/tag/v0.4.3-pre.4).
-
-## Development and Feedback
+The plugin builds its required Responses helpers and model catalog from pinned Pi `0.85.1` public exports. It does not install the full Pi SDK dependency tree into the user's profile or replace DSH's Pi. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ```sh
-npm ci --ignore-scripts
-npm ci --prefix scripts/runtime-alpha2 --ignore-scripts
-node scripts/link-dsh-runtime.mjs scripts/runtime-alpha2
+npm ci --ignore-scripts --no-audit --no-fund
+npm ci --prefix scripts/runtime-dsh015 --ignore-scripts --no-audit --no-fund
+node scripts/link-dsh-runtime.mjs
+node --test scripts/release-policy.test.mjs scripts/link-dsh-runtime.test.mjs
 node scripts/check-generated.mjs
 npm run typecheck
 npm test
 npm run test:schema
 ```
 
-See [Architecture](ARCHITECTURE.md) for implementation details. When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), include plugin, DSH, and Node.js versions and reproduction steps. Do not upload API keys, full requests, or unredacted session logs.
+See [Architecture](ARCHITECTURE.md) and [Changelog](CHANGELOG.md). Include versions and reproduction steps when reporting issues; do not upload credentials, full requests or unredacted session logs.
 
 ## License
 
-[MIT](LICENSE). Independent community plugin, not affiliated with or endorsed by OpenAI, DeepSeek, Sub2API, or NewAPI. The DeepSeek name and mark belong to their respective rights holder.
+[MIT](LICENSE). Independent community plugin, not affiliated with or endorsed by OpenAI, DeepSeek, Sub2API or NewAPI.
