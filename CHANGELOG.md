@@ -1,11 +1,18 @@
 # Changelog
 
+## 0.4.3 - 2026-09-10
+
+- Stable zero-functional-change promotion of the fully verified `0.4.3-pre.13` product/runtime payload.
+- Keep the DSH install envelope at `>=0.1.5-rc.1 <0.1.6`, with exact verified baseline DSH `0.1.5-rc.1` and host/plugin Pi `0.85.1`.
+- Preserve GPT/Grok/search/compaction/media/usage/Alpha behavior byte-for-byte from the prerelease; only stable-version documentation and release tooling/metadata change.
+- Publish stable `0.4.3` on npm `latest`; retain `0.4.3-pre.13` as immutable prerelease history on `prelatest`.
+
 ## 0.4.3-pre.13 — release candidate
 
 - Verify DSH `0.1.5-rc.1` / Session V3 with host/build Pi `0.85.1`; public DSH peers now use the bounded `>=0.1.5-rc.1 <0.1.6` install range so later 0.1.5 RC/final releases can be assessed without an LCX release solely for version-string drift.
 - Bundle the required Pi Responses helpers from pinned public exports instead of installing the full SDK dependency tree into user profiles; retain third-party notices.
 - Add presentation-only search-media previews and auxiliary search-usage accounting; preserve model-request invariance, provider billing and native history. Harden media observer/disposer behavior and Alpha reference provenance/collision rejection.
-- Validate 370/370 plugin tests, strict host/client types, 4/4 schemas, 51 reproducible generated files, the 32-file package boundary and bounded exact-alpha.2 runtime/browser scenarios.
+- Validate 370/370 plugin tests, strict host/client types, 4/4 schemas, 51 reproducible generated files, the 32-file package boundary and bounded exact-rc.1 runtime/browser scenarios.
 - Keep unresolved Alpha opaque open/find and screenshot delivery, browser boot-graph reload requirements, dynamic-tool cache and Grok billing/context-pressure limits explicit. The standalone DSH pending-inbox patch is not included or installed.
 - Refresh public installation and architecture documentation. Intended prerelease channel: `prelatest`; stable `latest` remains `0.4.2`. This entry does not imply publication has occurred.
 

@@ -1,16 +1,21 @@
-version: 0.4.3-pre.13
-state: APPROVED_PRERELEASE
+version: 0.4.3
+state: APPROVED_STABLE
 approval:
-  product_owner: private-work-74-da659da6f762336f5c601d4d1934436258b0b452
+  product_owner: private-work-74-9cfa3ed6c7d73464985f6a8871ab68a2cfd199a4
 readiness:
   state: APPROVED
-  policy: Technical readiness is not release authorization.
+  policy: Stable promotion is authorized only after zero-functional-change verification.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.4.3-pre.13
-  npm_dist_tag: prelatest
-  stable_latest_must_remain: 0.4.2
+  tag: v0.4.3
+  npm_dist_tag: latest
+  previous_latest_must_be: 0.4.2
+promotion_basis:
+  source_version: 0.4.3-pre.13
+  source_tag: v0.4.3-pre.13
+  source_commit: d939f4adc095b447664619ba18684d7851da7fbe
+  zero_functional_change_required: true
 runtime_basis:
   dsh: 0.1.5-rc.1
   host_pi: 0.85.1

@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-      - name: Require an approved prerelease tag and preserve stable channel
+      - name: Require an approved release tag and registry precondition
         id: release
         shell: bash
         run: |
@@ -34,16 +34,19 @@ jobs:
           const manifest = readFileSync('PUBLIC-RELEASE-MANIFEST.yml', 'utf8');
           const { assertReleasePolicy } = await import('./scripts/release-policy.mjs');
           const field = assertReleasePolicy(pkg, manifest, process.env.GITHUB_REF);
-          const tagsResponse = await fetch('https://registry.npmjs.org/-/package/dsh-lcx-codex/dist-tags');
+          const prerelease = pkg.version.includes('-');
+          const distTag = prerelease ? 'prelatest' : 'latest';
+          const tagsResponse = await fetch('https://registry.npmjs.org/-/package/dsh-lcx-codex/dist-tags', {cache:'no-store'});
           assert(tagsResponse.ok, `Registry tags HTTP ${tagsResponse.status}`);
           const tags = await tagsResponse.json();
-          assert.equal(tags.latest, field('stable_latest_must_remain'));
-          const existing = await fetch(`https://registry.npmjs.org/dsh-lcx-codex/${pkg.version}`);
+          if (prerelease) assert.equal(tags.latest, field('stable_latest_must_remain'));
+          else assert.equal(tags.latest, field('previous_latest_must_be'));
+          const existing = await fetch(`https://registry.npmjs.org/dsh-lcx-codex/${pkg.version}`, {cache:'no-store'});
           assert(existing.ok || existing.status === 404, `Registry version HTTP ${existing.status}`);
           if (existing.ok) assert.equal((await existing.json()).version, pkg.version);
           appendFileSync(process.env.GITHUB_OUTPUT, `exists=${existing.ok}\n`);
-          appendFileSync(process.env.GITHUB_ENV, `RELEASE_VERSION=${pkg.version}\nSTABLE_VERSION=${tags.latest}\n`);
-          console.log(existing.ok ? 'Version already published: skip npm publish without changing dist-tags.' : 'Approved new prerelease; publish only to prelatest.');
+          appendFileSync(process.env.GITHUB_ENV, `RELEASE_VERSION=${pkg.version}\nRELEASE_DIST_TAG=${distTag}\nPREVIOUS_LATEST=${tags.latest}\n`);
+          console.log(existing.ok ? 'Version already exists; verify channel without republishing.' : `Approved new release; publish to ${distTag}.`);
           NODE
       - name: Install locked build and host dependencies
         if: steps.release.outputs.exists == 'false'
@@ -71,14 +74,24 @@ jobs:
         if: steps.release.outputs.exists == 'false'
         run: |
           npm install --global npm@11.17.0
-          npm publish "$RUNNER_TEMP/dsh-lcx-codex-$RELEASE_VERSION.tgz" --provenance --tag prelatest --ignore-scripts
-      - name: Verify stable tag remains unchanged
+          npm publish "$RUNNER_TEMP/dsh-lcx-codex-$RELEASE_VERSION.tgz" --provenance --tag "$RELEASE_DIST_TAG" --ignore-scripts
+      - name: Verify registry channel
+        shell: bash
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
-          const response = await fetch('https://registry.npmjs.org/-/package/dsh-lcx-codex/dist-tags');
-          assert(response.ok);
-          const tags = await response.json();
-          assert.equal(tags.latest, process.env.STABLE_VERSION);
-          console.log(JSON.stringify(tags));
+          const prerelease = process.env.RELEASE_VERSION.includes('-');
+          let last;
+          for (let attempt = 0; attempt < 20; attempt++) {
+            const response = await fetch('https://registry.npmjs.org/-/package/dsh-lcx-codex/dist-tags', {cache:'no-store'});
+            assert(response.ok);
+            last = await response.json();
+            const ok = prerelease
+              ? last.latest === process.env.PREVIOUS_LATEST && last.prelatest === process.env.RELEASE_VERSION
+              : last.latest === process.env.RELEASE_VERSION;
+            if (ok) { console.log(JSON.stringify(last)); process.exit(0); }
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+          console.error(JSON.stringify(last));
+          throw new Error('Registry dist-tag did not converge to the approved channel');
           NODE

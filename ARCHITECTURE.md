@@ -1,6 +1,6 @@
-# LCX architecture — 0.4.3-pre.13
+# LCX architecture — 0.4.3
 
-Current verified baseline: **DSH 0.1.5-rc.1, Session V3 and host/build Pi 0.85.1**. Public DSH peers use the bounded `>=0.1.5-rc.1 <0.1.6` install/assessment range; later in-range releases require compatibility evidence before being called verified. This is a model-scoped plugin, not a replacement DSH runtime. Older DSH/session/checkpoint formats are outside the current compatibility target. Historical architecture remains available in earlier Git versions; the summary below describes this candidate.
+Current verified baseline: **DSH 0.1.5-rc.1, Session V3 and host/build Pi 0.85.1**. Public DSH peers use the bounded `>=0.1.5-rc.1 <0.1.6` install/assessment range; later in-range releases require compatibility evidence before being called verified. This is a model-scoped plugin, not a replacement DSH runtime. Older DSH/session/checkpoint formats are outside the current compatibility target. Historical architecture remains available in earlier Git versions; the summary below describes this stable release.
 
 ## Ownership and package boundary
 
@@ -41,4 +41,4 @@ The standalone DSH pending-inbox patch is not part of this architecture or npm p
 
 ## Validation
 
-The accepted candidate has 370/370 plugin tests, strict host/client types, 4/4 schemas, 51/51 generated consistency and exact alpha.2 clean-profile installation evidence. Bounded real GPT/Grok and browser workflows complement these checks; unresolved capabilities above are excluded from success claims. See the [README](README_EN.md) for installation and reproducible build commands.
+The stable release preserves the 370/370 plugin tests, strict host/client types, 4/4 schemas, 51/51 generated consistency and exact DSH 0.1.5-rc.1 clean-profile installation evidence accepted for the preceding prerelease. Bounded real GPT/Grok and browser workflows complement these checks; unresolved capabilities above are excluded from success claims. See the [README](README_EN.md) for installation and reproducible build commands.
