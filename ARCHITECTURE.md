@@ -1,6 +1,6 @@
 # LCX architecture — 0.4.3-pre.13
 
-Current contract: **DSH 0.1.5-alpha.2, Session V3 and host/build Pi 0.85.1**. This is a model-scoped plugin, not a replacement DSH runtime. Older DSH/session/checkpoint formats are outside the current compatibility target. Historical architecture remains available in earlier Git versions; the summary below describes this candidate.
+Current verified baseline: **DSH 0.1.5-rc.1, Session V3 and host/build Pi 0.85.1**. Public DSH peers use the bounded `>=0.1.5-rc.1 <0.1.6` install/assessment range; later in-range releases require compatibility evidence before being called verified. This is a model-scoped plugin, not a replacement DSH runtime. Older DSH/session/checkpoint formats are outside the current compatibility target. Historical architecture remains available in earlier Git versions; the summary below describes this candidate.
 
 ## Ownership and package boundary
 

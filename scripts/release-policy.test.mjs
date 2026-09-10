@@ -24,7 +24,7 @@ for (const [label, manifest, ref] of [
   ['wrong tag', approved, 'refs/tags/v0.4.3-pre.12'],
   ['wrong manifest version', approved.replace(/^version: .+$/m, 'version: 0.4.3-pre.12'), tag],
   ['stable dist-tag', approved.replace('npm_dist_tag: prelatest', 'npm_dist_tag: latest'), tag],
-  ['wrong runtime', approved.replace('dsh: 0.1.5-alpha.2', 'dsh: 0.1.5-alpha.1'), tag],
+  ['wrong runtime', approved.replace('dsh: 0.1.5-rc.1', 'dsh: 0.1.5-alpha.1'), tag],
   ['pending owner approval', approved.replace('synthetic_test_approval', 'PENDING_CONTROLLER_APPROVAL'), tag],
   ['blocked publication', approved.replace('state: APPROVED_PENDING_PUBLISH', 'state: BLOCKED'), tag],
 ]) test(`publication rejects ${label}`, () => assert.throws(() => assertReleasePolicy(pkg, manifest, ref)))

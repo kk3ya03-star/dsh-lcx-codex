@@ -31,6 +31,6 @@ type Slots = {
     register(options: unknown, component: unknown): unknown;
 };
 type CreateElement = (type: any, props: any, ...children: any[]) => any;
-/** Decorate the elected alpha.2 entry while preserving every non-component owner. */
+/** Decorate the elected DSH 0.1.5 entry while preserving every non-component owner. */
 export declare function installUsageSlots(slots: Slots, createElement: CreateElement): () => void;
 export {};

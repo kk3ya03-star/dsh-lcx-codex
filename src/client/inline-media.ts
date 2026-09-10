@@ -68,10 +68,9 @@ function previewItems(items: readonly SearchMediaItem[]): Map<string, PreviewIte
   }
   return result;
 }
-export const INLINE_MEDIA_DSH_COMPAT = '0.1.5-alpha.2';
 const activeDialogByDocument = new WeakMap<Document, () => void>();
 
-/** Exact alpha.2 DOM capability check; an unknown renderer fails closed. */
+/** DSH chat DOM capability check; an unknown renderer fails closed. */
 export function supportsInlineMediaDom(marker: HTMLElement): boolean {
   const row = marker.closest<HTMLElement>('[data-chat-flow-kind="lcx-search-media"]');
   const answer = row?.previousElementSibling;

@@ -22,15 +22,16 @@ test('bounded Pi catalog preserves every public Responses descriptor previously 
   assert.deepEqual(getBuiltinModels('unrelated-provider'), [])
 })
 
-test('candidate package has exact alpha.2 pins, build-only Pi and public declaration closure', () => {
+test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
   assert.equal(pkg.version, '0.4.3-pre.13')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.1.5-alpha.2')
+  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.1.5-rc.1')
+  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.1.5-rc.1 <0.1.6', verifiedDsh: '0.1.5-rc.1', verifiedHostPi: '0.85.1' })
   assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.85.1')
   for (const [name, version] of Object.entries(pkg.peerDependencies))
-    if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, '0.1.5-alpha.2', name)
+    if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, pkg.lcxCompatibility.dshInstallRange, name)
   assert.equal(lock.packages[''].dependencies, undefined)
   assert.deepEqual(pkg.files.filter(path => path.includes('/types/') || path.includes('types/')), [
     'lib/types/index.d.ts', 'lib/types/client/index.d.ts', 'lib/types/client/search-media.d.ts',

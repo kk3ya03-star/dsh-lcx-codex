@@ -34,7 +34,7 @@ type Entry = {component:unknown; options?:{id?:string;key?:string;order?:number;
 type Slots = {entriesOfSlot(name:string):readonly Entry[]; inject(name:string,callback:()=>unknown):unknown; register(options:unknown,component:unknown):unknown};
 type CreateElement = (type:any,props:any,...children:any[])=>any;
 
-/** Decorate the elected alpha.2 entry while preserving every non-component owner. */
+/** Decorate the elected DSH 0.1.5 entry while preserving every non-component owner. */
 export function installUsageSlots(slots:Slots,createElement:CreateElement):()=>void {
   const cleanups:(()=>void)[]=[];
   for (const [name,key] of [
@@ -75,7 +75,7 @@ export function installUsageSlots(slots:Slots,createElement:CreateElement):()=>v
           };
           return createElement(original,{...props,useProjection});
         }
-        // Alpha.2 exposes the elected StoredEntry. Mutate only its component field.
+        // DSH 0.1.5 exposes the elected StoredEntry. Mutate only its component field.
         try { base.component=WithSearchUsage; } catch { return; }
         if (base.component!==WithSearchUsage) return;
         return ()=>{if(base.component===WithSearchUsage)base.component=original;};

@@ -7,7 +7,7 @@
 **Better long-running GPT and Grok workflows, web search, and continuous work inside DeepSeek Harness.**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.5--alpha.2-16803c)](#installation)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5--rc.1-16803c)](#installation)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 [简体中文](README.md) · **English** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
@@ -37,7 +37,7 @@ Current prerelease: **`dsh-lcx-codex@0.4.3-pre.13`**
 
 Compatible environment:
 
-- DSH `0.1.5-alpha.2`
+- DSH `0.1.5` line starting at `0.1.5-rc.1` (current fully verified baseline: `0.1.5-rc.1`)
 - Node.js `^22.19.0 || >=24.0.0`
 
 Install:
@@ -55,7 +55,7 @@ dsh plugin --profile web add dsh-lcx-codex@prelatest
 
 Installing without a version or dist-tag selects stable. Stable remains `0.4.2`; older users can refer to the [stable documentation](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README_EN.md).
 
-This release installs directly on official DSH `0.1.5-alpha.2`; the old Windows `fs-ext` workaround is no longer required.
+This release installs directly on official DSH `0.1.5-rc.1`; the old Windows `fs-ext` workaround is no longer required.
 
 ## Enable features
 
@@ -102,7 +102,7 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 ## Compatibility and known limits
 
-- `0.4.3-pre.13` is **verified only with DSH `0.1.5-alpha.2`**. Other DSH versions are not considered supported until separately assessed.
+- The current fully verified baseline for `0.4.3-pre.13` is DSH `0.1.5-rc.1`. Later releases in the same `0.1.5` line are installable for separate compatibility assessment; `0.1.6` and later are not treated as compatible automatically.
 - When upgrading from much older LCX / DSH versions, starting a new session is recommended; old saved compaction state is not guaranteed to remain compatible.
 - Grok native search supports API-key / API-gateway routes. xAI OAuth / SuperGrok login is outside the current scope.
 - Alpha remains experimental. Search works, but follow-up `open / find` operations can still fail on some routes, and screenshots are not guaranteed to return as displayable images.

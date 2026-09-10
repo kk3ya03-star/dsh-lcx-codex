@@ -7,7 +7,7 @@
 **让 DeepSeek Harness 里的 GPT 与 Grok 更适合长任务、联网搜索和连续工作。**
 
 [![npm prerelease](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.5--alpha.2-16803c)](#安装)
+[![DSH](https://img.shields.io/badge/DSH-0.1.5--rc.1-16803c)](#安装)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 **简体中文** · [English](README_EN.md) · [更新日志](CHANGELOG.md) · [问题反馈](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
@@ -37,7 +37,7 @@ LCX Codex 是 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness
 
 兼容环境：
 
-- DSH `0.1.5-alpha.2`
+- DSH `0.1.5-rc.1` 起的 `0.1.5` 系列（当前完整验证基线：`0.1.5-rc.1`）
 - Node.js `^22.19.0 || >=24.0.0`
 
 安装：
@@ -55,7 +55,7 @@ dsh plugin --profile web add dsh-lcx-codex@prelatest
 
 不指定版本或 dist-tag 时会安装稳定版。当前稳定版仍为 `0.4.2`，旧版用户可查看[稳定版文档](https://github.com/kk3ya03-star/dsh-lcx-codex/blob/v0.4.2/README.md)。
 
-本版可直接安装到官方 DSH `0.1.5-alpha.2`，不再需要旧版 Windows `fs-ext` 修正。
+本版已在官方 DSH `0.1.5-rc.1` 完整验证。后续同一 `0.1.5` 系列版本可以直接安装并进行兼容评估，不再需要仅因为 RC 版本号变化而发布新的 LCX 版本。
 
 ## 启用功能
 
@@ -102,7 +102,7 @@ Grok 原生搜索与 GPT 的 LCX 主开关相互独立：
 
 ## 兼容性与已知限制
 
-- `0.4.3-pre.13` **只对 DSH `0.1.5-alpha.2` 做兼容承诺**。包括更新的 DSH 版本在内，未完成兼容评估前都不视为已支持。
+- `0.4.3-pre.13` 的当前完整验证基线是 DSH `0.1.5-rc.1`。同一 `0.1.5` 系列后续版本处于可安装、可评估范围，但仍会单独记录兼容验证结果；`0.1.6` 及更高版本不会自动视为兼容。
 - 从较旧的 LCX / DSH 版本升级时，建议新建会话；旧版保存的压缩状态不保证兼容。
 - Grok 原生搜索支持 API Key / API 网关路由；xAI OAuth / SuperGrok 登录不在当前范围。
 - Alpha 仍是实验功能。搜索可以正常使用，但连续 `open / find` 等操作在部分路由上仍可能失败；截图也不保证能作为可显示图片返回。

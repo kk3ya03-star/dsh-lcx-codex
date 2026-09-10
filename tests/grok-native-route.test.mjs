@@ -133,7 +133,7 @@ test('non-Grok, non-Responses, and incomplete selected profiles do not activate 
   assert.equal(resolveGrokResponsesRouteConfig(routeContext({}), selected, policy), undefined)
 })
 
-test('alpha.2 configurable-provider diagnostics fail closed for GPT and Grok routes', () => {
+test('DSH 0.1.5 configurable-provider diagnostics fail closed for GPT and Grok routes', () => {
   const profiles = { relay: { ...xaiProfile, models: [{ id: 'grokCustom' }, { id: 'gpt-custom' }] } }
   const ctx = {
     settings: { get: () => ({ providers: profiles }) },

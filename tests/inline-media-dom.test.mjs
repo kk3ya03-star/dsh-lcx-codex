@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
-import {INLINE_MEDIA_DSH_COMPAT,inlineMediaCss,installInlineMedia,supportsInlineMediaDom} from '../src/client/inline-media.ts';
+import {inlineMediaCss,installInlineMedia,supportsInlineMediaDom} from '../src/client/inline-media.ts';
 import {extractSearchMedia} from '../src/client/search-media.ts';
 
 const photo='https://example.com/photo.jpg', video='https://example.com/video.mp4';
@@ -273,10 +273,10 @@ test('structured image metadata renders without a prose link and preserves prove
  }finally{f.cleanup()}
 });
 
-test('alpha.2 guard fails closed and thumbnail CSS preserves aspect ratio',()=>{
+test('DSH chat DOM capability guard fails closed and thumbnail CSS preserves aspect ratio',()=>{
  const f=fixture(`<a href="${photo}">Photo</a>`);
  try{
-  const marker=f.document.getElementById('marker');assert.equal(INLINE_MEDIA_DSH_COMPAT,'0.1.5-alpha.2');assert.equal(supportsInlineMediaDom(marker),true);
+  const marker=f.document.getElementById('marker');assert.equal(supportsInlineMediaDom(marker),true);
   marker.parentElement.dataset.chatTurn='4';assert.equal(supportsInlineMediaDom(marker),false);
   f.start([{kind:'image',url:photo}]);assert.equal(f.document.querySelector('.lcx-inline-media'),null);
   assert.match(inlineMediaCss,/max-width:144px/);assert.match(inlineMediaCss,/max-height:144px/);assert.doesNotMatch(inlineMediaCss,/object-fit:cover/);

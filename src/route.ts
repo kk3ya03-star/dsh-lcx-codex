@@ -149,7 +149,7 @@ export function settingsValue(
   return asLlmSettingsSection(ctx?.settings?.get(namespace));
 }
 
-/** Alpha.2 exposes deferred provider diagnostics separately from saved settings. */
+/** The DSH 0.1.5 contract exposes deferred provider diagnostics separately from saved settings. */
 function providerDirectoryUsable(
   ctx: RouteContext | null | undefined,
   provider: string,

@@ -17,7 +17,7 @@ const unexpected = () => { throw new Error('Unexpected DSH fallback') }
 function hierarchy(h) {
   h.ctx.sessions.get = id => ({ id, header: id === 'parent-59' ? {} : { origin: 'subagent', parentSession: 'parent-59' } })
 }
-// Exact DSH alpha.2 requestHeaders contract; independent installed-source oracle
+// DSH 0.1.5 requestHeaders contract; independent installed-source oracle
 // additionally checks this projection with the actual installed resolver.
 function dshHeaders(headers = {}) {
   const attribution = attributionHeaders()

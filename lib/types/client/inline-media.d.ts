@@ -10,8 +10,7 @@ type Labels = {
     previous: string;
     next: string;
 };
-export declare const INLINE_MEDIA_DSH_COMPAT = "0.1.5-alpha.2";
-/** Exact alpha.2 DOM capability check; an unknown renderer fails closed. */
+/** DSH chat DOM capability check; an unknown renderer fails closed. */
 export declare function supportsInlineMediaDom(marker: HTMLElement): boolean;
 /** Own only inserted elements. Never replace React-owned text, links or children. */
 export declare function installInlineMedia(marker: HTMLElement, items: readonly SearchMediaItem[], labels: Labels): () => void;

@@ -2,7 +2,7 @@
 
 ## 0.4.3-pre.13 — release candidate
 
-- Target exact DSH `0.1.5-alpha.2` / Session V3 and host/build Pi `0.85.1`; validate clean-profile installation on unmodified official DSH. Retire the old Windows `fs-ext` setup workaround.
+- Verify DSH `0.1.5-rc.1` / Session V3 with host/build Pi `0.85.1`; public DSH peers now use the bounded `>=0.1.5-rc.1 <0.1.6` install range so later 0.1.5 RC/final releases can be assessed without an LCX release solely for version-string drift.
 - Bundle the required Pi Responses helpers from pinned public exports instead of installing the full SDK dependency tree into user profiles; retain third-party notices.
 - Add presentation-only search-media previews and auxiliary search-usage accounting; preserve model-request invariance, provider billing and native history. Harden media observer/disposer behavior and Alpha reference provenance/collision rejection.
 - Validate 370/370 plugin tests, strict host/client types, 4/4 schemas, 51 reproducible generated files, the 32-file package boundary and bounded exact-alpha.2 runtime/browser scenarios.

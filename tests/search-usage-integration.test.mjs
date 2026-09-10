@@ -205,7 +205,7 @@ test('public UI slots preserve original renderer, children and actions; merge bi
  stop();assert.deepEqual(names.map(n=>entries.get(n)[0]),originals);assert.deepEqual(originals.map(e=>e.component),components);
 });
 
-test('alpha.2 usage adapter fails closed on ambiguous or immutable entry ownership',()=>{
+test('DSH 0.1.5 usage adapter fails closed on ambiguous or immutable entry ownership',()=>{
  const original=()=>{},duplicate=()=>{},bar=Object.freeze({component:original,options:{}});
  const entries=new Map([
   ['conversation.composer.dock',[{component:original,options:{id:'stats'}},{component:duplicate,options:{id:'stats'}}]],
