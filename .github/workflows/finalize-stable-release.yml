@@ -1,0 +1,69 @@
+name: Finalize stable GitHub Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-stable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Create or verify stable release after npm latest converges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "Prerelease package on main; stable finalizer is inert."
+            exit 0
+          fi
+          TAG="v$VERSION"
+          git fetch --force --tags
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Stable tag $TAG is not present yet; nothing to finalize."
+            exit 0
+          fi
+          TARGET="$(git rev-list -n 1 "$TAG")"
+          if ! git merge-base --is-ancestor "$TARGET" "$GITHUB_SHA"; then
+            echo "Stable tag target is not an ancestor of current main." >&2
+            exit 1
+          fi
+          converged=false
+          for attempt in $(seq 1 30); do
+            LATEST="$(npm view dsh-lcx-codex dist-tags.latest --registry=https://registry.npmjs.org 2>/dev/null || true)"
+            if [[ "$LATEST" == "$VERSION" ]]; then
+              converged=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$converged" != true ]]; then
+            echo "npm latest did not converge to $VERSION" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            PRERELEASE="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq '.prerelease')"
+            DRAFT="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq '.draft')"
+            [[ "$PRERELEASE" == "false" && "$DRAFT" == "false" ]]
+            echo "Stable GitHub Release already exists and is final."
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "Stable release dsh-lcx-codex@$VERSION. See README and CHANGELOG for the verified DSH compatibility range and feature details. npm latest: dsh-lcx-codex@$VERSION."
+          fi
