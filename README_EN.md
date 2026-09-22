@@ -124,7 +124,7 @@ Long conversations compact automatically near the limit; you can also type `/com
 - **Grok**: API-key / API-gateway routes are supported; xAI OAuth / SuperGrok login is not. In `0.4.4-pre.1`, native X Search has only been verified on `grok-4.6`.
 - **Alpha is experimental**: search works, but follow-up open/find actions can fail on some routes, and screenshots may not display.
 - **DSH `0.1.5` + LCX `0.4.3`**: after enabling or disabling LCX in plugin settings, open browser tabs may need a refresh.
-- **Verification scope**: `0.4.4-pre.1` is fully verified on DSH `0.1.6-alpha.2`; `0.4.3` on DSH `0.1.5-rc.1`. Later versions in the same line can be installed but are not individually verified — please report problems.
+- **Verification scope**: `0.4.4-pre.1` is fully verified on DSH `0.1.6-alpha.2`. The stable release baseline for `0.4.3` is DSH `0.1.5-rc.1`, and DSH `0.1.5-rc.2` has also been verified separately. Other later versions inside the install range still require their own assessment — please report problems.
 
 ## Troubleshooting
 
