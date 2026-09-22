@@ -1,18 +1,21 @@
 import {
+  IMAGE_OFFLOAD_REQUIRED_CODE,
+  LlmError,
   offloadedImageText,
-  offloadRequestImagesWithPolicy,
+  projectOffloadedImages,
+  requiredImageOffload,
   requestImageHandleText,
   resolveImageAttachmentAccess,
   type ContentBlock,
   type Message,
 } from "@deepseek-ai/dsh-llm";
 import type { Context } from "@deepseek-ai/cordis";
-import type { AttachmentStore } from "@deepseek-ai/dsh-attachment";
+import { requestImageDimensions } from "@deepseek-ai/dsh-attachment";
+import type { AttachmentStore, RequestImageAttachment } from "@deepseek-ai/dsh-attachment";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
 import type {} from "@deepseek-ai/dsh-fs";
 type ImageAttachmentRef = Parameters<typeof requestImageHandleText>[0];
 type FileAttachmentRef = Extract<ContentBlock, { type: "file" }>["attachment"];
-type RequestImageAttachment = Parameters<typeof requestImageHandleText>[1];
 type AttachmentServices = {
   store: AttachmentStore;
   resolveAccess(
@@ -25,6 +28,7 @@ import {
   convertResponsesTools,
   createGrammarToolInputProperties,
   getBuiltinModels,
+  normalizeContext,
 } from "./pi-responses-runtime.js";
 import type {
   AssistantMessage as PiAssistantMessage,
@@ -51,6 +55,7 @@ export {
 
 type WireRecord = Record<string, unknown>;
 type ImageSupport = "supported" | "unsupported" | "unknown";
+type ImageBlock = Extract<ContentBlock, { type: "image" }>;
 type PiAssistantContentPart = PiTextContent | PiThinkingContent | PiToolCall;
 type PiUserContentPart = PiTextContent | PiImageContent;
 type PiMessage = PiContextValue["messages"][number];
@@ -60,6 +65,7 @@ type PiContext = {
   messages: PiMessage[];
   tools: PiTool[];
 };
+type RequestImageVersions = ReadonlyMap<string, RequestImageAttachment>;
 type DshContext = Pick<Context, "attachments" | "llm" | "fs">;
 type ImageOptions = {
   imageSupport: ImageSupport;
@@ -203,7 +209,11 @@ export async function resolveModelImageSupport(
   }
 }
 
-function attachmentResolver(ctx: DshContext | undefined, options: ImageOptions) {
+function attachmentResolver(
+  ctx: DshContext | undefined,
+  options: ImageOptions,
+  requestImages?: RequestImageVersions,
+) {
   const attachments = attachmentServices(ctx?.attachments);
   return async (block: { attachment: ImageAttachmentRef }, signal?: AbortSignal) => {
     if (attachments === undefined)
@@ -211,24 +221,27 @@ function attachmentResolver(ctx: DshContext | undefined, options: ImageOptions) 
         "LCX requires the DSH request-image attachment API",
         "LCX_COMPACT_IMAGE_API_UNAVAILABLE",
       );
-    const request = await attachments.store.readImageRequest(
-      block.attachment,
-      { maxPixels: options.requestImagePixelBudget, maxBytes: options.requestImageMaxBytes },
-      signal,
-    );
+    const request = requestImages === undefined
+      ? await attachments.store.readImageRequest(
+          block.attachment,
+          { ...requestImageDimensions(block.attachment.width, block.attachment.height, options.requestImagePixelBudget), maxBytes: options.requestImageMaxBytes },
+          signal,
+        )
+      : requestImages.get(String(block.attachment.attachmentId));
+    if (request === undefined)
+      throw error("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
     const data = request.data;
     const mediaType = request.mediaType ?? block.attachment.mediaType;
     if (!(data instanceof Uint8Array) && !Buffer.isBuffer(data))
       throw error("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
     if (typeof mediaType !== "string" || !mediaType.startsWith("image/"))
       throw error("DSH attachment returned an invalid request-image media type", "LCX_COMPACT_IMAGE_UNAVAILABLE");
-    const ref = request.attachment ?? block.attachment;
     return {
       data: Buffer.from(data),
       mediaType,
-      ref,
+      ref: block.attachment,
       request,
-      access: imageAccess(ctx, attachments, ref),
+      access: imageAccess(ctx, attachments, block.attachment),
     };
   };
 }
@@ -238,10 +251,11 @@ async function imagePart(
   ctx: DshContext | undefined,
   options: ImageOptions,
   imageMap: Map<string, ImageAttachmentRef>,
+  requestImages?: RequestImageVersions,
 ): Promise<WireRecord> {
   if (options.imageSupport === "unsupported")
     return { type: "input_text", text: "[image omitted because the target model does not support image input]" };
-  const image = await attachmentResolver(ctx, options)(block, options.signal);
+  const image = await attachmentResolver(ctx, options, requestImages)(block, options.signal);
   if (Math.ceil(image.data.byteLength / 3) * 4 > options.maxRequestImageBytes)
     throw error("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
   const imageUrl = `data:${image.mediaType};base64,${image.data.toString("base64")}`;
@@ -254,10 +268,11 @@ async function piImageParts(
   ctx: DshContext | undefined,
   options: ImageOptions,
   imageMap: Map<string, ImageAttachmentRef>,
+  requestImages: RequestImageVersions,
 ): Promise<PiUserContentPart[]> {
   if (options.imageSupport === "unsupported")
     return [{ type: "text", text: "[image omitted because the target model does not support image input]" }];
-  const image = await attachmentResolver(ctx, options)(block, options.signal);
+  const image = await attachmentResolver(ctx, options, requestImages)(block, options.signal);
   if (Math.ceil(image.data.byteLength / 3) * 4 > options.maxRequestImageBytes)
     throw error("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
   const data = image.data.toString("base64");
@@ -268,12 +283,12 @@ async function piImageParts(
   ];
 }
 
-function parseArguments(value: unknown): WireRecord {
-  if (isObject(value)) return structuredClone(value);
+function parseArguments(value: unknown): PiToolCall["arguments"] {
+  if (isObject(value)) return structuredClone(value) as PiToolCall["arguments"];
   if (typeof value !== "string") return {};
   try {
     const parsed: unknown = JSON.parse(value);
-    return isObject(parsed) ? parsed : {};
+    return isObject(parsed) ? parsed as PiToolCall["arguments"] : {};
   } catch {
     return {};
   }
@@ -421,13 +436,14 @@ async function piToolContent(
   ctx: DshContext | undefined,
   options: ImageOptions,
   imageMap: Map<string, ImageAttachmentRef>,
+  requestImages: RequestImageVersions,
 ): Promise<PiUserContentPart[]> {
   const content: PiUserContentPart[] = [];
   for (const block of blocks) {
     if (block.type === "text") content.push({ type: "text", text: block.text });
-    else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap)));
+    else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap, requestImages)));
     else if (block.type === "reasoning") continue;
-    else if (block.type === "tool-result") content.push(...(await piToolContent(block.content, ctx, options, imageMap)));
+    else if (block.type === "tool-result") content.push(...(await piToolContent(block.content, ctx, options, imageMap, requestImages)));
     else throw unsupportedContent(block.type);
   }
   return content.length > 0 ? content : [{ type: "text", text: "(no output)" }];
@@ -459,13 +475,51 @@ function projectFiles(
   }));
 }
 
+function collectRequestImageRefs(
+  blocks: readonly ContentBlock[],
+  refs: Map<string, ImageAttachmentRef>,
+): void {
+  for (const block of blocks) {
+    if (block.type === "image") {
+      if (block.offloaded !== true) refs.set(String(block.attachment.attachmentId), block.attachment);
+    } else if (block.type === "tool-result") {
+      collectRequestImageRefs(block.content, refs);
+    }
+  }
+}
+
+async function prepareRequestImageVersions(
+  messages: readonly Message[],
+  ctx: DshContext | undefined,
+  options: ImageOptions,
+): Promise<ReadonlyMap<string, RequestImageAttachment>> {
+  const attachments = attachmentServices(ctx?.attachments);
+  if (attachments === undefined) return new Map();
+  const refs = new Map<string, ImageAttachmentRef>();
+  for (const message of messages) collectRequestImageRefs(message.content, refs);
+  const versions = await Promise.all([...refs.values()].map(async (ref) => {
+    const target = {
+      ...requestImageDimensions(ref.width, ref.height, options.requestImagePixelBudget),
+      maxBytes: options.requestImageMaxBytes,
+    };
+    return [String(ref.attachmentId), await attachments.store.readImageRequest(ref, target, options.signal)] as const;
+  }));
+  return new Map(versions);
+}
+
 function flattenMessageText(message: Message): string {
   return message.content
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("");
 }
 
-async function dshToPiMessages(messages: readonly Message[], ctx: DshContext | undefined, options: ImageOptions & { onReplayDegrade?: unknown }, imageMap: Map<string, ImageAttachmentRef>): Promise<PiMessage[]> {
+async function dshToPiMessages(
+  messages: readonly Message[],
+  ctx: DshContext | undefined,
+  options: ImageOptions & { onReplayDegrade?: unknown },
+  imageMap: Map<string, ImageAttachmentRef>,
+  requestImages: RequestImageVersions,
+): Promise<PiMessage[]> {
   const result: PiMessage[] = [];
   const toolNames = new Map<string, string>();
   for (const message of messages) {
@@ -492,14 +546,14 @@ async function dshToPiMessages(messages: readonly Message[], ctx: DshContext | u
       const content: PiUserContentPart[] = [];
       for (const block of ordinary) {
         if (block.type === "text") content.push({ type: "text", text: block.text });
-        else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap)));
+        else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap, requestImages)));
       }
       if (content.length > 0) result.push({ role: "user", content, timestamp: 0 });
     }
     for (const block of toolResults) {
       if (block.type !== "tool-result") continue;
       const toolCallId = String(block.toolCallId);
-      result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(block.content, ctx, options, imageMap), addedToolNames: [], isError: block.isError === true, timestamp: 0 });
+      result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(block.content, ctx, options, imageMap, requestImages), isError: block.isError === true, timestamp: 0 });
     }
   }
   return result;
@@ -541,36 +595,52 @@ export async function serializeDshMessages(messages: readonly Message[], ctx: Ds
   const imageMap = new Map<string, ImageAttachmentRef>();
   const fileProjected = projectFiles(messages, ctx);
   const attachments = attachmentServices(ctx?.attachments);
-  const projected = offloadRequestImagesWithPolicy(fileProjected, {
-    representation: "base64", maxBytes: normalized.maxRequestImageBytes, byteQuantum: 1,
-    byteLength: (ref) => Math.min(ref.bytes, normalized.requestImageMaxBytes),
-    placeholder: (ref) =>
-      offloadedImageText(
-        ref,
-        attachments === undefined ? undefined : imageAccess(ctx, attachments, ref),
-      ),
-  });
+  const requestImages = normalized.imageSupport === "unsupported"
+    ? new Map<string, RequestImageAttachment>()
+    : await prepareRequestImageVersions(fileProjected, ctx, normalized);
+  const offloadImages = attachments === undefined || normalized.imageSupport === "unsupported"
+    ? 0
+    : requiredImageOffload(
+        fileProjected,
+        { representation: "base64", maxBytes: normalized.maxRequestImageBytes },
+        (block: ImageBlock) => {
+          // `requiredImageOffload` applies the base64 expansion itself for a
+          // base64 representation, so this reports raw request-version bytes.
+          const request = requestImages.get(String(block.attachment.attachmentId));
+          return request?.bytes ?? block.attachment.bytes;
+        },
+      );
+  if (offloadImages > 0) {
+    throw new LlmError(
+      `LCX request images exceed the configured base64 bound; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
+      IMAGE_OFFLOAD_REQUIRED_CODE,
+      { offloadImages },
+    );
+  }
+  const projected = projectOffloadedImages(
+    fileProjected,
+    (ref) => offloadedImageText(
+      ref,
+      attachments === undefined ? undefined : imageAccess(ctx, attachments, ref),
+    ),
+  );
   const model = resolvePiResponsesModel(normalized);
-  const context: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap), tools: [...normalized.tools] };
+  const dshContext: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap, requestImages), tools: [...normalized.tools] };
   const compat = isObject(model.compat) ? model.compat : {};
   const supportsStrictMode = compat.supportsStrictMode === true;
   const supportsOpenAIGrammarTools = compat.supportsOpenAIGrammarTools === true;
   const supportsAdditionalTools = compat.supportsAdditionalTools === true;
   const supportsToolSearch = compat.supportsToolSearch === true;
   const deferredToolsMode = supportsAdditionalTools ? "additional-tools" : supportsToolSearch ? "tool-search" : undefined;
-  const grammarToolInputProperties = createGrammarToolInputProperties(context.tools, supportsOpenAIGrammarTools);
+  const grammarToolInputProperties = createGrammarToolInputProperties(dshContext.tools, supportsOpenAIGrammarTools);
   // DSH has no authoritative added-tool provenance; keep its full catalog immediate.
   const immediateTools = new Map<string, PiTool>();
-  for (const tool of context.tools) if (tool.name) immediateTools.set(tool.name, tool);
-  const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools };
-  const piContext: PiContextValue = {
-    systemPrompt: context.systemPrompt,
-    messages: context.messages as PiContextValue["messages"],
-    tools: context.tools,
-  };
+  for (const tool of dshContext.tools) if (tool.name) immediateTools.set(tool.name, tool);
+  const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };
+  const piContext = normalizeContext(dshContext);
   const piModel = model as PiModel<"openai-responses">;
-  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, deferredTools: new Map<string, PiTool>(), deferredToolsMode, toolOptions });
-  const input = restorePortableAssistantPhases(convertedInput, context.messages, { provider: model.provider, id: model.id, api: model.api });
+  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, toolOptions });
+  const input = restorePortableAssistantPhases(convertedInput, dshContext.messages, { provider: model.provider, id: model.id, api: model.api });
   const tools = options.tools === undefined ? undefined : convertResponsesTools([...immediateTools.values()], toolOptions);
   return { input, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
 }

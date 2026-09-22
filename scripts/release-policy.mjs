@@ -23,6 +23,7 @@ export function assertReleasePolicy(pkg, manifest, ref) {
   }
   assert.equal(field('dsh'), pkg.devDependencies['@deepseek-ai/dsh'])
   assert.equal(field('plugin_pi'), pkg.devDependencies['@earendil-works/pi-ai'])
-  assert.equal(field('host_pi'), pkg.devDependencies['@earendil-works/pi-ai'])
+  assert.equal(field('host_pi'), pkg.lcxCompatibility?.verifiedHostPi)
+  assert.equal(pkg.lcxCompatibility?.verifiedPluginPi, pkg.devDependencies['@earendil-works/pi-ai'])
   return field
 }

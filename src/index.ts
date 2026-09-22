@@ -1820,10 +1820,15 @@ function installInjected(
     );
   });
 
-  ctx.on(
-    "agent/created",
-    ({ agent }) => {
-      if (agent === null || typeof agent !== "object") return;
+  /**
+   * LCX instrumentation is optional capability, never a creation precondition.
+   * DSH 0.1.6 awaits `agent/created` serially, so an escaping failure would make
+   * an otherwise valid Agent uncreatable; `agent/status` stays a contained emit.
+   * Both edges therefore fail closed locally: the Agent runs uninstrumented and
+   * the reason is logged, rather than propagating into the host lifecycle.
+   */
+  const instrumentAgent = (agent: object & HostAgent, edge: string) => {
+    try {
       managedAgents.add(agent);
       syncAgentTools(agent);
       const installed = patchCompactionPressureForAgent(
@@ -1837,6 +1842,27 @@ function installInjected(
         ctx.logger?.info?.(
           "[lcx-codex] pressure coordination installed through AgentPresets service resolver",
         );
+    } catch (error) {
+      ctx.logger?.warn?.(
+        `[lcx-codex] agent instrumentation skipped on ${edge}: ${String(error)}`,
+      );
+    }
+  };
+  /** DSH 0.1.6 lifecycle source, recorded for diagnostics only. */
+  const startSource = (value: unknown) =>
+    typeof value === "string" && /^[a-z]+$/u.test(value) ? value : "unknown";
+
+  ctx.on(
+    "agent/created",
+    (payload) => {
+      const agent: unknown = payload?.agent;
+      if (agent === null || typeof agent !== "object") return;
+      // `source` is startup | resume | clear | compact. Recorded, not branched on:
+      // no runtime evidence yet that a source needs different instrumentation.
+      instrumentAgent(
+        agent as object & HostAgent,
+        `agent/created(${startSource((payload as { source?: unknown })?.source)})`,
+      );
     },
     { global: true },
   );
@@ -1850,19 +1876,7 @@ function installInjected(
         typeof agent !== "object"
       )
         return;
-      managedAgents.add(agent);
-      syncAgentTools(agent);
-      const installed = patchCompactionPressureForAgent(
-        agent,
-        state,
-        () => runtimeConfig,
-        ctx,
-        compactionPatchRecords,
-      );
-      if (installed)
-        ctx.logger?.info?.(
-          "[lcx-codex] pressure coordination installed through AgentPresets service resolver",
-        );
+      instrumentAgent(agent, "agent/status(running)");
     },
     { global: true },
   );

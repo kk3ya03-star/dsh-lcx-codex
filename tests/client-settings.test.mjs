@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 
 function fixture(browserLanguage = 'en', activeLanguage = 'en') {
-  let client, injection, snapshot, listener, render, mediaSnapshot
+  let client, injection, snapshot, listener, render, mediaSnapshot, pageEffect
   const dictionaries = new Map(), disposers = []
   let localeNamespace
   const values = {
@@ -14,6 +14,7 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     alphaSearch: false,
     grokNativeWebSearch: false,
     grokNativeXSearch: false,
+    searchMediaPreview: false,
   }
   const writes = []
   const scope = {
@@ -35,6 +36,11 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
         if (name === 'react') return {
           createElement: (type, props, ...children) => ({ type, props, children }),
           useState: () => [true, () => {}],
+          useEffect(setup, deps) {
+            if (pageEffect && deps.every((value, index) => Object.is(value, pageEffect.deps[index]))) return
+            pageEffect?.cleanup?.()
+            pageEffect = { deps: [...deps], cleanup: setup() }
+          },
         }
         if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore(value, options) {
           const media = !Object.hasOwn(value,'available')
@@ -64,7 +70,7 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     slots: {
       inject(_slot, callback) { callback() },
       register(definition, component) {
-        if (definition.name !== 'settings.plugin.item') return
+        if (definition.name !== 'plugins.bundle.config') return
         localeNamespace = definition.locale
         injection = definition.inject()
         render = component
@@ -78,6 +84,7 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     refresh: () => listener(),
     render: () => render({
       ...injection,
+      view: 'page',
       t: key => dictionaries.get(activeLanguage)?.[key] ?? dictionaries.get('en')[key],
       useLcxCard: () => snapshot,
       useMediaPreview: selector => selector(mediaSnapshot),
@@ -85,7 +92,15 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     setLocale: language => { activeLanguage = language },
     localeNamespace: () => localeNamespace,
     dictionaries,
-    dispose: () => disposers.reverse().forEach(dispose => dispose()),
+    unmountPage: () => {
+      pageEffect?.cleanup?.()
+      pageEffect = undefined
+    },
+    dispose: () => {
+      pageEffect?.cleanup?.()
+      pageEffect = undefined
+      disposers.reverse().forEach(dispose => dispose())
+    },
     async save() { injection.save(); await new Promise(resolve => setImmediate(resolve)) },
   }
 }
@@ -104,6 +119,24 @@ test('client delegates locale to the DSH slot and preserves drafts across langua
   assert.match(JSON.stringify(f.render()), /Responses \/ Codex capabilities/)
   f.dispose()
   assert.equal(f.dictionaries.size, 0)
+})
+
+test('client discards an unsaved page draft when the Plugins page is left and reopened', () => {
+  const f = fixture()
+  f.values.webSearch = true
+  f.refresh()
+  f.render()
+  f.injection.edit('enabled', true)
+  assert.equal(f.state().enabled.value, true)
+  assert.equal(f.state().dirty, true)
+
+  f.unmountPage()
+  f.render()
+
+  for (const [field, value] of Object.entries(f.values))
+    assert.equal(f.state()[field].value, value)
+  assert.equal(f.state().dirty, false)
+  assert.equal(f.state().saveError, false)
 })
 
 test('client saves changed fields in one DSH atomic mutation', async () => {

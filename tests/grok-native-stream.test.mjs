@@ -55,7 +55,9 @@ test('ordinary Grok bridge emits exact native tools and preserves DSH controls',
     assert.equal(chunks.at(-1).reason.kind, 'stop')
     assert.equal(chunks.at(-1).replayState.response.lcxUsage.inputTokenScope, 'request')
     assert.equal('inputTokenScope' in chunks.find(chunk => chunk.type === 'usage').usage, false)
-    assert.deepEqual(h.imageOptions, [{ maxPixels: 40_000_000, maxBytes: 4_000_000 }])
+    assert.deepEqual(h.imageOptions, [
+      { width: 1, height: 1, maxBytes: 4_000_000 },
+    ])
   }
   assert.equal(requests.length, 3)
   for (let index = 0; index < requests.length; index += 1) {

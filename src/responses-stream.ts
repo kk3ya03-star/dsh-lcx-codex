@@ -8,7 +8,8 @@ import {
   createAssistantMessageEventStream,
   processResponsesStream,
 } from "./pi-responses-runtime.js";
-import { ToolCallId } from "@deepseek-ai/dsh-llm";
+import { abortError } from "./abort-error.js";
+import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry } from "./transport.js";
 import {
@@ -294,10 +295,38 @@ export function managedFailure(
 }
 
 /** @param {unknown} error @param {AbortSignal} [signal] */
+/**
+ * The host image-offload contract, when this failure carries it.
+ *
+ * `IMAGE_OFFLOAD_REQUIRED` is not an LCX failure class: it is a request the
+ * route makes of DSH's durable image-offload owner, which matches on the exact
+ * code and `offloadImages` count before recording an `image/offload` decision
+ * and retrying. Normalizing it into the closed LCX taxonomy would drop both
+ * fields and turn a recoverable step into a terminal turn failure.
+ * @param {unknown} error
+ * @returns {LlmFailure | undefined}
+ */
+function imageOffloadFailure(error: unknown): LlmFailure | undefined {
+  if (!isObject(error)) return undefined;
+  const source = isObject(error.failure) ? error.failure : error;
+  if (source.code !== IMAGE_OFFLOAD_REQUIRED_CODE) return undefined;
+  const offloadImages = source.offloadImages;
+  if (!Number.isSafeInteger(offloadImages) || (offloadImages as number) <= 0)
+    return undefined;
+  const message =
+    typeof source.message === "string" && source.message.length > 0
+      ? source.message
+      : "Request images exceed the route budget";
+  return { message, code: IMAGE_OFFLOAD_REQUIRED_CODE, offloadImages: offloadImages as number };
+}
+
 export function managedFailureChunk(
   error: unknown,
   signal?: AbortLike,
 ): StreamChunk {
+  const offload = imageOffloadFailure(error);
+  if (offload !== undefined)
+    return { type: "finish", reason: { kind: "error", failure: offload } };
   const managed = managedFailure(error, signal);
   const failure: LlmFailure = {
     message: managed.message,
@@ -321,9 +350,9 @@ async function readWithSignal(
   signal: AbortSignal | undefined,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
   if (!signal) return reader.read();
-  if (signal.aborted) throw signal.reason;
+  if (signal.aborted) throw abortError(signal);
   return new Promise((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
+    const onAbort = () => reject(abortError(signal));
     signal.addEventListener("abort", onAbort, { once: true });
     reader.read().then(resolve, reject).finally(() => {
       signal.removeEventListener("abort", onAbort);
@@ -438,11 +467,7 @@ async function* responseEvents(
   };
   try {
     while (true) {
-      if (options.signal?.aborted)
-        throw (
-          options.signal.reason ??
-          Object.assign(new Error("request aborted"), { code: "LCX_ABORTED" })
-        );
+      if (options.signal?.aborted) throw abortError(options.signal);
       const { done, value } = await readWithSignal(reader, options.signal);
       if (done) break;
       bytes += value.byteLength;
@@ -1659,11 +1684,7 @@ export async function* streamResponsesRequest({
           wireMeta.responseModel.length > 0
         )
           output.responseModel = wireMeta.responseModel;
-        if (signal?.aborted)
-          throw (
-            signal.reason ??
-            Object.assign(new Error("request aborted"), { code: "LCX_ABORTED" })
-          );
+        if (signal?.aborted) throw abortError(signal);
         if (output.stopReason === "pending")
           throw Object.assign(
             new Error("Responses stream ended without a stop reason"),
@@ -1700,7 +1721,7 @@ export async function* streamResponsesRequest({
     try {
       while (true) {
         const result = await chunks.next();
-        if (watchdog.signal.aborted) throw watchdog.signal.reason;
+        if (watchdog.signal.aborted) throw abortError(watchdog.signal);
         if (result.done) {
           exhausted = true;
           watchdog.disarm();

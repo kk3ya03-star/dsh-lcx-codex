@@ -79,6 +79,7 @@ type ControllerInjection = {
   edit(field: Field, value: boolean): void;
   save(): void;
   discard(): void;
+  leavePage(): void;
 };
 
 type ReactModule = {
@@ -96,6 +97,7 @@ type CardState = {
 } & Record<Field, { value: boolean }>;
 
 type CardProps = {
+  view?: "summary" | "page";
   t(key: string): string;
   useLcxCard(selector: (state: CardState) => CardState): CardState;
   useMediaPreview(
@@ -105,6 +107,7 @@ type CardProps = {
   edit(field: Field, value: boolean): void;
   save(): void;
   discard(): void;
+  leavePage(): void;
 };
 
 type ModuleExports = {
@@ -131,13 +134,14 @@ type PluginContext = {
 };
 
 type Slots = {
-  entriesOfSlot?: Parameters<typeof installUsageSlots>[0]['entriesOfSlot'];
   inject(name: string, callback: () => unknown): unknown;
   register<Props>(definition: {
     name: string;
-    key: string;
-    locale: string;
-    inject(): unknown;
+    key?: string;
+    id?: string;
+    order?: number;
+    locale?: string;
+    inject?: () => unknown;
   }, component: (props: Props) => unknown): unknown;
 };
 
@@ -174,7 +178,7 @@ window.__ModuleLoader__.load({
     const DEFAULTS: Values = Object.fromEntries(
       FIELDS.map((field) => [field, false]),
     ) as Values;
-    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}` + inlineMediaCss;
+    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-search-usage{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}` + inlineMediaCss;
     function mountCss(): () => void {
       if (typeof document === "undefined") return () => {};
       if (document.querySelector('style[data-plugin-css="dsh-lcx-codex"]'))
@@ -188,6 +192,7 @@ window.__ModuleLoader__.load({
     const copy = {
       zh: {
         title: "Responses / Codex 能力",
+        summary: "GPT Responses route 与搜索能力",
         desc: "LCX 跟随 DSH 当前会话选择的 GPT Responses route；模型、endpoint 和 credential 继续只由 DSH 管理。",
         enabled: "启用 LCX（接管当前 GPT Responses 会话）",
         enabledHelp:
@@ -213,6 +218,8 @@ window.__ModuleLoader__.load({
         mediaUnavailable: "暂不能预览",
         mediaAll:"全部",mediaImages:"图片",mediaVideos:"视频",mediaImage:"图片",mediaVideo:"视频",mediaFilter:"媒体类型",
         mediaOpen: "打开原始媒体",
+        usageTurn: "本轮搜索用量",
+        usageSession: "搜索用量",
         grokTitle: "Grok 原生搜索",
         grokDesc: "使用 DSH 当前选择的 Grok 模型及其服务配置；与 GPT 功能开关独立。开启任一搜索后，Grok 仅使用原生搜索，网页读取和其他工具仍可用。",
         grokWeb: "启用原生 Web Search",
@@ -226,6 +233,7 @@ window.__ModuleLoader__.load({
       },
       en: {
         title: "Responses / Codex capabilities",
+        summary: "GPT Responses route and search capabilities",
         desc: "LCX follows the GPT Responses route selected by the current DSH session. Model, endpoint and credentials remain DSH-owned.",
         enabled: "Enable LCX (own current GPT Responses conversation)",
         enabledHelp:
@@ -250,6 +258,8 @@ window.__ModuleLoader__.load({
         mediaUnavailable: "Preview unavailable",
         mediaAll:"All",mediaImages:"Photos",mediaVideos:"Videos",mediaImage:"Photo",mediaVideo:"Video",mediaFilter:"Media type",
         mediaOpen: "Open original media",
+        usageTurn: "Turn search usage",
+        usageSession: "Search usage",
         grokTitle: "Grok native search",
         grokDesc: "Uses the Grok model and provider profile currently selected in DSH, independently of the GPT switch. When either search is enabled, Grok uses native search while page reading and other tools remain available.",
         grokWeb: "Enable native Web Search",
@@ -393,6 +403,7 @@ window.__ModuleLoader__.load({
       saveError: boolean;
       store: Store<CardState>;
       stop: () => void;
+      saveEpoch: number;
 
       constructor(scope: SettingsScope) {
         this.scope = scope;
@@ -400,6 +411,7 @@ window.__ModuleLoader__.load({
         this.dirty = false;
         this.saving = false;
         this.saveError = false;
+        this.saveEpoch = 0;
         this.store = createSnapshotStore(this.projection());
         mediaStore.set({ enabled: this.value().searchMediaPreview });
         this.stop = scope.subscribe(() => {
@@ -453,11 +465,20 @@ window.__ModuleLoader__.load({
         this.saveError = false;
         this.publish();
       }
+      leavePage(): void {
+        this.saveEpoch += 1;
+        this.draft = null;
+        this.dirty = false;
+        this.saving = false;
+        this.saveError = false;
+        this.publish();
+      }
       async save(): Promise<void> {
         if (!this.dirty || this.saving || !this.snapshot().writable || this.snapshot().status !== "ready") return;
         const next = this.draftValue(),
           prev = this.value();
         const fields = FIELDS.filter((field) => next[field] !== prev[field]);
+        const saveEpoch = ++this.saveEpoch;
         this.saving = true;
         this.saveError = false;
         this.publish();
@@ -466,17 +487,21 @@ window.__ModuleLoader__.load({
             await this.scope.mutate(fields.map((field) => ({
               op: "set", path: [field], value: next[field],
             })));
+            if (saveEpoch !== this.saveEpoch) return;
             // DSH may recover a rejected mutation without rejecting its promise.
             if (this.snapshot().status !== "ready" || fields.some((field) => this.value()[field] !== next[field]))
               throw new Error("Settings mutation was not confirmed");
           }
+          if (saveEpoch !== this.saveEpoch) return;
           this.draft = null;
           this.dirty = false;
         } catch {
-          this.saveError = true;
+          if (saveEpoch === this.saveEpoch) this.saveError = true;
         } finally {
-          this.saving = false;
-          this.publish();
+          if (saveEpoch === this.saveEpoch) {
+            this.saving = false;
+            this.publish();
+          }
         }
       }
       inject(): ControllerInjection {
@@ -489,6 +514,7 @@ window.__ModuleLoader__.load({
           edit: (field: Field, value: boolean) => this.edit(field, value),
           save: () => void this.save(),
           discard: () => this.discard(),
+          leavePage: () => this.leavePage(),
         };
       }
     }
@@ -530,7 +556,13 @@ window.__ModuleLoader__.load({
       const t = props.t,
         s = props.useLcxCard((state) => state),
         [open, setOpen] = React.useState(false);
+      React.useEffect(
+        () => props.view === "page" ? () => props.leavePage() : undefined,
+        [props.view, props.leavePage],
+      );
       if (!s.available) return null;
+      if (props.view === "summary")
+        return React.createElement("span", { className: "lcx-summary" }, t("summary"));
       const disabled = !s.writable || s.saving;
       return React.createElement(
         "li",
@@ -670,10 +702,8 @@ window.__ModuleLoader__.load({
         uiConversation =
           ctx.uiConversation ?? ctx.get("uiConversation");
       if (!slots || !svc || !locale || !uiConversation) return;
-      if (typeof slots.entriesOfSlot === 'function') {
-        ctx.effect(() => uiConversation.events.register(searchUsageDefinition), 'lcx search billing data');
-        ctx.effect(() => installUsageSlots(slots as Parameters<typeof installUsageSlots>[0], React.createElement), 'lcx search billing slots');
-      }
+      ctx.effect(() => uiConversation.events.register(searchUsageDefinition), 'lcx search billing data');
+      ctx.effect(() => installUsageSlots(slots as Parameters<typeof installUsageSlots>[0], React.createElement), 'lcx search billing slots');
       ctx.effect(mountCss, "lcx-codex styles");
       for (const language of ["zh", "en"] as const)
         ctx.effect(() => locale.register(NAMESPACE, language, copy[language]), `lcx-codex ${language} dictionary`);
@@ -693,11 +723,11 @@ window.__ModuleLoader__.load({
           };
         }, label);
       const controller = new Controller(svc.bind({ namespace: NAMESPACE }));
-      installSlot("settings.plugin.item", "lcx-codex settings slot", () =>
+      installSlot("plugins.bundle.config", "lcx-codex plugin configuration", () =>
         slots.register(
           {
-            name: "settings.plugin.item",
-            key: NAMESPACE,
+            name: "plugins.bundle.config",
+            key: "dsh-lcx-codex",
             locale: NAMESPACE,
             inject: () => controller.inject(),
           },

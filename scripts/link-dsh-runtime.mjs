@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh015'))
+const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh016'))
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
 
@@ -74,7 +74,7 @@ const pkg = readJson(join(root, 'package.json'))
 const compatibility = pkg.lcxCompatibility
 assert.ok(compatibility && typeof compatibility === 'object', 'Missing lcxCompatibility policy')
 assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], compatibility.verifiedDsh, 'Release/CI DSH baseline must stay exact')
-assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], compatibility.verifiedHostPi, 'Plugin Pi must match verified host Pi baseline')
+assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], compatibility.verifiedPluginPi, 'Plugin Pi must match the declared plugin Pi baseline')
 assert.equal(pkg.dependencies, undefined)
 
 const runtimeDshVersion = runtimeRequire('@deepseek-ai/dsh/package.json').version
@@ -88,6 +88,9 @@ const hostPiManifest = hostPi.resolve.paths('@earendil-works/pi-ai')
   .map(path => join(path, '@earendil-works/pi-ai/package.json')).find(existsSync)
 assert.ok(hostPiManifest, 'Missing host Pi package')
 assert.equal(readJson(hostPiManifest).version, compatibility.verifiedHostPi, 'Host Pi changed; compatibility reassessment required')
+const pluginPiManifest = join(root, 'node_modules/@earendil-works/pi-ai/package.json')
+assert.ok(existsSync(pluginPiManifest), 'Missing plugin Pi package')
+assert.equal(readJson(pluginPiManifest).version, compatibility.verifiedPluginPi, 'Plugin Pi changed; LCX protocol reassessment required')
 
 const names = new Set([
   ...Object.keys(pkg.devDependencies),
@@ -95,16 +98,13 @@ const names = new Set([
   '@deepseek-ai/cosmokit',
 ])
 for (const name of names) {
-  const manifest = name === '@earendil-works/pi-ai'
-    ? hostPiManifest
-    : runtimeRequire.resolve(name + '/package.json')
+  if (name === '@earendil-works/pi-ai') continue
+  const manifest = runtimeRequire.resolve(name + '/package.json')
   const target = dirname(manifest)
   if (name.startsWith('@deepseek-ai/dsh-')) {
     assert.equal(readJson(join(target, 'package.json')).version, runtimeDshVersion, `${name} must match the selected DSH runtime`)
     assert.equal(pkg.peerDependencies[name], compatibility.dshInstallRange, `${name} peer must use the shared DSH install range`)
   }
-  if (name === '@earendil-works/pi-ai')
-    assert.equal(readJson(join(target, 'package.json')).version, compatibility.verifiedHostPi)
   const destination = resolve(root, 'node_modules', name)
   assert.ok(destination.startsWith(resolve(root, 'node_modules') + sep))
   // Node resolution can fall back to this checkout for build-only dependencies.
@@ -118,4 +118,4 @@ for (const name of names) {
   mkdirSync(dirname(destination), { recursive: true })
   symlinkSync(target, destination, process.platform === 'win32' ? 'junction' : 'dir')
 }
-console.log(`Linked DSH ${runtimeDshVersion} within ${compatibility.dshInstallRange}; verified baseline ${compatibility.verifiedDsh}; host Pi ${compatibility.verifiedHostPi}`)
+console.log(`Linked DSH ${runtimeDshVersion} within ${compatibility.dshInstallRange}; verified baseline ${compatibility.verifiedDsh}; host Pi ${compatibility.verifiedHostPi}; plugin Pi ${compatibility.verifiedPluginPi}`)

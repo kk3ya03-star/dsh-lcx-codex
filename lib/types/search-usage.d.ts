@@ -57,7 +57,10 @@ export declare const searchUsageProjection: {
 type Meter = {
     measure(session: Session, header?: EpochHeader): TokenMeasurement;
 };
+type SessionProjections = {
+    stateOf(session: Session, key: string): unknown;
+};
 /** Own a reversible adapter on the public measure method, never a DSH file or private fold. */
-export declare function installSearchMeasurement(meter: Meter): () => void;
+export declare function installSearchMeasurement(meter: Meter, projections: SessionProjections): () => void;
 export declare function installSearchUsage(ctx: Context): void;
 export {};

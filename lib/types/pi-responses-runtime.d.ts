@@ -3,6 +3,7 @@ export { convertResponsesMessages, convertResponsesTools, processResponsesStream
 export { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
 export { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 export { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+export { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export type BundledResponsesProvider = "cloudflare-ai-gateway" | "github-copilot" | "openai" | "opencode" | "opencode-go" | "xai";
 export declare function getBuiltinProviders(): readonly BundledResponsesProvider[];

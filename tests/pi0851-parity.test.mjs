@@ -38,7 +38,7 @@ test('Pi public stream accepts a V2 payload hook but does not expose opaque comp
   assert.deepEqual(native.compaction, item)
 })
 
-test('ordinary, Compact and Replay cache/output-token fields match the actual Pi 0.85.1 payload', async () => {
+test('ordinary, Compact and Replay cache/output-token fields match the actual Pi 0.86.0 payload', async () => {
   for (const explicit of [true, false]) for (const supportsLong of [true, false]) for (const retention of ['long', 'short', 'none']) {
     const model = {
       id: 'gpt-5.6-sol', name: 'fixture', provider: 'openai', api: 'openai-responses',
@@ -80,7 +80,7 @@ async function capturedPiBody(model, reasoning) {
   return payload
 }
 
-test('Grok reasoning/default envelope matches actual Pi 0.85.1 payloads', async () => {
+test('Grok reasoning/default envelope matches actual Pi 0.86.0 payloads', async () => {
   const builtins = new Map(getBuiltinModels('xai').map(model => [model.id, model]))
   const fixtures = [
     { name: 'grok-4.3 default off', model: builtins.get('grok-4.3') },

@@ -1,3 +1,5 @@
+import { abortError } from "./abort-error.js";
+
 type Release = () => void;
 
 interface Waiter {
@@ -5,11 +7,6 @@ interface Waiter {
   reject: (reason?: unknown) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
-}
-
-function abortReason(signal?: AbortSignal): Error {
-  if (signal?.reason instanceof Error) return signal.reason;
-  return new DOMException("The operation was aborted", "AbortError");
 }
 
 export class ServiceMutex {
@@ -26,7 +23,7 @@ export class ServiceMutex {
       return Promise.reject(
         this.closeReason ?? new Error("service mutex closed"),
       );
-    if (signal?.aborted) return Promise.reject(abortReason(signal));
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     if (!this.locked) {
       this.locked = true;
       return Promise.resolve(() => this.release());
@@ -38,7 +35,7 @@ export class ServiceMutex {
           const index = this.queue.indexOf(waiter);
           if (index >= 0) this.queue.splice(index, 1);
           signal.removeEventListener("abort", onAbort);
-          reject(abortReason(signal));
+          reject(abortError(signal));
         };
         waiter.onAbort = onAbort;
         signal.addEventListener("abort", onAbort, { once: true });
@@ -54,7 +51,7 @@ export class ServiceMutex {
       if (waiter.signal && waiter.onAbort)
         waiter.signal.removeEventListener("abort", waiter.onAbort);
       if (waiter.signal?.aborted) {
-        waiter.reject(abortReason(waiter.signal));
+        waiter.reject(abortError(waiter.signal));
         continue;
       }
       waiter.resolve(() => this.release());

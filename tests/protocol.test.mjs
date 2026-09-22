@@ -405,14 +405,16 @@ test('Alpha response parser strips encrypted fields and keeps refs', () => {
   assert.equal(parsed.sources[0].url, 'https://example.com/')
 })
 
-test('DSH 0.1.5 request-image projection covers user and tool-result images', async () => {
+test('DSH 0.1.6 request-image projection covers user and tool-result images', async () => {
   let policy
+  let readImageRequestCalls = 0
   let readImageCalls = 0
   const ref = { attachmentId: 'sha256:test', mediaType: 'image/png', bytes: 2_000_000, width: 2048, height: 2048 }
   const ctx = {
     attachments: {
       imageHostPath(input) { assert.equal(input, ref); return 'F:/dsh/attachments/object.png' },
       async readImageRequest(input, nextPolicy) {
+        readImageRequestCalls += 1
         assert.equal(input, ref)
         policy = nextPolicy
         return {
@@ -438,15 +440,23 @@ test('DSH 0.1.5 request-image projection covers user and tool-result images', as
   ], ctx, {
     imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:20*1024*1024,
   })
-  assert.deepEqual(policy, { maxPixels:123456, maxBytes:654321 })
+  assert.deepEqual(policy, { width:351, height:351, maxBytes:654321 })
+  assert.equal(readImageRequestCalls, 1)
   assert.equal(readImageCalls, 0)
   assert.equal(result.input.some(item => item?.content?.some?.(part => part.type === 'input_image')), true)
+  assert.equal(JSON.stringify(result.input).includes('data:image/png;base64,AQID'), true)
   assert.equal(result.input.some(item => item?.type === 'function_call_output' && item.output?.some?.(part => part.type === 'input_image')), true)
   assert.equal(JSON.stringify(result.input).includes('request preview 10x10px'), true)
   assert.equal(JSON.stringify(result.input).includes('/sandbox/attachments/object.png'), true)
   assert.equal(result.imageMap.size, 1)
 
-  const offloaded = await serializeDshMessages([{ role:'user', content:[{ type:'image', attachment:ref }] }], ctx, {
+  await assert.rejects(
+    serializeDshMessages([{ role:'user', content:[{ type:'image', attachment:ref }] }], ctx, {
+      imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:1,
+    }),
+    { code: 'IMAGE_OFFLOAD_REQUIRED' },
+  )
+  const offloaded = await serializeDshMessages([{ role:'user', content:[{ type:'image', offloaded:true, attachment:ref }] }], ctx, {
     imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:1,
   })
   assert.equal(JSON.stringify(offloaded.input).includes('image omitted to fit request image limits'), true)

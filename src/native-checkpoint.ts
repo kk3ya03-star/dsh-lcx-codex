@@ -717,15 +717,73 @@ export function stateRouteCompatible(
 ) {
   return routeCompatible(state, route, ctx);
 }
+const DSH_PROJECTION_UNAVAILABLE_PREFIX = 'session message projection "';
+const DSH_PROJECTION_UNAVAILABLE_SUFFIX =
+  '" was removed or replaced; restore the session with its owning plugin';
+
 /**
+ * DSH 0.1.6 attaches no error code or subclass to this failure and exposes no
+ * public inventory of required or active projections, so message shape is the
+ * only available signal. Both classes fail closed, so a misclassification
+ * costs precision in the error code, not correctness.
+ * @param {unknown} cause
+ */
+function isMissingOrReplacedProjectionError(cause: unknown): cause is Error {
+  if (!(cause instanceof Error)) return false;
+  const { message } = cause;
+  if (
+    !message.startsWith(DSH_PROJECTION_UNAVAILABLE_PREFIX) ||
+    !message.endsWith(DSH_PROJECTION_UNAVAILABLE_SUFFIX)
+  )
+    return false;
+  const projectionType = message.slice(
+    DSH_PROJECTION_UNAVAILABLE_PREFIX.length,
+    message.length - DSH_PROJECTION_UNAVAILABLE_SUFFIX.length,
+  );
+  return projectionType.length > 0;
+}
+
+function checkpointHistoryReadError(cause: unknown) {
+  return Object.assign(
+    new Error("Unsupported or invalid LCX checkpoint history; start a new session", {
+      cause,
+    }),
+    { code: "LCX_CHECKPOINT_UNSUPPORTED" },
+  );
+}
+
+/**
+ * DSH 0.1.6 derives a message only while every `SessionMessageProjection` the
+ * durable log committed is still registered; an absent or replaced owner throws
+ * instead of yielding pre-projection content. Reconstructing the shadowed
+ * transcript without that owner would resurrect content a durable decision
+ * (for example `image/offload`) removed, so this is a checkpoint
+ * incompatibility rather than a recoverable read.
  * @param {Session} session
  * @param {number} seq
  * @returns {Message | undefined}
  */
 function eventMessage(session: Session, seq: number) {
-  if (!Number.isSafeInteger(seq) || seq < 0) return undefined;
-  const event = session.eventAt(SessionSeq(seq));
-  return event ? (session.deriveEventMessage(event) ?? undefined) : undefined;
+  if (!Number.isSafeInteger(seq) || seq < 0)
+    throw checkpointHistoryReadError(
+      new Error("Portable checkpoint history contains an invalid event sequence"),
+    );
+  try {
+    const event = session.eventAt(SessionSeq(seq));
+    if (!event)
+      throw new Error(`Portable checkpoint history is missing event at seq ${seq}`);
+    return session.deriveEventMessage(event) ?? undefined;
+  } catch (cause) {
+    if (isMissingOrReplacedProjectionError(cause))
+      throw Object.assign(
+        new Error(
+          "Session history requires a message projection this runtime does not provide; restore the owning plugin to reuse this checkpoint",
+          { cause },
+        ),
+        { code: "LCX_CHECKPOINT_PROJECTION_UNAVAILABLE" },
+      );
+    throw checkpointHistoryReadError(cause);
+  }
 }
 /** @param {Message} message */
 function estimateChars(message: Message) {

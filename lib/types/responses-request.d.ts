@@ -46,7 +46,7 @@ export declare function responsesGenerationEnvelope({ model, reasoningEffort, te
     includeDefaultReasoning?: boolean;
 }): UnknownRecord;
 /**
- * Build the shared LCX-owned request envelope while retaining Pi 0.85.1 Responses semantics.
+ * Build the shared LCX-owned request envelope while retaining Pi 0.86.0 Responses semantics.
  * Production LCX ordinary/compact/replay construction places the DSH system prompt in canonical input.
  * @param {BuildResponsesBodyOptions} options
  */

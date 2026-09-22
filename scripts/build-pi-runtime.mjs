@@ -21,7 +21,7 @@ const result = await build({
   metafile: true,
   treeShaking: true,
   banner: {
-    js: '// Generated from public @earendil-works/pi-ai@0.85.1 by scripts/build-pi-runtime.mjs. Do not edit.',
+    js: '// Generated from public @earendil-works/pi-ai@0.86.0 by scripts/build-pi-runtime.mjs. Do not edit.',
   },
 })
 

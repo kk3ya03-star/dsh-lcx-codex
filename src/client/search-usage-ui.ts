@@ -1,5 +1,6 @@
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client';
-import { addTurnUsage, auxiliaryUsageOf, isSearchTool, mergeBuckets, object, type SearchUsage } from '../search-accounting.js';
+import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client';
+import { auxiliaryUsageOf, isSearchTool, object, type SearchUsage } from '../search-accounting.js';
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap { 'lcx-search-usage': readonly SearchUsage[] }
@@ -30,58 +31,89 @@ export const searchUsageDefinition: ConversationNodeDefinition<{turn:number;reco
     return scope==='turn' && s?.complete ? {kind:'turn',turn:s.turn,key:'lcx-search-usage',value:s.records}:null;
   },
 };
-type Entry = {component:unknown; options?:{id?:string;key?:string;order?:number;priority?:number}; locale?:string; children?:unknown; inject?:unknown; store?:unknown};
-type Slots = {entriesOfSlot(name:string):readonly Entry[]; inject(name:string,callback:()=>unknown):unknown; register(options:unknown,component:unknown):unknown};
-type CreateElement = (type:any,props:any,...children:any[])=>any;
+type Translator = (key: string) => string;
+type CreateElement = (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => unknown;
+type UsageSlotName = 'conversation.chat.turnTail' | 'conversation.composer.dock';
+type UsageRegistration = { name: UsageSlotName; id: string; order: number; locale: string };
+type Slots = {
+  inject(name: UsageSlotName, callback: () => unknown): unknown;
+  register(options: UsageRegistration, component: unknown): unknown;
+};
+type TurnTailUsageProps = TurnTailOwnerProps & { t?: Translator };
+type SessionUsageProps = { useProjection: (key: string) => unknown; t?: Translator };
 
-/** Decorate the elected DSH 0.1.5 entry while preserving every non-component owner. */
-export function installUsageSlots(slots:Slots,createElement:CreateElement):()=>void {
-  const cleanups:(()=>void)[]=[];
-  for (const [name,key] of [
-    ['conversation.composer.dock','stats'],['conversation.composer.bar',''],['conversation.chat.node','turn-tail'],
-  ] as const) {
-    let effect: unknown;
-    try {
-      effect=slots.inject(name,()=>{
-        let entries: readonly Entry[];
-        try { entries=slots.entriesOfSlot(name); } catch { return; }
-        if (!Array.isArray(entries) || entries.length===0) return;
-        const candidates=key==='' ? [entries[0]] : entries.filter(e=>e?.options?.id===key||e?.options?.key===key);
-        if (candidates.length!==1) return;
-        const base=candidates[0], original=base?.component;
-        if (!base || typeof original!=='function' || !base.options || typeof base.options!=='object') return;
-        const descriptor=Object.getOwnPropertyDescriptor(base,'component');
-        if (descriptor && descriptor.set===undefined && descriptor.writable===false) return;
-        function WithSearchUsage(props:any):unknown {
-          if (key==='turn-tail') {
-            const location=props?.node?.location;
-            const records=(location?.kind==='turn'||location?.kind==='step') && location.turn?.data?.get
-              ? location.turn.data.get('lcx-search-usage') : undefined;
-            if (!records?.length) return createElement(original,props);
-            return createElement(original,{...props,node:{...props.node,data:{...props.node.data,tokenUsage:addTurnUsage(props.node.data.tokenUsage,records)}}});
-          }
-          if (typeof props?.useProjection!=='function') return createElement(original,props);
-          // Always call the same hooks, including while projections are loading.
-          const extra=props.useProjection('lcxSearchUsage');
-          const breakdown=props.useProjection('contextBreakdown');
-          const useProjection=(projection:string)=>{
-            const value=props.useProjection(projection);
-            if (projection==='tokenUsage' && extra?.auxiliary) return mergeBuckets(value,extra.auxiliary);
-            if (projection==='contextPressure' && extra?.aggregateContext && object(breakdown)) {
-              const tokens=breakdown.systemTokens+breakdown.toolsTokens+breakdown.messageTokens;
-              if (Number.isSafeInteger(tokens) && tokens>=0 && object(value)) return {...value,pressureTokens:tokens,projectedTokens:tokens};
-            }
-            return value;
-          };
-          return createElement(original,{...props,useProjection});
-        }
-        // DSH 0.1.5 exposes the elected StoredEntry. Mutate only its component field.
-        try { base.component=WithSearchUsage; } catch { return; }
-        if (base.component!==WithSearchUsage) return;
-        return ()=>{if(base.component===WithSearchUsage)base.component=original;};
-      });
-    } catch { continue; }
-    if (typeof effect==='function') cleanups.push(effect as ()=>void);
+function tokenCount(value: number): string {
+  return String(value);
+}
+
+function recordsTotal(records: readonly SearchUsage[]): number {
+  let total = 0;
+  for (const record of records) {
+    const value = record.usage.totalTokens;
+    if (!Number.isSafeInteger(value) || value < 0) continue;
+    total += value;
+    if (!Number.isSafeInteger(total)) return 0;
   }
-  return ()=>{for(const dispose of cleanups.reverse())dispose();};
+  return total;
+}
+
+function bucketsTotal(value: unknown): number {
+  if (!object(value)) return 0;
+  let total = 0;
+  for (const key of ['uncachedInputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']) {
+    const count = value[key];
+    if (!Number.isSafeInteger(count) || count < 0) return 0;
+    total += count;
+    if (!Number.isSafeInteger(total)) return 0;
+  }
+  return total;
+}
+
+function usageView(createElement: CreateElement, scope: 'turn' | 'session', total: number, t?: Translator): unknown {
+  if (total <= 0) return null;
+  const label = t?.(scope === 'turn' ? 'usageTurn' : 'usageSession') ?? 'Search usage';
+  return createElement('span', {
+    className: `lcx-search-usage lcx-search-usage-${scope}`,
+    'data-lcx-search-usage': scope,
+    title: `${label}: ${tokenCount(total)}`,
+  }, `${label}: ${tokenCount(total)}`);
+}
+
+/** Additive turn-local usage contribution; the DSH turn-tail renderer remains the owner. */
+function TurnTailUsage({ turn, t }: TurnTailUsageProps, createElement?: CreateElement): unknown {
+  if (!createElement) return null;
+  return usageView(createElement, 'turn', recordsTotal(turn.data.get('lcx-search-usage') ?? []), t);
+}
+
+/** Separate session-level LCX surface; the built-in StatsPills projection is untouched. */
+function SessionUsage({ useProjection, t }: SessionUsageProps, createElement?: CreateElement): unknown {
+  if (!createElement) return null;
+  const extra = useProjection('lcxSearchUsage');
+  const auxiliary = object(extra) ? extra.auxiliary : undefined;
+  return usageView(createElement, 'session', bucketsTotal(auxiliary), t);
+}
+
+/** Register only LCX-owned additive list entries; never inspect or replace DSH entries. */
+export function installUsageSlots(slots: Slots, createElement: CreateElement): () => void {
+  const registrations: readonly [UsageRegistration, unknown][] = [
+    [{ name: 'conversation.chat.turnTail', id: 'lcx-search-usage-turn', order: 0, locale: 'lcx-codex' },
+      (props: TurnTailUsageProps) => TurnTailUsage(props, createElement)],
+    [{ name: 'conversation.composer.dock', id: 'lcx-search-usage-session', order: 10, locale: 'lcx-codex' },
+      (props: SessionUsageProps) => SessionUsage(props, createElement)],
+  ];
+  const cleanups: (() => void)[] = [];
+  for (const [name, component] of registrations) {
+    try {
+      const effect = slots.inject(name.name, () => {
+        const dispose = slots.register(name, component);
+        return typeof dispose === 'function' ? dispose : undefined;
+      });
+      if (typeof effect === 'function') cleanups.push(effect as () => void);
+    } catch {
+      // Optional client surfaces fail closed while the owning fiber remains unloadable.
+    }
+  }
+  return () => {
+    for (const dispose of cleanups.reverse()) dispose();
+  };
 }

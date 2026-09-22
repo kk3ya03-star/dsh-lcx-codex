@@ -1,24 +1,32 @@
-version: 0.4.3
-state: APPROVED_STABLE
+version: 0.4.4-pre.1
+state: APPROVED_PRERELEASE
 approval:
-  product_owner: private-work-74-9cfa3ed6c7d73464985f6a8871ab68a2cfd199a4
-readiness:
-  state: APPROVED
-  policy: Stable promotion is authorized only after zero-functional-change verification.
+  product_owner: private-work-77-71f7e3271712bb7a655c62ec941fb3172c6e1dd0
+  reference: docs/qa/issue-77/PRODUCT-OWNER-APPROVAL.md
+source:
+  repository: kk3ya03-star/dsh-lcx-codex-private
+  commit: 515b204312a1bbd7374750230d4d0088e0dc5a4b
+  tree: efede9d971ccb54de6495a35656d54e7f5e5cffe
+  policy: Exact approved candidate provenance and evidence are recorded in docs/qa/issue-77/DISPOSITIONS.md and docs/qa/issue-77/PRODUCT-OWNER-APPROVAL.md.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.4.3
-  npm_dist_tag: latest
-  previous_latest_must_be: 0.4.2
-promotion_basis:
-  source_version: 0.4.3-pre.13
-  source_tag: v0.4.3-pre.13
-  source_commit: d939f4adc095b447664619ba18684d7851da7fbe
-  zero_functional_change_required: true
+  tag: v0.4.4-pre.1
+  npm_dist_tag: prelatest
+  stable_latest_must_remain: 0.4.3
+verification:
+  state: TECHNICAL_REVIEW_PASSED
+  policy: Technical Lead final review passed at 515b204; Product Owner approval is recorded separately and publication has not yet occurred.
 runtime_basis:
-  dsh: 0.1.5-rc.1
+  dsh: 0.1.6-alpha.2
   host_pi: 0.85.1
-  plugin_pi: 0.85.1
+  plugin_pi: 0.86.0
+  qualification: Exact 0.1.6-alpha.2 candidate approved for controlled prerelease promotion; latest-only, no 0.1.5 compatibility claim. Host Pi and plugin Pi are separate dependencies and are intentionally unequal.
+  remaining: No acceptance blocker is open. Grok native web, X and mixed search are evidenced on xai/grok-4.6 from provider usage counters; that scope is bound to grok-4.6 and is not generalized to grok-4.5. See docs/qa/issue-77/GROK-46-X-SEARCH.md.
 publication:
   state: APPROVED_PENDING_PUBLISH
+  policy: Product Owner approval is recorded for this exact candidate. Public promotion must still follow the governed export, public-tree verification, tag/npm/release, and post-publish verification path.
+previous_release:
+  version: 0.4.3-pre.13
+  tag: v0.4.3-pre.13
+  policy: Existing published artifact and tag are immutable and must not be reused.

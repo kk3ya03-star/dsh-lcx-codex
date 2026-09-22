@@ -17,7 +17,7 @@ test('media client keeps helper names isolated from adjacent bundled plugins', (
 function fixture() {
   let client, definition, settings, settingsView, media, mediaView
   let scopeListener
-  const stores = [], disposers = [], writes = [], elements = []
+  const stores = [], disposers = [], writes = [], elements = [], definitions = []
   const disposed = { definition: 0, slots: 0, scope: 0 }
   const hookStates = new Map()
   const effects = new Map()
@@ -92,14 +92,16 @@ function fixture() {
     } },
     settingsScope: scope,
     uiConversation: { events: { register(value) {
-      definition = value
+      definitions.push(value?.kind)
+      // Selected by kind: the client registers the usage producer alongside this one.
+      if (value?.kind === 'lcx-search-media') definition = value
       return () => { disposed.definition += 1 }
     } } },
     slots: {
       inject(_name, register) { return register() },
       register(entry, component) {
         const injected = entry.inject()
-        if (entry.name === 'settings.plugin.item') {
+        if (entry.name === 'plugins.bundle.config') {
           settings = injected
           settingsView = component
         } else {
@@ -113,7 +115,7 @@ function fixture() {
   })
   const dispose = () => disposers.reverse().forEach(value => value())
   return {
-    definition, settings, settingsView, media, mediaView, stores, elements,
+    definition, definitions, settings, settingsView, media, mediaView, stores, elements,
     values, writes, disposed, dictionaries, dispose, renderComponent,
     unmountEffects() { for (const effect of effects.values()) effect.cleanup?.(); effects.clear() },
   }
@@ -220,7 +222,8 @@ test('media renderer does not mount or request anything while off', () => {
 
 test('media client disposes definition, both slots, dictionaries and settings subscription', () => {
   const f = fixture()
+  assert.deepEqual(f.definitions, ['lcx-search-usage', 'lcx-search-media'])
   f.dispose()
-  assert.deepEqual(f.disposed, { definition: 1, slots: 2, scope: 1 })
+  assert.deepEqual(f.disposed, { definition: 2, slots: 2, scope: 1 })
   assert.equal(f.dictionaries.size, 0)
 })

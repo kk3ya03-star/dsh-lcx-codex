@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session, EpochHeader } from '@deepseek-ai/dsh-session';
-import { SessionSeq } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import type { TokenMeasurement } from '@deepseek-ai/dsh-token-meter';
 import { addUsage, aggregateContextOf, auxiliaryUsageOf, isSearchTool, zeroBuckets, type Buckets } from './search-accounting.js';
@@ -32,22 +31,17 @@ export const searchUsageProjection = {
   wire:{viewSchema:schema,view:({auxiliary,aggregateContext}:SearchUsageState)=>({auxiliary,aggregateContext})},
 } satisfies ProjectionDefinition<'lcxSearchUsage'>;
 type Meter = { measure(session:Session, header?:EpochHeader):TokenMeasurement };
+type SessionProjections = { stateOf(session:Session, key:string): unknown };
 const installed = new WeakMap<object,{release:()=>void;refs:number}>();
 /** Own a reversible adapter on the public measure method, never a DSH file or private fold. */
-export function installSearchMeasurement(meter: Meter): () => void {
+export function installSearchMeasurement(meter: Meter, projections: SessionProjections): () => void {
   const existing = installed.get(meter);
   if (existing) { existing.refs++; let active=true; return () => {if(active){active=false;release(meter);}}; }
   const original = meter.measure, descriptor = Object.getOwnPropertyDescriptor(meter,'measure');
-  const cursors = new WeakMap<Session,{seq:number;aggregate:boolean}>();
   function measure(this:Meter,session:Session,header?:EpochHeader):TokenMeasurement {
     const value = original.call(this,session,header);
-    let state = cursors.get(session) ?? {seq:0,aggregate:false};
-    while (state.seq<session.seq) {
-      const e = session.eventAt(SessionSeq(state.seq++));
-      if (e?.type==='assistant/message') state.aggregate = aggregateContextOf(e) ?? false;
-    }
-    cursors.set(session,state);
-    if (!state.aggregate || value.baseline.kind!=='usage') return value;
+    const state = projections.stateOf(session,'lcxSearchUsage') as SearchUsageView | undefined;
+    if (!state?.aggregateContext || value.baseline.kind!=='usage') return value;
     // The official measure already prices retained images/files and surface replacements.
     // Only discard its unsuitable aggregate anchor; keep its current surface and node prices.
     const tools = (header ?? session.requestHeader())?.tools;
@@ -70,7 +64,7 @@ function release(meter:Meter):void {
 }
 export function installSearchUsage(ctx:Context):void {
   ctx.inject(['sessionProjections'], c=>{c.sessionProjections.register(searchUsageProjection);});
-  ctx.inject(['tokenMeter'], c=>{
-    c.effect(()=>installSearchMeasurement(c.tokenMeter),'lcx search context measurement');
+  ctx.inject(['tokenMeter','sessionProjections'], c=>{
+    c.effect(()=>installSearchMeasurement(c.tokenMeter,c.sessionProjections),'lcx search context measurement');
   });
 }

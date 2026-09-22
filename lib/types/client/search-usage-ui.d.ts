@@ -12,25 +12,18 @@ export declare const searchUsageDefinition: ConversationNodeDefinition<{
     pending: Record<string, string>;
     complete: boolean;
 }>;
-type Entry = {
-    component: unknown;
-    options?: {
-        id?: string;
-        key?: string;
-        order?: number;
-        priority?: number;
-    };
-    locale?: string;
-    children?: unknown;
-    inject?: unknown;
-    store?: unknown;
+type CreateElement = (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => unknown;
+type UsageSlotName = 'conversation.chat.turnTail' | 'conversation.composer.dock';
+type UsageRegistration = {
+    name: UsageSlotName;
+    id: string;
+    order: number;
+    locale: string;
 };
 type Slots = {
-    entriesOfSlot(name: string): readonly Entry[];
-    inject(name: string, callback: () => unknown): unknown;
-    register(options: unknown, component: unknown): unknown;
+    inject(name: UsageSlotName, callback: () => unknown): unknown;
+    register(options: UsageRegistration, component: unknown): unknown;
 };
-type CreateElement = (type: any, props: any, ...children: any[]) => any;
-/** Decorate the elected DSH 0.1.5 entry while preserving every non-component owner. */
+/** Register only LCX-owned additive list entries; never inspect or replace DSH entries. */
 export declare function installUsageSlots(slots: Slots, createElement: CreateElement): () => void;
 export {};

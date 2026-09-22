@@ -52,7 +52,7 @@ jobs:
         if: steps.release.outputs.exists == 'false'
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix scripts/runtime-dsh015 --ignore-scripts --no-audit --no-fund
+          npm ci --prefix scripts/runtime-dsh016 --ignore-scripts --no-audit --no-fund
           node scripts/link-dsh-runtime.mjs
       - name: Verify exact generated source and package
         if: steps.release.outputs.exists == 'false'

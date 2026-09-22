@@ -1,3 +1,5 @@
+import { abortError } from "./abort-error.js";
+
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ERROR_BYTES = 512 * 1024;
@@ -17,11 +19,7 @@ function errorFacts(value: unknown): TransportError {
 }
 
 export function abortIfNeeded(signal: AbortLike | undefined) {
-  if (signal?.aborted)
-    throw (
-      signal.reason ??
-      Object.assign(new Error("request aborted"), { code: "LCX_ABORTED" })
-    );
+  if (signal?.aborted) throw abortError(signal);
 }
 function makeError(
   message: string | undefined,
@@ -81,11 +79,11 @@ function delayFromHeaders(headers: Headers, attempt: number) {
 async function sleep(ms: number | undefined, signal: AbortLike | undefined) {
   if (ms === undefined || ms <= 0) return;
   await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
+    if (signal?.aborted) return reject(abortError(signal));
     const onAbort = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      reject(signal?.reason);
+      reject(abortError(signal));
     };
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
@@ -198,7 +196,7 @@ export async function fetchJsonWithRetry(
       }
       return parsed;
     } catch (error) {
-      if (signal?.aborted) throw signal.reason ?? error;
+      if (signal?.aborted) throw abortError(signal, error);
       const details = errorFacts(error);
       const retryable =
         details.retryable === true ||
@@ -289,7 +287,7 @@ export async function fetchSseWithRetry<T = Response>(
         return await options.consume(response, { requestSignal });
       return response as T;
     } catch (error) {
-      if (signal?.aborted) throw signal.reason ?? error;
+      if (signal?.aborted) throw abortError(signal, error);
       const details = errorFacts(error);
       const retryable =
         details.retryable === true ||

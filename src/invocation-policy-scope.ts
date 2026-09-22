@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { abortError } from "./abort-error.js";
 
 type MutableTarget = object;
 type PolicyKey = "config" | "pruneSession";
@@ -168,11 +169,6 @@ function restoreProjection(record: ProjectionRecord): void {
   } catch {}
 }
 
-function operationError(signal?: AbortSignal): Error {
-  if (signal?.reason instanceof Error) return signal.reason;
-  return new DOMException("The operation was aborted", "AbortError");
-}
-
 export class InvocationPolicyScope {
   private readonly records = new Set<ProjectionRecord>();
   private readonly queue: AccessWaiter[] = [];
@@ -198,7 +194,7 @@ export class InvocationPolicyScope {
       return Promise.reject(
         this.closeReason ?? new Error("invocation policy scope closed"),
       );
-    if (signal?.aborted) return Promise.reject(operationError(signal));
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     if (
       this.queue.length === 0 &&
       !this.exclusiveActive &&
@@ -215,7 +211,7 @@ export class InvocationPolicyScope {
           const index = this.queue.indexOf(waiter);
           if (index >= 0) this.queue.splice(index, 1);
           signal.removeEventListener("abort", onAbort);
-          reject(operationError(signal));
+          reject(abortError(signal));
           this.flushQueue();
         };
         waiter.onAbort = onAbort;
@@ -241,7 +237,7 @@ export class InvocationPolicyScope {
         this.queue.shift();
         if (waiter.onAbort)
           waiter.signal.removeEventListener("abort", waiter.onAbort);
-        waiter.reject(operationError(waiter.signal));
+        waiter.reject(abortError(waiter.signal));
         continue;
       }
       if (waiter.mode === "exclusive") {

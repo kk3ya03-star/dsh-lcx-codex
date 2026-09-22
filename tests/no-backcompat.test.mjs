@@ -201,7 +201,9 @@ test('DSH image budgets reach actual managed ordinary serialization instead of L
     const message = { ...user('image'), content: [{ type: 'image', attachment: { attachmentId: 'sha256:fixture', bytes: 3, mediaType: 'image/png', width: 1, height: 1 } }] }
     await collect(h.handlers.get('llm/stream')({ ...selected, messages: [message] }, () => { throw new Error('native must not run') }))
     assert.equal(requests, 1)
-    assert.deepEqual(h.imageOptions, [{ maxPixels: 123, maxBytes: 456 }])
+    assert.deepEqual(h.imageOptions, [
+      { width: 1, height: 1, maxBytes: 456 },
+    ])
   } finally { globalThis.fetch = oldFetch }
 })
 

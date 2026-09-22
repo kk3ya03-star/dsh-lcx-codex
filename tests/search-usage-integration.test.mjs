@@ -40,7 +40,7 @@ function reply(s,scope='aggregate',turn=1){
 }
 test('integration runs against the untouched official token-meter artifact',()=>{
  const digest=createHash('sha256').update(readFileSync(new URL('../node_modules/@deepseek-ai/dsh-token-meter/lib/index.js',import.meta.url))).digest('hex');
- assert.equal(digest,'f91bdd543a161cfbeec3450f44fc0ce310f5354b1be61d83dbce773d62ab011a');
+ assert.equal(digest,'873372167705d3821fdc23b2a64f5e4c284039f313217728c37e509c59d134cc');
 });
 test('plugin-only aggregate pressure correction preserves exact billing and cold restore',async t=>{
  const{ctx,session}=await fixture(t);reply(session);
@@ -156,7 +156,7 @@ test('meter correction is isolated between concurrent sessions and releases idem
  assert.equal(ctx.tokenMeter.measure(other).totalTokens,335010);
  assert.ok(ctx.tokenMeter.measure(session).totalTokens<12000);
  const meter=ctx.tokenMeter;
- const stop1=installSearchMeasurement(meter),stop2=installSearchMeasurement(meter);
+ const stop1=installSearchMeasurement(meter,ctx.sessionProjections),stop2=installSearchMeasurement(meter,ctx.sessionProjections);
  stop1();stop1();assert.ok(meter.measure(session).totalTokens<12000);
  stop2();stop2();assert.ok(meter.measure(session).totalTokens<12000);
 });
@@ -189,36 +189,68 @@ test('official basic compaction skips aggregate billing and triggers after retai
  assert.equal(session.snapshotEvents().filter(e=>e.type==='compaction/end').length,1);
  assert.equal(ctx.sessionProjections.snapshot(session).values.tokenUsage.cacheReadTokens,660000);
 });
-test('public UI slots preserve original renderer, children and actions; merge billing and restore on disposal',()=>{
- const entries=new Map();
- const names=['conversation.composer.dock','conversation.composer.bar','conversation.chat.node'];
- for(const [i,name]of names.entries())entries.set(name,[{component:()=>{},options:i===0?{id:'stats'}:i===2?{key:'turn-tail'}:{},locale:'original',children:{},inject:()=>({})}]);
- const originals=names.map(n=>entries.get(n)[0]);
- const components=originals.map(e=>e.component);
- const slots={entriesOfSlot:n=>entries.get(n),inject(_n,setup){return setup();},register(o,c){const e={component:c,options:o};entries.get(o.name).unshift(e);return()=>entries.get(o.name).splice(entries.get(o.name).indexOf(e),1);}};
- const stop=ui.installUsageSlots(slots,(component,props)=>({component,props}));
- const extra={auxiliary:{uncachedInputTokens:20,outputTokens:10,cacheReadTokens:80,cacheWriteTokens:0},aggregateContext:true};
- const useProjection=k=>({lcxSearchUsage:extra,tokenUsage:{uncachedInputTokens:5000,outputTokens:10,cacheReadTokens:330000,cacheWriteTokens:0},contextPressure:{pressureTokens:335000,projectedTokens:335010,contextWindow:128000},contextBreakdown:{systemTokens:10,toolsTokens:20,messageTokens:10000}}[k]);
- const rendered=entries.get(names[0])[0].component({useProjection,action:'keep'});
- assert.equal(rendered.component,components[0]);assert.equal(rendered.props.action,'keep');assert.equal(rendered.props.useProjection('tokenUsage').cacheReadTokens,330080);
- const composer=entries.get(names[1])[0].component({useProjection});assert.equal(composer.props.useProjection('contextPressure').projectedTokens,10030);
- stop();assert.deepEqual(names.map(n=>entries.get(n)[0]),originals);assert.deepEqual(originals.map(e=>e.component),components);
+test('usage UI registers additive LCX-owned list entries without reading DSH entries',()=>{
+ const registrations=[];
+ const injectCalls=[];
+  const slots={
+    entriesOfSlot(){throw new Error('legacy shadowing inspection is forbidden');},
+    inject(name,setup){injectCalls.push(name);return setup();},
+    register(options,component){const entry={options,component};registrations.push(entry);return()=>{const index=registrations.indexOf(entry);if(index>=0)registrations.splice(index,1);};},
+  };
+ const createElement=(type,props,...children)=>({type,props,children});
+  const stop=ui.installUsageSlots(slots,createElement);
+  assert.deepEqual(injectCalls,['conversation.chat.turnTail','conversation.composer.dock']);
+  assert.deepEqual(registrations.map(entry=>entry.options),[
+    {name:'conversation.chat.turnTail',id:'lcx-search-usage-turn',order:0,locale:'lcx-codex'},
+    {name:'conversation.composer.dock',id:'lcx-search-usage-session',order:10,locale:'lcx-codex'},
+  ]);
+  assert.equal(registrations.some(entry=>entry.options.name==='conversation.composer.bar'),false);
+  assert.equal(registrations.some(entry=>entry.options.name==='conversation.chat.node'),false);
+ const turnEntry=registrations.find(entry=>entry.options.name==='conversation.chat.turnTail');
+  const turnRendered=turnEntry.component({turn:{data:{get:()=>[record]}},seq:1,openFile:()=>{},t:key=>key==='usageTurn'?'Turn search usage':key});
+  assert.equal(turnRendered.type,'span');
+  assert.equal(turnRendered.props['data-lcx-search-usage'],'turn');
+  assert.equal(turnRendered.children[0],'Turn search usage: 110');
+ const dockEntry=registrations.find(entry=>entry.options.name==='conversation.composer.dock');
+  const dockRendered=dockEntry.component({useProjection:key=>key==='lcxSearchUsage'?{auxiliary:{uncachedInputTokens:20,outputTokens:10,cacheReadTokens:80,cacheWriteTokens:0},aggregateContext:true}:undefined,t:key=>key==='usageSession'?'Session search usage':key});
+  assert.equal(dockRendered.type,'span');
+  assert.equal(dockRendered.props['data-lcx-search-usage'],'session');
+  assert.equal(dockRendered.children[0],'Session search usage: 110');
+
+ stop();
+  assert.equal(registrations.length,0);
+
+
+
+
+
+
 });
 
-test('DSH 0.1.5 usage adapter fails closed on ambiguous or immutable entry ownership',()=>{
- const original=()=>{},duplicate=()=>{},bar=Object.freeze({component:original,options:{}});
- const entries=new Map([
-  ['conversation.composer.dock',[{component:original,options:{id:'stats'}},{component:duplicate,options:{id:'stats'}}]],
-  ['conversation.composer.bar',[bar]],
-  ['conversation.chat.node',[{component:'not-callable',options:{key:'turn-tail'}}]],
- ]);
- const before=structuredClone([...entries].map(([name,list])=>[name,list.map(entry=>({options:entry.options,children:entry.children,store:entry.store,inject:entry.inject}))]));
- const slots={entriesOfSlot:name=>entries.get(name),inject(_name,setup){return setup();},register(){throw new Error('must not replace slot owner')}};
- const stop=ui.installUsageSlots(slots,(component,props)=>({component,props}));
- assert.equal(entries.get('conversation.composer.dock')[0].component,original);
- assert.equal(entries.get('conversation.composer.dock')[1].component,duplicate);
- assert.equal(entries.get('conversation.composer.bar')[0].component,original);
- assert.equal(entries.get('conversation.chat.node')[0].component,'not-callable');
- stop();
- assert.deepEqual(structuredClone([...entries].map(([name,list])=>[name,list.map(entry=>({options:entry.options,children:entry.children,store:entry.store,inject:entry.inject}))])),before);
-});
+test('additive usage registrations cleanly unload with slot declarations and the LCX fiber',()=>{
+ const registrations=[];
+  const declarationDisposers=new Map();
+  let registerDisposals=0;
+  const slots={
+    inject(name,setup){
+      const dispose=setup();
+      const stop=()=>{if(typeof dispose==='function')dispose();};
+      declarationDisposers.set(name,stop);
+      return stop;
+    },
+    register(options,component){
+      const entry={options,component};registrations.push(entry);
+      let live=true;
+      return()=>{if(!live)return;live=false;registerDisposals++;const index=registrations.indexOf(entry);if(index>=0)registrations.splice(index,1);};
+    },
+  };
+  const stop=ui.installUsageSlots(slots,(type,props,...children)=>({type,props,children}));
+  assert.equal(registrations.length,2);
+  declarationDisposers.get('conversation.chat.turnTail')();
+  assert.equal(registrations.length,1);
+  declarationDisposers.get('conversation.composer.dock')();
+  assert.equal(registrations.length,0);
+  stop();stop();
+  assert.equal(registerDisposals,2);
+  assert.equal(registrations.length,0);
+ });

@@ -42,7 +42,6 @@ type StreamRequestOptions = {
  * @param {AbortSignal} [signal]
  */
 export declare function managedFailure(error: unknown, signal: AbortLike | undefined): ManagedFailure;
-/** @param {unknown} error @param {AbortSignal} [signal] */
 export declare function managedFailureChunk(error: unknown, signal?: AbortLike): StreamChunk;
 /**
  * Send one LCX-owned OpenAI Responses request. Ordinary and replay use one provider attempt;

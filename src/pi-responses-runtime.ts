@@ -1,4 +1,4 @@
-// Public Pi 0.85.1 runtime surface used by LCX. The release build bundles this file.
+// Public Pi 0.86.0 runtime surface used by LCX. The release build bundles this file.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { CLOUDFLARE_AI_GATEWAY_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-ai-gateway.models";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";
@@ -15,6 +15,7 @@ export {
 export { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
 export { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 export { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+export { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 
 export type BundledResponsesProvider =
