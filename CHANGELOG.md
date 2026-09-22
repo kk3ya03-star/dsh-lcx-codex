@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4-pre.1 - 2026-09-22 (prerelease, `prelatest`)
+
+- Retarget to the DSH `0.1.6` line: install range `>=0.1.6-alpha.2 <0.1.7`, verified on DSH `0.1.6-alpha.2` with host Pi `0.85.1` and bundled plugin Pi `0.86.0`. This release makes no DSH `0.1.5` compatibility claim; use stable `0.4.3` on DSH `0.1.5`.
+- Migrate the bundled Pi to `0.86.0`, including the `Context` → `TranscriptContext` transition on the Responses converter.
+- Render plugin configuration on the supported `plugins.bundle.config` surface of the DSH Plugins page.
+- Image offload uses DSH's durable offload decisions instead of a request-local path.
+- Search-usage UI registers on LCX-owned session slots and reads usage through the session projection instead of rescanning history.
+- Cancellation no longer leaks DSH's plain-object cancel cause into model-facing tool results.
+- Grok native X Search is verified on `grok-4.6`. Stable `latest` remains `0.4.3`.
+
 ## 0.4.3 - 2026-09-10
 
 - Stable zero-functional-change promotion of the fully verified `0.4.3-pre.13` product/runtime payload.

@@ -4,120 +4,142 @@
 
 # LCX Codex
 
-**Better long-running GPT and Grok workflows, web search, and continuous work inside DeepSeek Harness.**
+**Web search and automatic long-conversation compaction for GPT and Grok in DeepSeek Harness.**
 
-[![npm](https://img.shields.io/npm/v/dsh-lcx-codex?label=latest)](https://www.npmjs.com/package/dsh-lcx-codex)
-[![DSH](https://img.shields.io/badge/DSH-0.1.5--rc.1-16803c)](#installation)
+[![npm latest](https://img.shields.io/npm/v/dsh-lcx-codex/latest?label=latest)](https://www.npmjs.com/package/dsh-lcx-codex)
+[![npm prelatest](https://img.shields.io/npm/v/dsh-lcx-codex/prelatest?label=prelatest&color=orange)](https://www.npmjs.com/package/dsh-lcx-codex?activeTab=versions)
 [![License](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
 [简体中文](README.md) · **English** · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues)
 
 </div>
 
-LCX Codex is a community plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH).
+LCX Codex is a community plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) (DSH). Once installed, GPT and Grok in DSH can:
 
-It does not replace DSH or require a second model/provider configuration. Models, credentials, sessions, and tools remain managed by DSH; LCX only adds optional capabilities for GPT and Grok.
+- **Search the web** — GPT uses Responses server-side search (Hosted Search); Grok uses xAI's native Web Search and X Search.
+- **Keep long tasks going** — conversations are compacted automatically near the context limit, so you don't have to start over.
+- **Show images and videos from search results** — previewed below the answer; click to enlarge or play.
 
-## What it adds
+Models, API keys, sessions and other tools stay managed by DSH — there is nothing extra to configure. Other models (such as DeepSeek) keep using DSH's own behavior.
 
-| Capability | Best for |
-| --- | --- |
-| GPT web search | Let GPT search the web through DSH's normal `web_search` entrypoint. |
-| GPT advanced search | Image search, domain filters, location, and other additional search controls. |
-| Grok native Web / X Search | Use xAI Responses native Web Search and X Search directly. |
-| Long-conversation compaction | Let compatible GPT routes compact long sessions remotely and continue working. |
-| Search media previews | Preview available images and direct video links below answers. |
-| Alpha web actions | Experimental follow-up web reading for tasks that need to open or inspect search results. |
+## Requirements
 
-Other models continue through their normal DSH paths.
+- DSH with a **GPT or Grok Responses API route** configured (official API or a compatible gateway).
+- Node.js `^22.19.0` or `>=24.0.0`.
+
+> Search and compaction rely on server-side capabilities. A gateway that chats fine may still not support them — see [Known limitations](#known-limitations).
 
 ## Installation
 
-Current stable release: **`dsh-lcx-codex@0.4.3`**
+### 1. Pick the plugin version for your DSH version
 
-Compatible environment:
+Run `dsh --version`, then use this table:
 
-- DSH `0.1.5` line starting at `0.1.5-rc.1` (current fully verified baseline: `0.1.5-rc.1`)
-- Node.js `^22.19.0 || >=24.0.0`
+| Your DSH version | LCX version | Tag to install |
+| --- | --- | --- |
+| `0.1.6` line (`0.1.6-alpha.2` and later) | `0.4.4-pre.1` (prerelease) | `@prelatest` |
+| `0.1.5` line (`0.1.5-rc.1` and later) | `0.4.3` (stable) | `@latest` |
 
-Install:
+Stick to this table: `0.4.3` does not support DSH `0.1.6`, and `0.4.4-pre.1` does not support DSH `0.1.5`. A mismatched install may only print dependency warnings, but the plugin may not work properly.
+
+### 2. Install and start
+
+DSH `0.1.6` line:
 
 ```sh
-dsh plugin --profile web add dsh-lcx-codex@0.4.3
+dsh plugin --profile web add dsh-lcx-codex@prelatest
 dsh web
 ```
 
-For later stable updates:
+DSH `0.1.5` line:
 
 ```sh
 dsh plugin --profile web add dsh-lcx-codex@latest
+dsh web
 ```
 
-Installing without a version or with `@latest` selects the current stable release. Use `@prelatest` only when you want the prerelease channel; `0.4.3-pre.13` remains available as the verified prerelease immediately preceding this stable promotion.
+To update later, run the same `add` command again.
 
-This release installs directly on official DSH `0.1.5-rc.1`; the old Windows `fs-ext` workaround is no longer required.
+### 3. Turn features on
 
-## Enable features
+In DSH Web, open the Plugins page, find the LCX configuration card **Responses / Codex capabilities**, turn on what you need, then click **Save**.
 
-Open DSH Web plugin settings and find **Responses / Codex capabilities**.
+**GPT**
 
-### GPT
+| Switch | What it does | Suggested |
+| --- | --- | --- |
+| **Enable LCX** | Master switch for GPT features, including automatic compaction | On when using GPT |
+| **Use GPT Hosted Search as DSH web_search backend** | GPT web search | On when you need the web |
+| **Enable advanced Hosted tool** | Image search, domain filters, location, etc. (requires the previous switch) | As needed |
+| **Enable Alpha command** | Experimental: lets GPT open and search inside result pages | Not needed day to day |
 
-For normal GPT use, enable:
+**Grok native search** (independent of "Enable LCX")
 
-1. **Enable LCX**
-2. **GPT Hosted Search** when web access is needed
+| Switch | What it does |
+| --- | --- |
+| **Enable native Web Search** | Grok searches the web |
+| **Enable native X Search** | Grok searches X |
 
-Optional features:
+With either one on, Grok uses xAI's native search; page reading and other DSH / MCP tools keep working.
 
-- **Advanced Hosted tool**: for image search, domains, location, and other advanced search controls. It requires GPT Hosted Search.
-- **Alpha**: experimental follow-up web actions. It is not needed for ordinary web search.
+**Display**
 
-### Grok
+| Switch | What it does |
+| --- | --- |
+| **Search media previews** | Shows images and videos from search results below the answer; click to enlarge or play. Display only — never changes what is sent to the model |
 
-Grok native search is independent of the GPT LCX switch:
+## Usage
 
-- **Grok native Web Search** searches the web.
-- **Grok native X Search** searches X.
+Just talk to the model as usual — no tool parameters needed:
 
-When Grok native search is enabled, LCX uses xAI's server-side search while keeping page-reading and other DSH / MCP tools available.
+> Search the Python docs and tell me how to use `asyncio.TaskGroup`.
 
-### Search media previews
+> Find a few photos of the Golden Gate Bridge, show one, and include the source page.
 
-**Search media previews** can be enabled independently. They change presentation only; they do not modify model prompts, search requests, conversation history, or cache behavior.
+> Use Grok to check recent discussion about this project on X.
 
-Images can appear as thumbnails with an enlarged view. Direct video links can be opened in the native player. If media cannot be loaded, the original answer and source link stay intact.
+Long conversations compact automatically near the limit; you can also type `/compact` at any time.
 
-## Examples
+## Upgrading
 
-Use normal language; you do not need to write tool arguments yourself.
+- **Moving DSH from `0.1.5` to `0.1.6`**: switch the plugin to `@prelatest` (`0.4.4-pre.1`). `0.4.3` does not support DSH `0.1.6`.
+- **Start a new session after upgrading**: compaction state saved by older versions is not guaranteed to be compatible.
 
-> Search the official Python documentation and explain how `asyncio.TaskGroup` should be used.
+## Disabling and uninstalling
 
-> Find a few photos of the Golden Gate Bridge, show one, and include its source page.
+- **Disable temporarily**: turn off **Enable LCX** and the Grok native search switches in the configuration card and save; GPT and Grok go back to DSH's native behavior.
+- **Uninstall**:
 
-> With Grok, search X for recent discussion about this project.
+  ```sh
+  dsh plugin --profile web remove dsh-lcx-codex
+  ```
 
-Long tasks do not require you to watch the context window manually. With LCX enabled, compatible GPT routes can automatically compact long conversations and keep working. You can also use `/compact` manually.
+## Known limitations
 
-## Compatibility and known limits
-
-- The current fully verified baseline for `0.4.3` is DSH `0.1.5-rc.1`. Later releases in the same `0.1.5` line are installable for separate compatibility assessment; `0.1.6` and later are not treated as compatible automatically.
-- When upgrading from much older LCX / DSH versions, starting a new session is recommended; old saved compaction state is not guaranteed to remain compatible.
-- Grok native search supports API-key / API-gateway routes. xAI OAuth / SuperGrok login is outside the current scope.
-- Alpha remains experimental. Search works, but follow-up `open / find` operations can still fail on some routes, and screenshots are not guaranteed to return as displayable images.
-- After enabling or disabling the plugin in the DSH profile, an already-open browser page may need to be refreshed.
-- API gateways vary in capability. A working normal chat does not guarantee that search, long-conversation compaction, Alpha, or Grok native search is also supported.
+- **Gateway support varies**: search, compaction and Alpha all depend on server-side features that differ between gateways.
+- **Grok**: API-key / API-gateway routes are supported; xAI OAuth / SuperGrok login is not. In `0.4.4-pre.1`, native X Search has only been verified on `grok-4.6`.
+- **Alpha is experimental**: search works, but follow-up open/find actions can fail on some routes, and screenshots may not display.
+- **DSH `0.1.5` + LCX `0.4.3`**: after enabling or disabling LCX in plugin settings, open browser tabs may need a refresh.
+- **Verification scope**: `0.4.4-pre.1` is fully verified on DSH `0.1.6-alpha.2`; `0.4.3` on DSH `0.1.5-rc.1`. Later versions in the same line can be installed but are not individually verified — please report problems.
 
 ## Troubleshooting
 
-**Installed but nothing changed?** Make sure installation and startup use the same `web` profile, then confirm the relevant feature switches were saved.
+**Nothing changed after installing?**
+Make sure you installed and started with the same profile (`web` in the examples above) and that your switches are saved.
 
-**Conversation works but search or compaction fails?** Check that the selected GPT / Grok Responses route actually provides the required server-side capability. A gateway product name alone does not guarantee every feature.
+**Chat works, but search or compaction fails?**
+Most likely the current GPT / Grok route does not provide that server-side capability. Try the official API or another gateway to compare.
 
-When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), include plugin, DSH, and Node.js versions plus reproduction steps. Do not post API keys, full requests, or unredacted session logs.
+**Dependency warnings during install, or the plugin fails to load?**
+Usually your DSH and plugin versions don't match — pick again using [the table above](#1-pick-the-plugin-version-for-your-dsh-version).
 
-## More information
+## Reporting issues
+
+Please include in your [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues): plugin version, DSH version, Node.js version, model/gateway type, and steps to reproduce.
+
+**Do not upload API keys, full request bodies, or unredacted session logs.**
+
+## More
 
 - [Changelog](CHANGELOG.md)
 - [Architecture](ARCHITECTURE.md)
@@ -125,4 +147,4 @@ When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), i
 
 ## License
 
-[MIT](LICENSE). Independent community plugin, not affiliated with or endorsed by OpenAI, DeepSeek, Sub2API, or NewAPI.
+[MIT](LICENSE). An independent community plugin, not affiliated with or endorsed by OpenAI, xAI, DeepSeek, Sub2API or NewAPI.
