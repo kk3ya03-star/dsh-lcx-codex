@@ -64,6 +64,10 @@ To update later, run the same `add` command again.
 
 In DSH Web, open the Plugins page, find the LCX configuration card **Responses / Codex capabilities**, turn on what you need, then click **Save**.
 
+<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/settings-card.png" alt="LCX plugin configuration card" width="720" />
+
+*(Screenshot shows the Chinese UI; switch names are listed in English in the tables below.)*
+
 **GPT**
 
 | Switch | What it does | Suggested |

@@ -64,6 +64,8 @@ dsh web
 
 打开 DSH Web 的插件页面，在 LCX 的配置卡片 **Responses / Codex 能力** 中按需打开下列开关，然后点击 **保存**。
 
+<img src="https://raw.githubusercontent.com/kk3ya03-star/dsh-lcx-codex/main/assets/settings-card.png" alt="LCX 插件配置卡片" width="720" />
+
 **GPT**
 
 | 开关 | 作用 | 建议 |
