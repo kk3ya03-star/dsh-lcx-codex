@@ -1,3 +1,4 @@
+import { installSettingsCompat } from "./settings-compat.js";
 import z from "@deepseek-ai/schemastery";
 import { recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
 import { installSearchUsage } from "./search-usage.js";
@@ -325,7 +326,22 @@ function defaultAlphaRefPath() {
   return join(dshHome(), "storages", "lcx-codex", "web-alpha-refs.json");
 }
 
+const SettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  webSearch: z.boolean().default(false),
+  advancedHostedSearch: z.boolean().default(false),
+  alphaSearch: z.boolean().default(false),
+  grokNativeWebSearch: z.boolean().default(false),
+  grokNativeXSearch: z.boolean().default(false),
+  searchMediaPreview: z.boolean().default(false),
+});
+
 export const Config = z.object({
+  ...Object.fromEntries(Object.entries(SettingsSchema.dict!).map(([key]) => {
+    const live = z.boolean().default(false);
+    Object.assign(live.meta, { volatile: true });
+    return [key, live];
+  })),
   supportsLongCacheRetention: z.boolean().default(false),
   supportsExplicitPromptCacheMode: z.boolean().default(false),
   alphaCapabilityPath: z.string().default(""),
@@ -347,16 +363,6 @@ export const Config = z.object({
   nativeRetentionTokenBudget: z.number().default(64_000),
   assistantRetentionTokenReserve: z.number().default(24_000),
   assistantRetentionPerMessageTokenCap: z.number().default(3_000),
-});
-
-const SettingsSchema = z.object({
-  enabled: z.boolean().default(false),
-  webSearch: z.boolean().default(false),
-  advancedHostedSearch: z.boolean().default(false),
-  alphaSearch: z.boolean().default(false),
-  grokNativeWebSearch: z.boolean().default(false),
-  grokNativeXSearch: z.boolean().default(false),
-  searchMediaPreview: z.boolean().default(false),
 });
 
 function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
@@ -1775,7 +1781,7 @@ function installInjected(
     searchMediaPreview: false,
   };
   let source: () => SettingsState = () => settingsEntry;
-  ctx.settings.installSection(
+  installSettingsCompat(
     ctx,
     SETTINGS_NS,
     SettingsSchema,
