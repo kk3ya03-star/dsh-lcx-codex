@@ -1,3 +1,4 @@
+import { readSettingsCompat } from "./settings-compat.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -146,7 +147,7 @@ export function settingsValue(
   ctx: RouteContext | null | undefined,
   namespace: string,
 ): LlmSettingsSection | undefined {
-  return asLlmSettingsSection(ctx?.settings?.get(namespace));
+  return asLlmSettingsSection(readSettingsCompat(ctx?.settings, namespace));
 }
 
 /** The DSH 0.1.5 contract exposes deferred provider diagnostics separately from saved settings. */
