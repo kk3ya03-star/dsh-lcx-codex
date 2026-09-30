@@ -80,14 +80,14 @@ public_export:
     - tools/**
     - .github/**
 verification:
-  state: READY_FOR_PUBLIC_EXPORT
-  policy: Engineering, runtime, browser and repository-level acceptance passed on the frozen source. Public export/tree/package verification and final irreversible confirmation remain before publication.
+  state: READY_FOR_FINAL_CONFIRMATION
+  policy: Engineering, runtime, browser and repository-level acceptance passed on the frozen source. Public export/tree/package/public-CI verification passed for the release candidate. Final irreversible confirmation remains before publication.
 runtime_basis:
   dsh: 0.2.0-rc.2
   host_pi: 0.87.1
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS / TL_ACCEPTED for the exact DSH 0.2 candidate lineage. Publication does not by itself promote this assessment to VERIFIED.
-  remaining: Public export/readiness verification is pending. Issue #62 remains an upstream typed-provenance seam and #105 is an upstream CSS-cleanup tracker; neither is a release blocker. Real provider Alpha spill-threshold crossing remains not covered, while deterministic F13 spill/cold-locator coverage passes.
+  remaining: Final irreversible Product Owner confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 is an upstream CSS-cleanup tracker; neither is a release blocker. Real provider Alpha spill-threshold crossing remains not covered, while deterministic F13 spill/cold-locator coverage passes.
 publication:
   state: APPROVED_PENDING_PUBLISH
   policy: Product Owner release approval is recorded for this exact candidate. Reversible export/readiness work is authorized. Per Issue #109, public tag/GitHub prerelease/npm/prelatest actions require one final Product Owner confirmation after the Release Readiness Report.
