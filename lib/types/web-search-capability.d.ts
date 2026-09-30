@@ -39,9 +39,11 @@ export declare function alphaSearchParametersFor(record: unknown): {
         };
         refId: {
             type: "string";
+            description: string;
         };
         lineNumber: {
             type: "integer";
+            description: string;
         };
         linkId: {
             type: "integer";
@@ -106,6 +108,7 @@ export declare function alphaSearchParametersFor(record: unknown): {
         };
         action: {
             type: "string";
+            description: string;
             enum: string[];
         };
     };

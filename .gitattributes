@@ -1,3 +1,12 @@
 * text=auto eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
+# A unified patch represents blank context lines with one space; preserve the archival bytes.
+docs/upstream-dsh-fork/historical-agentic-usage-and-fork.patch whitespace=-blank-at-eol
+
+# Unified diff context prefixes precede the original tab indentation.
+docs/upstream-dsh-fork/fork-inbox.patch whitespace=-space-before-tab
+docs/upstream-dsh-fork-alpha2/fork-inbox-source.patch whitespace=-blank-at-eol
+
+# DSH session logs are zstd frames; keep the archival bytes.
+*.zstd binary

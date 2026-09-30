@@ -8,6 +8,7 @@ import {
   resolveImageAttachmentAccess,
   type ContentBlock,
   type Message,
+  type RequestMessage,
 } from "@deepseek-ai/dsh-llm";
 import type { Context } from "@deepseek-ai/cordis";
 import { requestImageDimensions } from "@deepseek-ai/dsh-attachment";
@@ -30,6 +31,7 @@ import {
   getBuiltinModels,
   normalizeContext,
 } from "./pi-responses-runtime.js";
+import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
 import type {
   AssistantMessage as PiAssistantMessage,
   Context as PiContextValue,
@@ -443,7 +445,6 @@ async function piToolContent(
     if (block.type === "text") content.push({ type: "text", text: block.text });
     else if (block.type === "image") content.push(...(await piImageParts(block, ctx, options, imageMap, requestImages)));
     else if (block.type === "reasoning") continue;
-    else if (block.type === "tool-result") content.push(...(await piToolContent(block.content, ctx, options, imageMap, requestImages)));
     else throw unsupportedContent(block.type);
   }
   return content.length > 0 ? content : [{ type: "text", text: "(no output)" }];
@@ -452,15 +453,14 @@ async function piToolContent(
 function projectFileContent(blocks: readonly ContentBlock[], fileRequestText: (ref: FileAttachmentRef) => string): ContentBlock[] {
   return blocks.map((block): ContentBlock => {
     if (block.type === "file") return { type: "text", text: fileRequestText(block.attachment) } as ContentBlock;
-    if (block.type === "tool-result") return { ...block, content: projectFileContent(block.content, fileRequestText) } as ContentBlock;
     return block;
   });
 }
 
 function projectFiles(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
-): readonly Message[] {
+): readonly RequestMessage[] {
   const fileRequestText = ctx?.llm?.fileRequestText.bind(ctx.llm);
   if (fileRequestText === undefined) {
     for (const message of messages)
@@ -482,14 +482,12 @@ function collectRequestImageRefs(
   for (const block of blocks) {
     if (block.type === "image") {
       if (block.offloaded !== true) refs.set(String(block.attachment.attachmentId), block.attachment);
-    } else if (block.type === "tool-result") {
-      collectRequestImageRefs(block.content, refs);
     }
   }
 }
 
 async function prepareRequestImageVersions(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
   options: ImageOptions,
 ): Promise<ReadonlyMap<string, RequestImageAttachment>> {
@@ -507,14 +505,15 @@ async function prepareRequestImageVersions(
   return new Map(versions);
 }
 
-function flattenMessageText(message: Message): string {
-  return message.content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .join("");
+function flattenMessageText(message: RequestMessage): string {
+  return message.content.map((block) => {
+    if (block.type !== "text") throw unsupportedContent(block.type);
+    return block.text;
+  }).join("");
 }
 
 async function dshToPiMessages(
-  messages: readonly Message[],
+  messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
   options: ImageOptions & { onReplayDegrade?: unknown },
   imageMap: Map<string, ImageAttachmentRef>,
@@ -527,6 +526,7 @@ async function dshToPiMessages(
       result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
       continue;
     }
+    if (message.role === "developer") throw unsupportedContent("developer message");
     if (message.role === "assistant") {
       const assistant = toPiAssistant(message, options.onReplayDegrade);
       for (const block of assistant.content)
@@ -534,12 +534,15 @@ async function dshToPiMessages(
       result.push(assistant);
       continue;
     }
+    if (message.role === "tool") {
+      const toolCallId = String(message.toolCallId);
+      result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(message.content, ctx, options, imageMap, requestImages), isError: message.isError === true, timestamp: 0 });
+      continue;
+    }
     const ordinary: ContentBlock[] = [];
-    const toolResults: ContentBlock[] = [];
     for (const block of message.content) {
       if (block.type === "text" || block.type === "image") ordinary.push(block);
       else if (block.type === "reasoning") continue;
-      else if (block.type === "tool-result") toolResults.push(block);
       else throw unsupportedContent(block.type);
     }
     if (ordinary.length > 0) {
@@ -550,16 +553,13 @@ async function dshToPiMessages(
       }
       if (content.length > 0) result.push({ role: "user", content, timestamp: 0 });
     }
-    for (const block of toolResults) {
-      if (block.type !== "tool-result") continue;
-      const toolCallId = String(block.toolCallId);
-      result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(block.content, ctx, options, imageMap, requestImages), isError: block.isError === true, timestamp: 0 });
-    }
   }
   return result;
 }
 
 function builtinResponsesModel(provider: string, modelId: string) {
+  // Keep descriptor and wire capabilities within the same frozen catalog scope as route ownership.
+  if (!wasPi086ResponsesModel(provider, modelId)) return undefined;
   try {
     return getBuiltinModels(provider as Parameters<typeof getBuiltinModels>[0]).find((model) => model.id === modelId && model.api === "openai-responses");
   } catch {
@@ -580,7 +580,16 @@ export function resolvePiResponsesModel(options: { imageSupport: unknown; route?
   return { ...builtinRecord, ...explicit, id, name: stringValue(explicit.name, stringValue(builtinRecord.name, id)), api: "openai-responses", provider, baseUrl: stringValue(explicit.baseUrl, stringValue(route.baseURL, stringValue(builtinRecord.baseUrl))), reasoning: typeof explicit.reasoning === "boolean" ? explicit.reasoning : typeof builtinRecord.reasoning === "boolean" ? builtinRecord.reasoning : true, input, cost: explicit.cost ?? builtinRecord.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: positiveSafeInteger(explicit.contextWindow ?? builtinRecord.contextWindow, 262144), maxTokens: positiveSafeInteger(explicit.maxTokens ?? builtinRecord.maxTokens, 32768), ...(Object.keys(compat).length > 0 ? { compat } : {}) };
 }
 
-export async function serializeDshMessages(messages: readonly Message[], ctx: DshContext | undefined, options: SerializeOptions = {}) {
+export async function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options: SerializeOptions = {}) {
+  for (const message of messages) {
+    if (message.role === "developer") throw unsupportedContent("developer message");
+    for (const block of message.content)
+      if (block.type === "tool-addition" || block.type === "tool-removal")
+        throw unsupportedContent(block.type);
+  }
+  for (const tool of options.tools ?? [])
+    if ("deferLoading" in tool && tool.deferLoading === true)
+      throw unsupportedContent("deferLoading tool declaration");
   const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; onReplayDegrade?: unknown; tools: readonly PiTool[] } = {
     imageSupport: options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown",
     signal: options.signal instanceof AbortSignal ? options.signal : undefined,
@@ -633,7 +642,7 @@ export async function serializeDshMessages(messages: readonly Message[], ctx: Ds
   const supportsToolSearch = compat.supportsToolSearch === true;
   const deferredToolsMode = supportsAdditionalTools ? "additional-tools" : supportsToolSearch ? "tool-search" : undefined;
   const grammarToolInputProperties = createGrammarToolInputProperties(dshContext.tools, supportsOpenAIGrammarTools);
-  // DSH has no authoritative added-tool provenance; keep its full catalog immediate.
+  // These routes consume no tool updates; projectToolUpdates supplies the current immediate declarations.
   const immediateTools = new Map<string, PiTool>();
   for (const tool of dshContext.tools) if (tool.name) immediateTools.set(tool.name, tool);
   const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };

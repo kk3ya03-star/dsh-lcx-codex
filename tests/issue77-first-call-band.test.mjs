@@ -4,8 +4,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
 import apply from '../lib/index.js'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 
 // Issue 77 — the first-call ordering artifact, and the seam it was hiding.
 //
@@ -16,18 +16,8 @@ import apply from '../lib/index.js'
 // cause was not identified, so the test was dropped and the seam — LCX's own
 // band decision with the real pruner behind it — stayed uncovered.
 //
-// The obvious explanation — that `state.enabled` is still false because the
-// settings `onChange` has not run — was tested here and is **wrong**. LCX seeds
-// its settings state eagerly from `source()` immediately after
-// `installSection` returns (src/index.ts:1800-1809), so the band decision never
-// waits for `onChange`. That is asserted below rather than assumed, and it is
-// half of why production has no such window; the other half is that DSH 0.1.6's
-// own SettingsProvider calls `hooks.onChange()` synchronously inside
-// `installSection` anyway (@deepseek-ai/dsh-settings/lib/index.js:327-338),
-// which is also asserted against the installed runtime.
-//
-// The one settings-shaped way to reach the early return is a host whose
-// `installSection` never supplies a source at all, which no DSH does.
+// DSH 0.2 replaced installSection with schema-derived volatile Config fields.
+// The first-call settings lifecycle is covered in wp2-config-route.test.mjs.
 //
 // What the dropped harness actually tripped is NOT REPRODUCED UNDER THE
 // SUPPORTED SEAM, and nothing here claims to have identified its cause: the
@@ -42,6 +32,7 @@ import apply from '../lib/index.js'
 
 const OVERSIZE_CHARS = 20_000
 const PRUNE_THRESHOLD_CHARS = 8192
+const HEADROOM_TOKENS = 65_536
 
 function sessionWithOversizeToolResult(id) {
   const session = Session.create(SessionId(id))
@@ -53,11 +44,8 @@ function sessionWithOversizeToolResult(id) {
     message: {
       role: 'tool',
       source: { kind: 'tool', callId },
-      content: [{
-        type: 'tool-result',
-        toolCallId: callId,
-        content: [{ type: 'text', text: 'X'.repeat(OVERSIZE_CHARS) }],
-      }],
+      toolCallId: callId,
+      content: [{ type: 'text', text: 'X'.repeat(OVERSIZE_CHARS) }],
     },
   }, { surfaceOp: 'append' })
   return session
@@ -70,11 +58,10 @@ function realTokenMeter() {
 }
 
 /**
- * The host context LCX installs into. `settings.installSection` is the only
- * seam under experiment. Everything the band decision itself touches — Session,
- * TokenMeter, ToolResultPruner — is the real installed class.
+ * Historical host fixture for the pressure-band behavior. The Config lifecycle
+ * now has its own DSH 0.2 test; this fixture remains for later compaction work.
  */
-function hostContext({ settingsMode = 'sync' } = {}) {
+function hostContext() {
   const logs = []
   const effects = []
   const handlers = new Map()
@@ -87,7 +74,7 @@ function hostContext({ settingsMode = 'sync' } = {}) {
   let contextWindow = 262144
   const compaction = {
     calls: [],
-    config: { thresholdRatio: 0.8, modelPolicies: [] },
+    config: { thresholdRatio: 0.8, headroomTokens: HEADROOM_TOKENS, retainTokens: 0, modelPolicies: [] },
     async compactIfNeeded(agent) {
       // DSH's engine prunes through the service LCX may have patched.
       const result = agent.ctx.get('toolResultPruner').pruneSession(agent.session)
@@ -97,35 +84,12 @@ function hostContext({ settingsMode = 'sync' } = {}) {
   }
   const originalCompact = compaction.compactIfNeeded
 
-  let settingsRefresh
-  const entry = {
-    enabled: true,
-    webSearch: false,
-    advancedHostedSearch: false,
-    alphaSearch: false,
-    grokNativeWebSearch: false,
-    grokNativeXSearch: false,
-    searchMediaPreview: false,
-  }
+  const provider = providerContext({ fixture: { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE' } })
   const ctx = {
-    llm: { resolveModelInfo: async () => ({ context: { contextWindow } }) },
+    llm: { ...provider.llm, resolveModelInfo: async () => ({ context: { contextWindow } }) },
     sessions: {}, tools: { register() {} }, credentials: {}, attachments: {}, fs: {},
     web: { registerSearchProvider() {} },
-    settings: {
-      get: () => ({
-        providers: {
-          fixture: { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE' },
-        },
-      }),
-      installSection(_owner, _ns, _schema, _base, hooks) {
-        // 'sync' is what DSH's own SettingsProvider does. 'manual' withholds
-        // onChange. 'silent' supplies nothing at all, which no DSH does.
-        if (settingsMode === 'silent') return
-        hooks.setSource(() => entry)
-        settingsRefresh = hooks.onChange
-        if (settingsMode === 'sync') hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     agentPresets: { serviceFor: (_agent, name) => ({ compaction, toolResultPruner: pruner })[name] },
     get(name) { return this[name] },
     inject() {},
@@ -137,8 +101,7 @@ function hostContext({ settingsMode = 'sync' } = {}) {
   return {
     ctx, compaction, pruner, tokenMeter, logs,
     originalPrune, originalCompact,
-    install() { apply(ctx) },
-    refreshSettings: () => settingsRefresh?.(),
+    install() { apply(ctx, pluginConfig({ enabled: true })) },
     setContextWindow(value) { contextWindow = value },
     agent(id) {
       const session = sessionWithOversizeToolResult(id)
@@ -153,40 +116,13 @@ function hostContext({ settingsMode = 'sync' } = {}) {
     /** The window that puts this session's real measured total in `percent`. */
     windowFor(session, percent) {
       const total = tokenMeter.measure(session).totalTokens
-      return { total, window: Math.ceil(total / (percent / 100)) }
+      return { total, window: HEADROOM_TOKENS + Math.ceil(total / (percent / 100)) }
     },
     async dispose() {
       for (const effect of effects.splice(0).reverse()) if (typeof effect === 'function') await effect()
     },
   }
 }
-
-test('DSH 0.1.6 settings call onChange synchronously inside installSection', () => {
-  // The production lifecycle has no window in which state.enabled is still
-  // false: this is the installed runtime's own behaviour, not a reading of it.
-  const ctx = new Context()
-  const provider = new SettingsProvider(ctx, {})
-  assert.equal(typeof provider.installSection, 'function')
-
-  const source = provider.installSection.toString()
-  assert.match(source, /hooks\.onChange\(\)/u)
-
-  // LCX registers its own section through this method; drive it with LCX's own
-  // shape of hooks and assert onChange lands before installSection returns.
-  let changedBeforeReturn = false
-  let registered = false
-  const recording = {
-    ...provider,
-    register() { registered = true; return { get: () => ({ enabled: true }), watch() {} } },
-    ctx: { effect() {} },
-  }
-  provider.installSection.call(recording, ctx, 'probe-ns', {}, { enabled: true }, {
-    setSource() {},
-    onChange() { changedBeforeReturn = true },
-  })
-  assert.equal(registered, true)
-  assert.equal(changedBeforeReturn, true, 'onChange must land before installSection returns')
-})
 
 test('first LCX install in a process decides the native band with the real pruner behind it', async () => {
   const f = hostContext()
@@ -235,10 +171,8 @@ test('first LCX install in a process lets DSH prune in the emergency band', asyn
   await f.dispose()
 })
 
-test('LCX seeds its settings state at install, so the first call does not wait for onChange', async () => {
-  // 'manual' never calls onChange at all. If the band decision depended on it,
-  // this is exactly the position the dropped harness failed in.
-  const f = hostContext({ settingsMode: 'manual' })
+test('DSH 0.2 plugin Config seeds first-call pressure before a document update', async () => {
+  const f = hostContext()
   f.install()
 
   const agent = f.agent('seeded-at-install')
@@ -249,26 +183,6 @@ test('LCX seeds its settings state at install, so the first call does not wait f
   assert.ok(decision, 'the seeded state is enough to decide the band')
   assert.match(decision, /Native V2 first/u)
   assert.equal(f.compaction.calls.at(-1).pruned, 0)
-
-  await f.dispose()
-})
-
-test('only a host that never supplies a settings source leaves LCX disabled', async () => {
-  // The single settings-shaped route to the early return, named so it is not
-  // mistaken for a product defect: no DSH behaves this way.
-  const f = hostContext({ settingsMode: 'silent' })
-  f.install()
-
-  const agent = f.agent('no-source')
-  f.setContextWindow(f.windowFor(agent.session, 92).window)
-  await f.compaction.compactIfNeeded(agent, 'pressure', new AbortController().signal)
-
-  assert.equal(
-    f.logs.find((line) => line.includes('auto pressure')),
-    undefined,
-    'with no source LCX stays disabled and returns early',
-  )
-  assert.equal(f.compaction.calls.at(-1).pruned, 1, 'the original ran unmodified, so DSH pruned')
 
   await f.dispose()
 })

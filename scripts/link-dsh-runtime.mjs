@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh016'))
+const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh02'))
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
 

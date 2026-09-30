@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { grokVisibleFunctionTools, grokWireTools } from '../lib/grok-native-search.js'
 import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
 import { functionTools, xaiProfile } from './grok-fixture.mjs'
+import { providerContext } from './dsh02-fixture.mjs'
 
 const policy = {
   timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 100,
@@ -10,7 +11,7 @@ const policy = {
 }
 
 function routeContext(providers) {
-  return { settings: { get: () => ({ providers }) } }
+  return providerContext(providers)
 }
 
 test('Grok tool projection conditionally suppresses local x_search collisions', () => {
@@ -133,10 +134,10 @@ test('non-Grok, non-Responses, and incomplete selected profiles do not activate 
   assert.equal(resolveGrokResponsesRouteConfig(routeContext({}), selected, policy), undefined)
 })
 
-test('DSH 0.1.5 configurable-provider diagnostics fail closed for GPT and Grok routes', () => {
+test('DSH 0.2 configurable-provider diagnostics fail closed for GPT and Grok routes', () => {
   const profiles = { relay: { ...xaiProfile, models: [{ id: 'grokCustom' }, { id: 'gpt-custom' }] } }
   const ctx = {
-    settings: { get: () => ({ providers: profiles }) },
+    settings: providerContext(profiles).settings,
     llm: { listConfigurableProviders: () => [{
       provider: 'relay', displayName: 'Relay', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'relay'],
       error: 'catalog entry is unusable',

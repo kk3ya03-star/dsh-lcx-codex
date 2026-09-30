@@ -15,10 +15,11 @@ import {
   stateRouteCompatible,
 } from '../lib/native-checkpoint.js'
 import { baseURLFingerprint } from '../lib/route.js'
+import { queryContext } from './session-query-fixture.mjs'
 
 test('Compact budgeting charges images nested in tool results', () => {
-  const textOnly = estimateBudgetItem({ role:'user', content:[{ type:'tool-result', toolCallId:'call-1', toolName:'read_image', content:[{ type:'text', text:'ok' }] }] })
-  const withImage = estimateBudgetItem({ role:'user', content:[{ type:'tool-result', toolCallId:'call-1', toolName:'read_image', content:[{ type:'text', text:'ok' }, { type:'image', attachment:{ attachmentId:'sha256:test' } }] }] })
+  const textOnly = estimateBudgetItem({ role:'tool', toolCallId:'call-1', content:[{ type:'text', text:'ok' }] })
+  const withImage = estimateBudgetItem({ role:'tool', toolCallId:'call-1', content:[{ type:'text', text:'ok' }, { type:'image', attachment:{ attachmentId:'sha256:test' } }] })
   assert.equal(typeof textOnly, 'number')
   assert.equal(typeof withImage, 'number')
   assert.ok(withImage >= textOnly + 2_048)
@@ -36,15 +37,15 @@ const toolCallMessage = (id, argumentsText) => ({
 })
 
 const toolResultMessage = (id, text) => ({
-  role: 'user',
-  content: [{ type: 'tool-result', toolCallId: id, toolName: 'lookup', content: [{ type: 'text', text }] }],
+  role: 'tool', toolCallId: id,
+  content: [{ type: 'text', text }],
 })
 
 function checkpointSession(messages, id = 'checkpoint-fixture') {
   const events = messages.map((message, seq) => ({
     seq,
-    type: message.role === 'assistant' ? 'assistant/message' : message.content?.[0]?.type === 'tool-result' ? 'tool/result' : 'user/message',
-    data: message.role === 'assistant' ? { message } : message.content?.[0]?.type === 'tool-result' ? { message } : message,
+    type: message.role === 'assistant' ? 'assistant/message' : message.role === 'tool' ? 'tool/result' : 'user/message',
+    data: message.role === 'assistant' || message.role === 'tool' ? { message } : message,
   }))
   events.push({ seq: events.length, type: 'compaction/summary', data: { compactionId: id, shadowedSeqs: messages.map((_, index) => index) } })
   return {
@@ -113,32 +114,36 @@ test('truncated assistant supplemental retention keeps phase but drops provider 
   assert.match(plan.items[0].content[0].text, /LCX retained answer truncated/u)
 })
 
-test('canonical prelude is request-ephemeral across two compact and replay epochs', () => {
+test('canonical prelude is request-ephemeral across two compact and replay epochs', async () => {
   const prelude = textMessage('developer', 'canonical-prelude-fingerprint')
-  const genuineDeveloper = textMessage('developer', 'genuine-late-developer-item')
+  const genuineSystem = textMessage('system', 'genuine-late-system-item')
   const user1 = textMessage('user', 'first')
+  assert.ok(estimateBudgetItem(prelude) > 0, 'canonical developer input must be budgeted')
+  assert.deepEqual(retainedConversationPlan([prelude, genuineSystem, user1]).items.map(item => item.role), ['developer', 'system', 'user'])
   const toolPair = [
     { type: 'function_call', id: 'fc-1', call_id: 'call-1', name: 'lookup', arguments: '{}' },
     { type: 'function_call_output', call_id: 'call-1', output: 'ok' },
   ]
-  const first = createNativeCheckpointBlock({
-    session: activeCheckpointSession('compact-1'), route, result: { compaction },
-    input: [prelude, genuineDeveloper, user1, ...toolPair], ephemeralPreludeItemCount: 1,
+  const firstSession = activeCheckpointSession('compact-1')
+  const first = await createNativeCheckpointBlock({
+    ctx: queryContext(firstSession), session: firstSession, route, result: { compaction },
+    input: [prelude, genuineSystem, user1, ...toolPair], ephemeralPreludeItemCount: 1,
   })
   assert.equal(first.nativeOutput.some((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint'), false)
-  assert.equal(first.nativeOutput.some((item) => item?.content?.[0]?.text === 'genuine-late-developer-item'), true)
+  assert.equal(first.nativeOutput.some((item) => item?.content?.[0]?.text === 'genuine-late-system-item'), true)
   assert.equal(first.nativeOutput.filter((item) => item?.type === 'compaction').length, 1)
 
   const replay1 = [prelude, ...first.nativeOutput, textMessage('user', 'after compact one')]
   assert.equal(replay1.filter((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint').length, 1)
-  const second = createNativeCheckpointBlock({
-    session: activeCheckpointSession('compact-2'), route, result: { compaction },
+  const secondSession = activeCheckpointSession('compact-2')
+  const second = await createNativeCheckpointBlock({
+    ctx: queryContext(secondSession), session: secondSession, route, result: { compaction },
     input: replay1, ephemeralPreludeItemCount: 1,
   })
   const replay2 = [prelude, ...second.nativeOutput, textMessage('user', 'after compact two')]
   assert.equal(replay2.filter((item) => item?.content?.[0]?.text === 'canonical-prelude-fingerprint').length, 1)
   assert.equal(replay2.filter((item) => item?.type === 'compaction').length, 1)
-  assert.equal(replay2.some((item) => item?.content?.[0]?.text === 'genuine-late-developer-item'), true)
+  assert.equal(replay2.some((item) => item?.content?.[0]?.text === 'genuine-late-system-item'), true)
   assert.equal(replay2.filter((item) => item?.type === 'function_call').length, replay2.filter((item) => item?.type === 'function_call_output').length)
 })
 
@@ -197,34 +202,37 @@ test('an image boundary stops older-history backfill and keeps the image group a
   assert.equal(plan.estimatedTokens, estimateBudgetItem(newest))
 })
 
-test('nested tool-result images remain attached and consume the conservative image budget', () => {
+test('tool-role result images stay with their call in portable history and charge the image budget', async () => {
   const nested = {
-    role: 'user',
-    content: [{
-      type: 'tool-result', toolCallId: 'call-image', toolName: 'read_image',
-      content: [
+    role: 'tool', toolCallId: 'call-image',
+    content: [
         { type: 'text', text: 'image result label' },
         { type: 'image', attachment: { attachmentId: 'sha256:tool-image', width: 800, height: 600 } },
-      ],
-    }],
+    ],
   }
-  const tokens = estimateBudgetItem(nested)
-  const plan = retainedConversationPlan([nested], { tokenBudget: tokens })
-  assert.deepEqual(plan.items, [nested])
-  assert.equal(plan.estimatedTokens, tokens)
+  const call = toolCallMessage('call-image', '{}')
+  const tokens = estimateBudgetItem(call) + estimateBudgetItem(nested)
+  const session = checkpointSession([call, nested])
+  const portable = await portableMessagesForCheckpoint(queryContext(session), session, 'checkpoint-fixture', { maxChars: 20_000 })
+  assert.deepEqual(portable, [call, nested])
+  const plan = retainedConversationPlan([call, nested], { tokenBudget: tokens })
+  assert.deepEqual(plan.items, [], 'supplemental answer retention must not create an orphan tool result')
+  assert.equal(plan.estimatedTokens, 0)
   assert.ok(tokens >= 2_048)
 })
 
-test('repeated Compact retains durable image references once without raw image data', () => {
+test('repeated Compact retains durable image references once without raw image data', async () => {
   const imageUrl = 'data:image/png;base64,AQID'
   const attachment = { attachmentId: 'sha256:durable-image', mediaType: 'image/png', width: 1, height: 1, bytes: 3 }
   const imageMap = new Map([[imageUrl, attachment]])
   const source = { role: 'user', content: [{ type: 'input_image', detail: 'auto', image_url: imageUrl }] }
-  const first = createNativeCheckpointBlock({
-    session: activeCheckpointSession('compact-image-1'), route, result: { compaction }, input: [source], imageMap,
+  const firstSession = activeCheckpointSession('compact-image-1')
+  const first = await createNativeCheckpointBlock({
+    ctx: queryContext(firstSession), session: firstSession, route, result: { compaction }, input: [source], imageMap,
   })
-  const second = createNativeCheckpointBlock({
-    session: activeCheckpointSession('compact-image-2'), route, result: { compaction }, input: first.nativeOutput,
+  const secondSession = activeCheckpointSession('compact-image-2')
+  const second = await createNativeCheckpointBlock({
+    ctx: queryContext(secondSession), session: secondSession, route, result: { compaction }, input: first.nativeOutput,
   })
   const encoded = JSON.stringify(second)
   const refs = second.nativeOutput.flatMap((item) => item?.content ?? []).filter((part) => part?.type === 'dsh_image_attachment')
@@ -239,23 +247,24 @@ test('repeated Compact retains durable image references once without raw image d
 test('token fixture 10: unknown and unserializable content fails conservative budgeting', () => {
   const cyclic = {}
   cyclic.self = cyclic
-  assert.equal(estimateBudgetItem({ role: 'user', content: [{ type: 'private_opaque', value: cyclic }] }), undefined)
+  assert.throws(() => estimateBudgetItem({ role: 'user', content: [{ type: 'private_opaque', value: cyclic }] }),
+    { code: 'LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT' })
 })
 
-test('token fixture 11: portable selection retains complete tool-call/result groups atomically', () => {
+test('token fixture 11: portable selection retains complete tool-call/result groups atomically', async () => {
   const call = toolCallMessage('call-1', '{"query":"newest"}')
   const result = toolResultMessage('call-1', 'result')
   const session = checkpointSession([textMessage('user', 'old '.repeat(3_000)), call, result])
-  const portable = portableMessagesForCheckpoint(session, 'checkpoint-fixture', { maxChars: 1_000 })
+  const portable = await portableMessagesForCheckpoint(queryContext(session), session, 'checkpoint-fixture', { maxChars: 1_000 })
   assert.deepEqual(portable, [call, result])
 })
 
-test('token fixture 12: portable token ceiling can stop CJK/code before its char ceiling', () => {
+test('token fixture 12: portable token ceiling can stop CJK/code before its char ceiling', async () => {
   const newest = textMessage('user', 'newest')
   const dense = textMessage('user', ('中文 const x={}; ').repeat(45))
   const session = checkpointSession([dense, newest])
   assert.ok(JSON.stringify(dense).length < 1_000)
-  assert.deepEqual(portableMessagesForCheckpoint(session, 'checkpoint-fixture', { maxChars: 1_000 }), [newest])
+  assert.deepEqual(await portableMessagesForCheckpoint(queryContext(session), session, 'checkpoint-fixture', { maxChars: 1_000 }), [newest])
 })
 
 test('token fixture 13: portableReplayMaxChars derives the compatible token ceiling', () => {
@@ -264,12 +273,12 @@ test('token fixture 13: portableReplayMaxChars derives the compatible token ceil
   assert.equal(portableTokenCeiling(9), 3)
 })
 
-test('token fixture 14: newest oversized portable group fails closed at char or token ceiling', () => {
+test('token fixture 14: newest oversized portable group fails closed at char or token ceiling', async () => {
   const charSession = checkpointSession([textMessage('user', 'x'.repeat(1_000))])
-  assert.throws(() => portableMessagesForCheckpoint(charSession, 'checkpoint-fixture', { maxChars: 100 }), (error) => error?.code === 'LCX_PORTABLE_BUDGET_EXCEEDED')
+  await assert.rejects(portableMessagesForCheckpoint(queryContext(charSession), charSession, 'checkpoint-fixture', { maxChars: 100 }), (error) => error?.code === 'LCX_PORTABLE_BUDGET_EXCEEDED')
 
   const tokenSession = checkpointSession([textMessage('user', '中'.repeat(300))])
-  assert.throws(() => portableMessagesForCheckpoint(tokenSession, 'checkpoint-fixture', { maxChars: 1_000 }), (error) => error?.code === 'LCX_PORTABLE_BUDGET_EXCEEDED')
+  await assert.rejects(portableMessagesForCheckpoint(queryContext(tokenSession), tokenSession, 'checkpoint-fixture', { maxChars: 1_000 }), (error) => error?.code === 'LCX_PORTABLE_BUDGET_EXCEEDED')
 })
 
 test('token fixture 15: only current v5 checkpoints are readable and route-compatible', () => {
@@ -296,14 +305,15 @@ test('review fixture 1: real DSH image blocks receive deterministic conservative
   assert.ok(first >= 2_048)
 })
 
-test('review fixture 2: tool results without toolName remain serializer-compatible and budgetable', () => {
+test('review fixture 2: tool results without toolName remain serializer-compatible and budgetable', async () => {
   const call = toolCallMessage('call-unnamed', '{"query":"fixture"}')
   const result = {
-    role: 'user',
-    content: [{ type: 'tool-result', toolCallId: 'call-unnamed', content: [{ type: 'text', text: 'result' }] }],
+    role: 'tool', toolCallId: 'call-unnamed',
+    content: [{ type: 'text', text: 'result' }],
   }
   assert.equal(typeof estimateBudgetItem(result), 'number')
-  assert.deepEqual(portableMessagesForCheckpoint(checkpointSession([call, result]), 'checkpoint-fixture', { maxChars: 2_000 }), [call, result])
+  const session = checkpointSession([call, result])
+  assert.deepEqual(await portableMessagesForCheckpoint(queryContext(session), session, 'checkpoint-fixture', { maxChars: 2_000 }), [call, result])
 })
 
 test('review fixture 3: ordinary long visible text and opaque false positives receive numeric estimates', () => {

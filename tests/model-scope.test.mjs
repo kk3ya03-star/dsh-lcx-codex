@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import apply from '../lib/index.js'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 
 const gptProfile = {
   api: 'openai-responses',
@@ -53,7 +55,8 @@ function modelScopeHarness(settings = {}, config = {}) {
     grokNativeXSearch: false,
     ...settings,
   }
-  let onChange
+  const configInput = pluginConfig({ ...settingsEntry, maxAttempts: 1, webMaxResults: 3, ...config })
+  const provider = providerContext({ fixture: gptProfile })
   let providerWrites = 0
   const web = {}
   Object.defineProperty(web, 'searchProviderId', {
@@ -64,27 +67,20 @@ function modelScopeHarness(settings = {}, config = {}) {
   web.registerSearchProvider = () => { throw new Error('must not register a global search provider') }
   const ctx = {
     logger: { info() {}, warn() {} },
-    llm: { resolveModelInfo: async () => ({ context: { contextWindow: 262_144 } }) },
+    llm: { ...provider.llm, resolveModelInfo: async () => ({ context: { contextWindow: 262_144 } }) },
     sessions: {},
     credentials: { resolve: async () => ({ value: 'synthetic-test-key' }) },
     attachments: {},
     fs: {},
     web,
     tools: { register() { throw new Error('must not register a global tool') } },
-    settings: {
-      get: () => ({ providers: { fixture: gptProfile } }),
-      installSection(_owner, _namespace, _schema, _entry, hooks) {
-        hooks.setSource(() => settingsEntry)
-        onChange = hooks.onChange
-        onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     get(name) { return this[name] },
     inject() {},
     on(name, handler) { handlers.set(name, handler) },
     effect(setup) { effects.push(setup()) },
   }
-  apply(ctx, { maxAttempts: 1, webMaxResults: 3, ...config })
+  apply(ctx, configInput)
 
   function agent(provider, model, id) {
     let requestConfig = { provider, model }
@@ -114,7 +110,11 @@ function modelScopeHarness(settings = {}, config = {}) {
   return {
     ctx, handlers, nativeSearch, settingsEntry,
     providerWrites: () => providerWrites,
-    refresh: () => onChange(),
+    refresh() {
+      for (const key of ['enabled', 'webSearch', 'advancedHostedSearch', 'alphaSearch', 'grokNativeWebSearch', 'grokNativeXSearch'])
+        updateVolatile(configInput[key], pluginConfig({ [key]: settingsEntry[key] })[key])
+      handlers.get('loader/volatile-update')()
+    },
     agent,
     async dispose() {
       for (const cleanup of effects.reverse()) if (typeof cleanup === 'function') await cleanup()

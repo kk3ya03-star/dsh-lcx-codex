@@ -86,7 +86,7 @@ export function alphaSearchParametersFor(record: unknown) {
     ...ALPHA_SEARCH_PARAMETERS,
     properties: {
       ...ALPHA_SEARCH_PARAMETERS.properties,
-      action: { type: "string" as const, enum: alphaAdvertisedActions(record) },
+      action: { ...ALPHA_SEARCH_PARAMETERS.properties.action, enum: alphaAdvertisedActions(record) },
     },
   };
 }

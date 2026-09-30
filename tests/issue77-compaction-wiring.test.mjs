@@ -51,11 +51,8 @@ function sessionWithOversizeToolResult(id) {
     message: {
       role: 'tool',
       source: { kind: 'tool', callId },
-      content: [{
-        type: 'tool-result',
-        toolCallId: callId,
-        content: [{ type: 'text', text: 'X'.repeat(OVERSIZE_CHARS) }],
-      }],
+      toolCallId: callId,
+      content: [{ type: 'text', text: 'X'.repeat(OVERSIZE_CHARS) }],
     },
   }, { surfaceOp: 'append' })
   return session
@@ -105,11 +102,12 @@ test('LCX resolves, patches and restores the real DSH 0.1.6 ToolResultPruner', (
 test('the native band suppresses the real pruner and the emergency band releases it', () => {
   const { ctx } = prunerContext()
   const resolved = resolveContextService(ctx, 'toolResultPruner')
-  const policy = { auto: NATIVE_PERCENT, emergency: EMERGENCY_PERCENT }
+  const policy = { auto: NATIVE_PERCENT, emergency: EMERGENCY_PERCENT, outputReserve: 32_768, headroomTokens: 65_536 }
   const contextWindow = 272_000
+  const pressureBudget = contextWindow - policy.outputReserve - policy.headroomTokens
 
   for (const [percent, expectedBand] of [[88.3, 'below'], [90.5, 'native'], [95.5, 'emergency']]) {
-    const band = compactionPressureBand(Math.round(contextWindow * percent / 100), contextWindow, policy)
+    const band = compactionPressureBand(Math.round(pressureBudget * percent / 100), contextWindow, policy)
     assert.equal(band.band, expectedBand, `${percent}% must be ${expectedBand}`)
 
     // Production installs the no-op only in the native band.
@@ -161,7 +159,7 @@ test('suppression and restoration hold across two concurrent sessions', () => {
 
 function realSession(id, extra) {
   return Session.create(SessionId(id), undefined, {
-    version: 3, id, createdAt: Date.now(), isSeeded: false, ...extra,
+    version: 4, id, createdAt: Date.now(), isSeeded: false, ...extra,
   })
 }
 

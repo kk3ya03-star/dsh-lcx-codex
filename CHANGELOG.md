@@ -1,14 +1,16 @@
 # Changelog
 
-## 0.4.4-pre.1 - 2026-09-22 (prerelease, `prelatest`)
+## 0.5.0-pre.1 - release candidate
 
-- Retarget to the DSH `0.1.6` line: install range `>=0.1.6-alpha.2 <0.1.7`, verified on DSH `0.1.6-alpha.2` with host Pi `0.85.1` and bundled plugin Pi `0.86.0`. This release makes no DSH `0.1.5` compatibility claim; use stable `0.4.3` on DSH `0.1.5`.
-- Migrate the bundled Pi to `0.86.0`, including the `Context` → `TranscriptContext` transition on the Responses converter.
-- Render plugin configuration on the supported `plugins.bundle.config` surface of the DSH Plugins page.
-- Image offload uses DSH's durable offload decisions instead of a request-local path.
-- Search-usage UI registers on LCX-owned session slots and reads usage through the session projection instead of rescanning history.
-- Cancellation no longer leaks DSH's plain-object cancel cause into model-facing tool results.
-- Grok native X Search is verified on `grok-4.6`. Stable `latest` remains `0.4.3`.
+Prerelease for DSH `>=0.2.0-rc.2 <0.2.1` (accepted validation baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`). Stable `0.4.3` remains the release for the DSH `0.1.5` line.
+
+- Retarget LCX to the DSH 0.2 contract: tool-history replay handles DSH `role: 'tool'` messages (multi-step, error and image results), dynamic tool changes are safe in replay and checkpoint paths, and Native-first / emergency compaction bands use DSH's pressure budget (`window - output reserve - headroom`).
+- Old long sessions carrying a previous LCX checkpoint report `LCX_CHECKPOINT_UNSUPPORTED` on the LCX path after DSH migrates them; start a new session. Quoted legacy checkpoint markers no longer cause false rejection.
+- Grok agentic usage: canonical cumulative billing is preserved, while compaction pressure uses the provider's complete terminal `usage.context_details` when available and a bounded estimate otherwise.
+- Alpha stateful browsing (search, open, find, click, PDF screenshot, cold continuation, fork isolation, model-route switching) is validated on the tested OAuth-backed upstream; API-key upstream accounts are not covered. Target-page fetch failures report `LCX_ALPHA_PAGE_FETCH_FAILED`.
+- Tools are re-synced immediately after a model/route switch, so the first request after switching advertises the correct GPT/Alpha tools.
+- Redesign search media presentation for DSH 0.2: one borderless image rail under the answer (natural proportions, shared row height, source chip, horizontal scrolling with edge fades and arrows, DSH `ImageLightbox`) for search-returned images and plain direct image links, and direct video cards that expand into an inline player. Markdown images stay DSH-native and are never duplicated; a scoped CSS rule makes them start their own line so following links no longer sit beside them.
+- Treat blank optional `userLocation` members and empty/irrelevant `searchContentTypes` / `imageSettings` padding of `websearch_gpt_advanced` as omitted instead of failing validation; invalid non-empty values still fail closed.
 
 ## 0.4.3 - 2026-09-10
 

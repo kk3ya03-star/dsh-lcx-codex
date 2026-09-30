@@ -10,7 +10,7 @@ export interface AlphaRefProvenance {
   originFingerprint: string;
   artifactFingerprint?: string;
 }
-export interface AlphaRefRecord { refId: string; url?: string; provenance: AlphaRefProvenance }
+export interface AlphaRefRecord { refId: string; rawRefId?: string; url?: string; provenance: AlphaRefProvenance }
 interface SessionRecord { routeFingerprint: string; updatedAt: string; refs: Record<string, AlphaRefRecord> }
 interface RefStoreData { version: typeof VERSION; sessions: Record<string, SessionRecord> }
 interface LegacyRefRecord { refId: string; url?: string }
@@ -40,7 +40,9 @@ function validProvenance(value: unknown): value is AlphaRefProvenance {
 }
 
 function validRef(refId: string, value: unknown): value is AlphaRefRecord {
-  return isRecord(value) && value.refId === refId && validHttpUrl(value.url) && validProvenance(value.provenance);
+  return isRecord(value) && value.refId === refId &&
+    (value.rawRefId === undefined || (typeof value.rawRefId === "string" && value.rawRefId.length > 0)) &&
+    validHttpUrl(value.url) && validProvenance(value.provenance);
 }
 
 function validSession(value: unknown): value is SessionRecord {
@@ -110,7 +112,7 @@ function collision(refId: string): Error & { code: string } {
 }
 
 function sameObservation(left: AlphaRefRecord, right: AlphaRefRecord): boolean {
-  return left.refId === right.refId && left.url === right.url &&
+  return (left.rawRefId ?? left.refId) === (right.rawRefId ?? right.refId) && left.url === right.url &&
     left.provenance.action === right.provenance.action &&
     left.provenance.originKind === right.provenance.originKind &&
     left.provenance.originFingerprint === right.provenance.originFingerprint &&
@@ -124,10 +126,11 @@ export class AlphaRefStore {
     this.store = new JsonStore(file, () => ({ version: VERSION, sessions: {} }), validData, "LCX_ALPHA_REF_STORE_CORRUPT", migrateLegacyData);
   }
 
-  record(sessionId: unknown, routeFingerprint: unknown, refs: unknown): void {
+  record(sessionId: unknown, routeFingerprint: unknown, refs: unknown, allowAliases = false): Record<string, string> {
     if (typeof sessionId !== "string" || !sessionId || typeof routeFingerprint !== "string" || !routeFingerprint || !Array.isArray(refs)) {
       throw unavailable("invalid-record");
     }
+    const handles: Record<string, string> = {};
     this.store.update((current) => {
       const previous = current.sessions[sessionId];
       const sameRoute = previous?.routeFingerprint === routeFingerprint;
@@ -145,11 +148,25 @@ export class AlphaRefStore {
           ...(value.url ? { url: value.url } : {}),
           provenance: { ...value.provenance },
         };
+        const rawHistory = Object.values(nextRefs).filter((ref) =>
+          (ref.rawRefId ?? ref.refId) === observation.refId);
+        const latest = rawHistory.at(-1);
+        if (latest && sameObservation(latest, observation)) {
+          handles[observation.refId] = latest.refId;
+          continue;
+        }
+        if (accepted && !allowAliases) throw collision(observation.refId);
         if (accepted) {
-          if (!sameObservation(accepted, observation)) throw collision(observation.refId);
+          const digest = createHash("sha256").update(JSON.stringify([observation, rawHistory.length])).digest("hex");
+          const handle = `lcx-alpha-${digest}`;
+          if (nextRefs[handle] && !sameObservation(nextRefs[handle], observation)) throw collision(handle);
+          nextRefs[handle] = { ...observation, refId: handle, rawRefId: observation.refId };
+          handles[observation.refId] = handle;
+          changed = true;
           continue;
         }
         nextRefs[observation.refId] = observation;
+        handles[observation.refId] = observation.refId;
         changed = true;
       }
       if (!changed && previous) return current;
@@ -162,6 +179,7 @@ export class AlphaRefStore {
         .slice(0, 256);
       return { version: VERSION, sessions: Object.fromEntries(ordered) };
     });
+    return handles;
   }
 
   assertUsable(sessionId: unknown, routeFingerprint: unknown, refId: unknown): AlphaRefRecord {
@@ -170,6 +188,9 @@ export class AlphaRefStore {
     const session = this.store.data.sessions[sessionId];
     const ref = session?.routeFingerprint === routeFingerprint ? session.refs[refId] : undefined;
     if (!ref) throw unavailable(refId);
+    const raw = ref.rawRefId ?? ref.refId;
+    const latest = Object.values(session?.refs ?? {}).filter((other) => (other.rawRefId ?? other.refId) === raw).at(-1);
+    if (latest?.refId !== refId) throw unavailable(refId);
     return structuredClone(ref);
   }
 }

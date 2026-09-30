@@ -11,6 +11,8 @@ const failures = [
   ['find', '**Result:** Unable to execute `find` because `turn0view0` is not available in this session.'],
   ['click', 'Unable to execute click: reference ID is unresolved.'],
   ['screenshot', 'Unable to screenshot turn0view0: reference unavailable.'],
+  ['find', 'The request failed: `turn0search0` is not a valid or available source reference, so the **“Path”** pattern could not be found.'],
+  ['find', 'The search failed: `turn0search0` is not a valid or available source reference, so “Path” could not be found.'],
 ]
 
 test('Alpha rejects action-specific reference failure envelopes, even with echoed references', () => {
@@ -31,7 +33,7 @@ test('Alpha rejects the top-level open fetch-failure envelope before returning r
   for (const results of [[], [{ ref_id: 'turn1view0' }]]) {
     assert.throws(
       () => parse('open', OPEN_FETCH_FAILURE, results),
-      { code: 'LCX_ALPHA_ACTION_FAILED' },
+      { code: 'LCX_ALPHA_PAGE_FETCH_FAILED' },
     )
   }
 })
@@ -50,6 +52,9 @@ test('Alpha does not mistake quoted page content, other actions or no-match resu
     ['open', '```text\nInternal Error ()\nSource: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1\nL0: Failed to fetch https://example.com: (404) Not Found\n```'],
     ['open', 'Internal Error ()\nThis runbook quotes Failed to fetch https://example.com: (404) Not Found for operators.'],
     ['find', OPEN_FETCH_FAILURE],
+    ['open', failures[4][1]],
+    ['search_query', failures[4][1]],
+    ['find', 'Reference guide\nL1: The request failed: `turn0search0` is not a valid or available source reference, so a pattern could not be found.'],
     ['click', OPEN_FETCH_FAILURE],
     ['search_query', OPEN_FETCH_FAILURE],
   ]) assert.doesNotThrow(() => parse(action, output, [{ ref_id: 'turn0real' }]))
@@ -57,9 +62,10 @@ test('Alpha does not mistake quoted page content, other actions or no-match resu
 
 test('Alpha probe rejects the same reference error envelope without requiring a production parser', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'fixture',
     invoke: async args => {
-      if (args.action === 'search_query') return { refs: [], sources: [{ url: 'https://example.com/' }] }
+      if (args.action === 'search_query') return { refs: ['turn0search0'], sources: [{ url: 'https://example.com/' }] }
       if (args.action === 'open') return {
         content: failures[0][1], refs: ['turn0view0'], results: [{ ref_id: 'turn0view0' }],
       }

@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import test from 'node:test'
 
-const installRange = '>=0.1.6-alpha.2 <0.1.7'
-const verifiedDsh = '0.1.6-alpha.2'
-const hostPi = '0.85.1'
+const installRange = '>=0.2.0-rc.2 <0.2.1'
+const verifiedDsh = '0.2.0-rc.2'
+const hostPi = '0.87.1'
 const pluginPi = '0.86.0'
 
 function fixture(t, runtimeVersion = verifiedDsh, runtimePi = hostPi, rootPi = pluginPi) {
@@ -15,14 +15,14 @@ function fixture(t, runtimeVersion = verifiedDsh, runtimePi = hostPi, rootPi = p
   mkdirSync(output, { recursive: true })
   const root = mkdtempSync(join(output, 'lcx-runtime-link-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
-  const runtime = join(root, 'scripts/runtime-dsh016')
+  const runtime = join(root, 'scripts/runtime-dsh02')
   mkdirSync(runtime, { recursive: true })
   copyFileSync(new URL('./link-dsh-runtime.mjs', import.meta.url), join(root, 'scripts/link-dsh-runtime.mjs'))
   const write = (path, json) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, JSON.stringify(json)) }
   write(join(root, 'package.json'), {
     type: 'module',
     devDependencies: { '@deepseek-ai/dsh': verifiedDsh, '@earendil-works/pi-ai': rootPi, 'local-build-tool': '1.0.0' },
-    peerDependencies: { '@deepseek-ai/dsh-session': installRange },
+    peerDependencies: { '@deepseek-ai/dsh-session': installRange, '@deepseek-ai/cordis-plugin-loader': '~1.0.5' },
     lcxCompatibility: { dshInstallRange: installRange, verifiedDsh, verifiedHostPi: hostPi, verifiedPluginPi: rootPi },
   })
   write(join(runtime, 'package.json'), { private: true })
@@ -30,6 +30,7 @@ function fixture(t, runtimeVersion = verifiedDsh, runtimePi = hostPi, rootPi = p
     '@deepseek-ai/dsh': runtimeVersion,
     '@deepseek-ai/dsh-session': runtimeVersion,
     '@deepseek-ai/dsh-llm-pi-ai': runtimeVersion,
+    '@deepseek-ai/cordis-plugin-loader': '1.0.5',
     '@earendil-works/pi-ai': runtimePi,
     '@deepseek-ai/cosmokit': '1.0.0',
   })) write(join(runtime, 'node_modules', name, 'package.json'), { name, version })
@@ -39,7 +40,7 @@ function fixture(t, runtimeVersion = verifiedDsh, runtimePi = hostPi, rootPi = p
   return { root, runtime, local, run: () => execFileSync(process.execPath, ['scripts/link-dsh-runtime.mjs'], { cwd: root }) }
 }
 
-test('runtime linking preserves local build dependencies and is repeatable on verified alpha.2', t => {
+test('runtime linking preserves local build dependencies and is repeatable on verified rc.2', t => {
   const f = fixture(t)
   const before = readFileSync(join(f.local, 'package.json'))
   f.run()
@@ -59,13 +60,20 @@ test('runtime linking keeps plugin Pi independent from the DSH host Pi', t => {
   assert.equal(JSON.parse(readFileSync(join(f.root, 'node_modules/@earendil-works/pi-ai/package.json'))).version, pluginPi)
 })
 
+test('rc.2 and stable 0.2.0 are inside the install/assessment envelope, not automatically verified', t => {
+  for (const version of ['0.2.0-rc.2', '0.2.0']) {
+    const f = fixture(t, version)
+    assert.doesNotThrow(() => f.run(), version)
+  }
+})
+
 test('older DSH lines and later release lines fail closed', t => {
-  assert.throws(() => fixture(t, '0.1.5-rc.2').run(), /outside LCX install range/u)
-  assert.throws(() => fixture(t, '0.1.5').run(), /outside LCX install range/u)
-  assert.throws(() => fixture(t, '0.1.6-alpha.1').run(), /outside LCX install range/u)
-  assert.throws(() => fixture(t, '0.1.7-alpha.1').run(), /outside LCX install range/u)
+  assert.throws(() => fixture(t, '0.1.6-alpha.2').run(), /outside LCX install range/u)
+  assert.throws(() => fixture(t, '0.1.7-rc.2').run(), /outside LCX install range/u)
+  assert.throws(() => fixture(t, '0.2.0-rc.1').run(), /outside LCX install range/u)
+  assert.throws(() => fixture(t, '0.2.1').run(), /outside LCX install range/u)
 })
 
 test('a host Pi change still forces compatibility reassessment', t => {
-  assert.throws(() => fixture(t, verifiedDsh, '0.85.2').run(), /Host Pi changed/u)
+  assert.throws(() => fixture(t, verifiedDsh, '0.87.2').run(), /Host Pi changed/u)
 })

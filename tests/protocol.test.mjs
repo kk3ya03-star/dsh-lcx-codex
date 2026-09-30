@@ -28,6 +28,9 @@ import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { authenticatedHeaders, promptCacheKey, promptCacheRetention, promptCacheSessionId, resolveResponsesRouteConfig } from '../lib/route.js'
 import { buildResponsesBody } from '../lib/responses-request.js'
+import { providerContext } from './dsh02-fixture.mjs'
+
+const credentials = { credentials: { resolve: async () => ({ value: 'redacted-test-value' }) } }
 
 function sseResponse(events, status = 200) {
   const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n'
@@ -44,24 +47,19 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   assert.equal(promptCacheRetention({ cacheRetention: 'short' }), undefined)
 
   const envName = 'LCX_TEST_CACHE_HEADER_KEY'
-  const previous = process.env[envName]
-  process.env[envName] = 'redacted-test-value'
-  try {
-    const headers = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, sessionId)
+  {
+    const headers = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, sessionId)
     assert.equal(headers['x-client-request-id'], sessionId)
     assert.equal(headers.session_id, sessionId)
     assert.equal(headers['session-id'], undefined)
-    const noAffinity = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, undefined, null)
+    const noAffinity = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, undefined, null)
     assert.equal(noAffinity['x-client-request-id'], undefined)
     assert.equal(noAffinity.session_id, undefined)
     assert.equal(noAffinity['session-id'], undefined)
-    const openrouter = await authenticatedHeaders(undefined, { apiKeyEnv: envName, provider: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', headers: {} }, sessionId)
+    const openrouter = await authenticatedHeaders(credentials, { apiKeyEnv: envName, provider: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', headers: {} }, sessionId)
     assert.equal(openrouter['x-session-id'], sessionId)
     assert.equal(openrouter.session_id, undefined)
     assert.equal(openrouter['x-client-request-id'], undefined)
-  } finally {
-    if (previous === undefined) delete process.env[envName]
-    else process.env[envName] = previous
   }
 })
 
@@ -81,15 +79,10 @@ test('root and authoritative DSH subagents share cache identity without sharing 
   assert.equal(promptCacheKey({ sessionId: child.id }, config, ctx), root.id)
 
   const envName = 'LCX_TEST_CHILD_CORRELATION_KEY'
-  const previous = process.env[envName]
-  process.env[envName] = 'redacted-test-value'
-  try {
-    const headers = await authenticatedHeaders(undefined, { apiKeyEnv: envName, headers: {} }, root.id, child.id)
+  {
+    const headers = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, root.id, child.id)
     assert.equal(headers.session_id, root.id)
     assert.equal(headers['x-client-request-id'], child.id)
-  } finally {
-    if (previous === undefined) delete process.env[envName]
-    else process.env[envName] = previous
   }
 })
 
@@ -105,7 +98,7 @@ test('invalid or incomplete subagent lineage falls back to the child cache ident
 
 function responsesRouteFixture(providers, fallbackOverrides = {}) {
   return {
-    ctx: { settings: { get: () => ({ providers }) } },
+    ctx: providerContext(providers),
     fallback: {
       timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 1, requestImagePixelBudget: 1, requestImageMaxBytes: 1,
       ...fallbackOverrides,
@@ -279,7 +272,7 @@ test('plugin-owned cache capability stays off for older, foreign, and non-opted 
   assert.notEqual(current?.responsesCompat?.supportsExplicitPromptCacheMode, true)
 
   const foreignProfile = { relay: { ...profile, baseURL: 'https://relay.example/v1' } }
-  const foreign = resolveResponsesRouteConfig({ settings: { get: () => ({ providers: foreignProfile }) } }, { provider: 'relay', model: 'gpt-5.6-sol' }, opted.fallback)
+  const foreign = resolveResponsesRouteConfig(providerContext(foreignProfile), { provider: 'relay', model: 'gpt-5.6-sol' }, opted.fallback)
   assert.notEqual(foreign?.responsesCompat?.supportsExplicitPromptCacheMode, true)
 })
 
@@ -405,7 +398,7 @@ test('Alpha response parser strips encrypted fields and keeps refs', () => {
   assert.equal(parsed.sources[0].url, 'https://example.com/')
 })
 
-test('DSH 0.1.6 request-image projection covers user and tool-result images', async () => {
+test('DSH 0.2 request-image projection covers user and tool-role result images', async () => {
   let policy
   let readImageRequestCalls = 0
   let readImageCalls = 0
@@ -433,10 +426,8 @@ test('DSH 0.1.6 request-image projection covers user and tool-result images', as
       source: { kind: 'model', provider: 'fixture', model: 'fixture-model' },
       content: [{ type: 'tool-call', id: 'call-image', name: 'read_image', arguments: '{}' }],
     },
-    { role:'user', content:[
-      { type:'image', attachment:ref },
-      { type:'tool-result', toolCallId:'call-image', toolName:'read_image', content:[{ type:'image', attachment:ref }] },
-    ] },
+    { role:'user', content:[{ type:'image', attachment:ref }] },
+    { role:'tool', toolCallId:'call-image', content:[{ type:'image', attachment:ref }] },
   ], ctx, {
     imageSupport:'supported', requestImagePixelBudget:123456, requestImageMaxBytes:654321, maxRequestImageBytes:20*1024*1024,
   })
@@ -637,9 +628,10 @@ function parseAlphaProbeFixture(action, response) {
     retrievedAt: '2026-08-24T00:00:00.000Z',
   })
 }
-test('Alpha capability probe continues a URL-only search through open and find', async () => {
+test('Alpha capability probe does not certify a URL-only search', async () => {
   const calls = []
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       calls.push(args)
@@ -655,15 +647,16 @@ test('Alpha capability probe continues a URL-only search through open and find',
       throw new Error(`Unexpected action: ${args.action}`)
     },
   })
-  assert.equal(result.classification, 'command-capable')
-  assert.equal(result.actions.open, 'supported')
-  assert.equal(result.actions.find, 'supported')
+  assert.equal(result.classification, 'emulated-search-only')
+  assert.equal(result.actions.open, 'unsupported')
+  assert.equal(result.actions.find, 'unsupported')
   assert.equal(result.probeVersion, ALPHA_PROBE_VERSION)
-  assert.deepEqual(calls.map((call) => call.action), ['search_query', 'open', 'find'])
+  assert.deepEqual(calls.map((call) => call.action), ['search_query'])
 })
 
 test('Alpha URL continuation failure cannot classify the route as usable', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return { refs: [], sources: [{ url: 'https://example.com/docs' }] }
@@ -680,6 +673,7 @@ test('Alpha URL continuation failure cannot classify the route as usable', async
 test('Alpha probe cannot classify a failed URL continuation through an unrelated click probe', async () => {
   const calls = []
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     clickProbeRef: 'turn0unrelated',
     invoke: async (args) => {
@@ -697,15 +691,16 @@ test('Alpha probe cannot classify a failed URL continuation through an unrelated
     },
   })
   assert.equal(result.actions.find, 'unsupported')
-  assert.equal(result.actions.click, 'supported')
+  assert.equal(result.actions.click, 'unsupported')
   assert.notEqual(result.classification, 'command-capable')
   assert.notEqual(result.classification, 'native')
   assert.equal(alphaCapabilityUsable(result), false)
-  assert.deepEqual(calls.map((call) => call.action), ['search_query', 'open', 'find', 'open', 'click'])
+  assert.deepEqual(calls.map((call) => call.action), ['search_query'])
 })
 
-test('Alpha probe can classify a searched real-ref page click when find is unavailable', async () => {
+test('Alpha probe cannot classify click when opaque find is unavailable', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return { refs: ['turn0search1'], sources: [] }
@@ -723,24 +718,25 @@ test('Alpha probe can classify a searched real-ref page click when find is unava
       throw new Error(`Unexpected action: ${args.action}`)
     },
   })
-  assert.equal(result.actions.click, 'supported')
-  assert.equal(result.classification, 'command-capable')
-  assert.equal(alphaCapabilityUsable(result), true)
+  assert.equal(result.actions.click, 'unknown')
+  assert.equal(result.classification, 'unknown')
+  assert.equal(alphaCapabilityUsable(result), false)
 })
 
-test('Alpha probe rejects HTTP-200 semantic ref failures and prefers a usable source URL', async () => {
+test('Alpha probe never substitutes a URL for a searched opaque ref', async () => {
   const calls = []
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       calls.push(args)
       if (args.action === 'search_query') return { refs: ['turn0search0'], sources: [{ url: 'https://example.com/docs' }] }
       if (args.action === 'open') {
-        assert.equal(args.refId, 'https://example.com/docs')
+        assert.equal(args.refId, 'turn0search0')
         return { results: [{ ref_id: 'turn0view0', url: 'https://example.com/docs' }], refs: ['turn0view0'], sources: [{ url: 'https://example.com/docs' }], links: [] }
       }
       if (args.action === 'find') {
-        assert.equal(args.refId, 'https://example.com/docs')
+        assert.equal(args.refId, 'turn0view0')
         return { results: [{ ref_id: 'turn0find0', url: 'https://example.com/docs' }], refs: ['turn0find0'], sources: [{ url: 'https://example.com/docs' }] }
       }
       throw new Error(`Unexpected action: ${args.action}`)
@@ -749,13 +745,69 @@ test('Alpha probe rejects HTTP-200 semantic ref failures and prefers a usable so
   assert.equal(result.classification, 'command-capable')
   assert.deepEqual(calls.map(({ action, refId }) => ({ action, refId })), [
     { action: 'search_query', refId: undefined },
-    { action: 'open', refId: 'https://example.com/docs' },
-    { action: 'find', refId: 'https://example.com/docs' },
+    { action: 'open', refId: 'turn0search0' },
+    { action: 'find', refId: 'turn0view0' },
+    { action: 'search_query', refId: undefined },
+    { action: 'open', refId: 'turn0search0' },
+    { action: 'find', refId: 'turn0view0' },
   ])
+})
+
+test('Alpha probe persists capability only after two distinct consecutive opaque chains', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'alpha-two-chain-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const store = new AlphaCapabilityStore(join(directory, 'capabilities.json'))
+  const fingerprint = 'b'.repeat(64)
+  for (const secondSucceeds of [true, false]) {
+    let chain = -1
+    const calls = []
+    const result = await probeAlphaCapabilities({
+      startChain: (index) => { chain = index; return `fresh-probe-${index}` },
+      schemaFingerprint: 'alpha-schema',
+      invoke: async ({ action, refId }) => {
+        calls.push({ chain, action, refId })
+        if (action === 'search_query') return { refs: [`turn${chain}search0`] }
+        if (action === 'open') {
+          assert.equal(refId, `turn${chain}search0`)
+          return { refs: [`turn${chain}view0`], results: [{ ref_id: `turn${chain}view0` }] }
+        }
+        assert.equal(action, 'find')
+        assert.equal(refId, `turn${chain}view0`)
+        return secondSucceeds || chain === 0
+          ? { refs: [`turn${chain}find0`], results: [{ ref_id: `turn${chain}find0` }] }
+          : { refs: [], results: [], content: 'reference unavailable' }
+      },
+    })
+    assert.deepEqual(calls.map(({ chain, action }) => `${chain}:${action}`), [
+      '0:search_query', '0:open', '0:find', '1:search_query', '1:open', '1:find',
+    ])
+    assert.equal(result.classification, secondSucceeds ? 'command-capable' : 'unknown')
+    assert.equal(alphaCapabilityUsable(result), secondSucceeds)
+    store.put(fingerprint, result)
+    assert.equal(alphaCapabilityUsable(store.get(fingerprint)), secondSucceeds)
+  }
+})
+
+test('Alpha probe does not advertise when the two chains share one body identity', async () => {
+  let calls = 0
+  const result = await probeAlphaCapabilities({
+    startChain: () => 'reused-probe-id',
+    schemaFingerprint: 'alpha-schema',
+    invoke: async ({ action }) => {
+      calls++
+      if (action === 'search_query') return { refs: ['turn0search0'] }
+      if (action === 'open') return { refs: ['turn0view0'], results: [{ ref_id: 'turn0view0' }] }
+      return { refs: ['turn0find0'], results: [{ ref_id: 'turn0find0' }] }
+    },
+  })
+  assert.equal(calls, 3)
+  assert.equal(result.classification, 'unknown')
+  assert.equal(alphaCapabilityUsable(result), false)
 })
 
 test('Alpha probe fails closed on HTTP-200 continuation responses with no consumable evidence', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return { refs: ['turn0search0'], sources: [] }
@@ -782,12 +834,13 @@ test('Alpha parser rejects real Internal Error command envelopes for click and s
     ['open', 'Internal Error ()\n\uE200cite\uE202turn1view0\uE201 [wordlim: 200] Source: open({"ref_id":"turn0search0","lineno":null}); Total lines: 1\nL0: Failed to fetch https://platform.openai.com/docs/quickstart/make-your-first-api-request: (404) Not Found', [{ ref_id: 'turn1view0' }]],
   ]) assert.throws(
     () => parseAlphaSearchResponse({ output, results }, { action, capability: 'command-capable', requestId: `req-${action}-internal-error`, retrievedAt: '2026-08-28T00:00:00.000Z' }),
-    (error) => error?.code === 'LCX_ALPHA_ACTION_FAILED',
+    (error) => error?.code === (action === 'open' ? 'LCX_ALPHA_PAGE_FETCH_FAILED' : 'LCX_ALPHA_ACTION_FAILED'),
   )
 })
 
 test('Alpha probe cannot promote real Internal Error click evidence', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -807,7 +860,7 @@ test('Alpha probe cannot promote real Internal Error click evidence', async () =
       throw new Error(`Unexpected action: ${args.action}`)
     },
   })
-  assert.equal(result.actions.click, 'unsupported')
+  assert.equal(result.actions.click, 'unknown')
   assert.notEqual(result.classification, 'command-capable')
   assert.equal(alphaCapabilityUsable(result), false)
 })
@@ -828,6 +881,7 @@ test('Alpha semantic failure matcher does not reject successful content that quo
 
 test('Alpha probe rejects production-parsed HTTP-200 open prose failures', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -845,6 +899,7 @@ test('Alpha probe rejects production-parsed HTTP-200 open prose failures', async
 
 test('Alpha probe rejects production-parsed semantic error prose even when it contains a public URL', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -866,6 +921,7 @@ test('Alpha probe rejects production-parsed semantic error prose even when it co
 test('Alpha probe rejects arbitrary production-parsed prose-only URL blocks for all continuation actions', async () => {
   const prose = 'Unable to access requested content (https://example.com/docs)'
   const openFind = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -882,6 +938,7 @@ test('Alpha probe rejects arbitrary production-parsed prose-only URL blocks for 
   assert.equal(openFind.classification, 'emulated-search-only')
 
   const click = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -897,10 +954,11 @@ test('Alpha probe rejects arbitrary production-parsed prose-only URL blocks for 
       throw new Error(`Unexpected action: ${args.action}`)
     },
   })
-  assert.equal(click.actions.click, 'unsupported')
+  assert.equal(click.actions.click, 'unknown')
   assert.notEqual(click.classification, 'command-capable')
 
   const screenshot = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     screenshotProbeRef: 'turn0pdfseed',
     invoke: async (args) => {
@@ -908,7 +966,7 @@ test('Alpha probe rejects arbitrary production-parsed prose-only URL blocks for 
         output: 'Example (https://example.com/docs)',
         results: [{ ref_id: 'turn0search0', url: 'https://example.com/docs' }],
       })
-      if (args.action === 'open' && args.refId === 'https://example.com/docs') return parseAlphaProbeFixture('open', {
+      if (args.action === 'open' && args.refId === 'turn0search0') return parseAlphaProbeFixture('open', {
         output: 'Example (https://example.com/docs)\nciteturn0view0\nL1: OpenAI documentation',
         results: [{ ref_id: 'turn0view0', url: 'https://example.com/docs' }],
       })
@@ -929,6 +987,7 @@ test('Alpha probe rejects arbitrary production-parsed prose-only URL blocks for 
 test('Alpha probe rejects URL-only result objects as continuation evidence', async () => {
   const prose = 'Unable to access requested content (https://example.com/docs)'
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -949,6 +1008,7 @@ test('Alpha probe rejects URL-only result objects as continuation evidence', asy
 
 test('Alpha generic structured probes do not treat any resolved response as supported', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     actionProbes: { finance: { ticker: 'MSFT', assetType: 'equity' } },
     invoke: async (args) => {
@@ -973,6 +1033,7 @@ test('Alpha generic structured probes do not treat any resolved response as supp
 })
 test('Alpha generic action probes cannot bypass click semantic evidence checks', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     actionProbes: { click: { refId: 'turn0view0', linkId: 7 } },
     invoke: async (args) => {
@@ -995,6 +1056,7 @@ test('Alpha generic action probes cannot bypass click semantic evidence checks',
 })
 test('Alpha probe rejects production-parsed HTTP-200 find prose failures', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -1018,6 +1080,7 @@ test('Alpha probe rejects production-parsed HTTP-200 find prose failures', async
 
 test('Alpha probe rejects production-parsed HTTP-200 click prose failures', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     invoke: async (args) => {
       if (args.action === 'search_query') return parseAlphaProbeFixture('search_query', {
@@ -1038,13 +1101,14 @@ test('Alpha probe rejects production-parsed HTTP-200 click prose failures', asyn
     },
   })
   assert.equal(result.actions.find, 'unsupported')
-  assert.equal(result.actions.click, 'unsupported')
+  assert.equal(result.actions.click, 'unknown')
   assert.notEqual(result.classification, 'command-capable')
   assert.notEqual(result.classification, 'native')
   assert.equal(alphaCapabilityUsable(result), false)
 })
 test('Alpha probe rejects production-parsed HTTP-200 screenshot prose failures', async () => {
   const result = await probeAlphaCapabilities({
+    startChain: (index) => `probe-${index}`,
     schemaFingerprint: 'alpha-schema',
     screenshotProbeRef: 'turn0pdfseed',
     invoke: async (args) => {
@@ -1052,7 +1116,7 @@ test('Alpha probe rejects production-parsed HTTP-200 screenshot prose failures',
         output: 'Example (https://example.com/docs)',
         results: [{ ref_id: 'turn0search0', url: 'https://example.com/docs' }],
       })
-      if (args.action === 'open' && args.refId === 'https://example.com/docs') return parseAlphaProbeFixture('open', {
+      if (args.action === 'open' && args.refId === 'turn0search0') return parseAlphaProbeFixture('open', {
         output: 'Example (https://example.com/docs)\nciteturn0view0\nL1: OpenAI documentation',
         results: [{ ref_id: 'turn0view0', url: 'https://example.com/docs' }],
       })
@@ -1071,10 +1135,10 @@ test('Alpha probe rejects production-parsed HTTP-200 screenshot prose failures',
   assert.equal(result.classification, 'command-capable')
   assert.equal(result.actions.screenshot, 'unsupported')
 })
-test('Alpha capability store requires a new probe after reference-error hardening', () => {
+test('Alpha capability store requires a new two-chain probe', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-'))
   try {
-    assert.equal(ALPHA_PROBE_VERSION, 12)
+  assert.equal(ALPHA_PROBE_VERSION, 15)
     const fingerprint = 'a'.repeat(64)
     const previousRecord = {
       classification: 'command-capable',

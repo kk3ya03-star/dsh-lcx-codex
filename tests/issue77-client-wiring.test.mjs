@@ -54,7 +54,8 @@ function applyClient() {
   }
   loadClient().apply({
     locale: { register() { return () => {} } },
-    settingsScope: scope,
+    configForms: { get: ns => ns === 'lcx-codex' ? scope : undefined },
+    get(name) { return this[name] },
     uiConversation: { events: { register(definition) {
       const entry = { definition }
       definitions.push(entry)

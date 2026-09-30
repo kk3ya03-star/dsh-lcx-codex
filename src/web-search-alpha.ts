@@ -42,12 +42,16 @@ const RESPONSE_LENGTHS = ["short", "medium", "long"];
 export const ALPHA_SEARCH_PARAMETERS = {
   type: "object",
   properties: {
-    action: { type: "string", enum: ALPHA_ACTIONS },
+    action: {
+      type: "string",
+      enum: ALPHA_ACTIONS,
+      description: "Choose one action. search_query/image_query use query, domains, recency; open uses refId, lineNumber; find uses refId, pattern; click uses refId, linkId; screenshot uses refId, pageNumber; finance uses ticker, assetType, market; weather uses location, start, duration; sports uses fn, league, team, opponent, dateFrom, dateTo, numberOfGames, locale; time uses utcOffset. responseLength applies to every action. Other declared fields are ignored.",
+    },
     query: { type: "string" },
     domains: { type: "array", items: { type: "string" } },
     recency: { type: "integer" },
-    refId: { type: "string" },
-    lineNumber: { type: "integer" },
+    refId: { type: "string", description: "Copy only the reference after opaqueRef=, including any lcx-alpha- handle. Do not include the opaqueRef= label. A public URL is allowed for open/find." },
+    lineNumber: { type: "integer", description: "Omit unless opening a specific line. Zero requests line 0." },
     linkId: { type: "integer" },
     pattern: { type: "string" },
     pageNumber: { type: "integer" },
@@ -116,7 +120,9 @@ export const ALPHA_SEARCH_OUTPUT = {
 export const ALPHA_SCHEMA_FINGERPRINT = createHash("sha256")
   .update(JSON.stringify(ALPHA_SEARCH_PARAMETERS))
   .digest("hex");
-export const ALPHA_PROBE_VERSION = 12;
+export const ALPHA_PROBE_VERSION = 15;
+export const ALPHA_PROBE_QUERY = "Python official documentation docs.python.org/3/";
+export const ALPHA_PROBE_MAX_OPEN_CANDIDATES = 3;
 type RecordValue = Record<string, unknown>;
 type AlphaAction = (typeof ALPHA_ACTIONS)[number];
 type NormalizedAlphaArgs = RecordValue & { action: AlphaAction };
@@ -174,7 +180,7 @@ function date(value: unknown, field: string) {
   return normalized;
 }
 function normalizeDomains(value: unknown): string[] {
-  if (!Array.isArray(value) || !value.length || value.length > 100)
+  if (!Array.isArray(value) || value.length > 100)
     throw failure("websearch_alpha.domains is invalid");
   return value.map((item) => {
     const d = text(item, "domains", 253).toLowerCase();
@@ -183,27 +189,6 @@ function normalizeDomains(value: unknown): string[] {
     return d;
   });
 }
-const FIELDS: Record<AlphaAction, readonly string[]> = {
-  search_query: ["query", "domains", "recency"],
-  image_query: ["query", "domains", "recency"],
-  open: ["refId", "lineNumber"],
-  find: ["refId", "pattern"],
-  click: ["refId", "linkId"],
-  screenshot: ["refId", "pageNumber"],
-  finance: ["ticker", "assetType", "market"],
-  weather: ["location", "start", "duration"],
-  sports: [
-    "fn",
-    "league",
-    "team",
-    "opponent",
-    "dateFrom",
-    "dateTo",
-    "numberOfGames",
-    "locale",
-  ],
-  time: ["utcOffset"],
-};
 function isAlphaAction(value: unknown): value is AlphaAction {
   return typeof value === "string" && ALPHA_ACTIONS.includes(value as AlphaAction);
 }
@@ -211,8 +196,10 @@ function isAlphaAction(value: unknown): value is AlphaAction {
 export function normalizeAlphaSearchArgs(args: unknown): NormalizedAlphaArgs {
   if (!isObject(args) || !isAlphaAction(args.action))
     throw failure("websearch_alpha.action is invalid");
-  const allowed = new Set(["action", "responseLength", ...FIELDS[args.action]]);
-  if (Object.keys(args).some((k) => !allowed.has(k)))
+  // The advertised flat schema permits every declared field for every action.
+  // Ignore fields owned by another action; never forward them to Alpha.
+  const declared = new Set(Object.keys(ALPHA_SEARCH_PARAMETERS.properties));
+  if (Object.keys(args).some((k) => !declared.has(k)))
     throw failure(`websearch_alpha.${args.action} received an unrelated field`);
   const result: NormalizedAlphaArgs = { action: args.action };
   if (args.responseLength !== undefined) {
@@ -227,7 +214,7 @@ export function normalizeAlphaSearchArgs(args: unknown): NormalizedAlphaArgs {
     case "search_query":
     case "image_query":
       result.query = text(args.query, "query", 16000);
-      if (args.domains !== undefined)
+      if (args.domains !== undefined && (!Array.isArray(args.domains) || args.domains.length > 0))
         result.domains = normalizeDomains(args.domains);
       if (args.recency !== undefined)
         result.recency = integer(args.recency, "recency", 0, 3650);
@@ -376,26 +363,13 @@ export function alphaActionCommand(args: NormalizedAlphaArgs): Record<string, un
     ...(args.responseLength ? { response_length: args.responseLength } : {}),
   };
 }
-function actionInput(args: NormalizedAlphaArgs): string {
-  return String(
-    args.query ??
-      (args.refId
-        ? `${args.action}: ${args.refId}`
-        : args.ticker
-          ? `${args.action}: ${args.ticker}`
-          : args.location
-            ? `${args.action}: ${args.location}`
-            : args.utcOffset
-              ? `${args.action}: ${args.utcOffset}`
-              : `${args.action}: ${args.league ?? ""}`.trim()),
-  );
-}
 export function buildAlphaSearchBody(
   args: NormalizedAlphaArgs,
   model: unknown,
   sessionId: string,
   externalWebAccess = true,
   maxOutputTokens = 2500,
+  input?: Record<string, unknown>[],
 ) {
   if (typeof sessionId !== "string" || !sessionId)
     throw failure(
@@ -405,12 +379,7 @@ export function buildAlphaSearchBody(
   return {
     id: sessionId,
     model,
-    input: [
-      {
-        role: "user",
-        content: [{ type: "input_text", text: actionInput(args) }],
-      },
-    ],
+    ...(input?.length ? { input } : {}),
     commands: alphaActionCommand(args),
     settings: {
       allowed_callers: ["direct"],
@@ -771,11 +740,30 @@ const ALPHA_FETCH_FAILURE_ENVELOPE =
   /^\s*Internal Error\s*\([^\r\n)]*\)\s*(?:\r?\n[ \t]*)+(?:\uE200cite\uE202[^\uE201\r\n]+\uE201[ \t]*(?:\[wordlim:\s*\d+\][ \t]*)?)?Source:\s*(open|find|click|screenshot)\s*\([^\r\n]*\)\s*;\s*Total lines:\s*\d+\s*(?:\r?\n)L0:[ \t]*Failed to fetch \S+:[ \t]*\(\d{3}\)/iu;
 const ALPHA_REFERENCE_ERROR_ENVELOPE =
   /^\s*(?:\*\*Result:\*\*[ \t]*)?Unable to (?:execute[ \t]+)?`?(open|find|click|screenshot)`?(?=[\s:])([^\r\n]*)/iu;
+const ALPHA_FIND_SOURCE_ERROR_ENVELOPE =
+  /^\s*The (?:request|search) failed: `[^`\r\n]+` is not a valid or available source reference, so\b/iu;
+// Recorded HTTP-200 empty error view: no page body, but a newly produced view citation.
+// Anchor the entire envelope so error examples inside fetched pages never match.
+const ALPHA_EMPTY_FETCH_ERROR_VIEW =
+  /^\s*(?:Internal[ \t]+)?Error[ \t]*\([ \t]*\)[ \t]*\r?\n[ \t]*\uE200cite\uE202turn\d+view\d+\uE201[ \t]*(?:\[wordlim:\s*\d+\][ \t]*)?\s*$/u;
+// A notice-only open view: every body line belongs to the fetch failure,
+// never arbitrary page prose or numbered page content.
+const ALPHA_FETCH_NOTICE_VIEW =
+  /^\s*(?:(?:Internal[ \t]+)?Error[ \t]*\([ \t]*\)[ \t]*\r?\n[ \t]*)?(?:\uE200cite\uE202turn\d+view\d+\uE201[ \t]*(?:\[wordlim:\s*\d+\][ \t]*)?\r?\n[ \t]*)?Failed to fetch[ \t]+https?:\/\/\S+[^\r\n]*?(?:\r?\n[ \t]*|[ \t]+)Error fetching[ \t]+https?:\/\/\S+[^\r\n]*\s*$/u;
+function alphaPageFetchFailed(output: unknown, action: string | undefined): boolean {
+  if (action !== "open" && action !== "click") return false;
+  const text = String(output ?? "");
+  const explicit = text.match(ALPHA_FETCH_FAILURE_ENVELOPE);
+  return ALPHA_EMPTY_FETCH_ERROR_VIEW.test(text) ||
+    (action === "open" && ALPHA_FETCH_NOTICE_VIEW.test(text)) ||
+    explicit?.[1].toLowerCase() === action;
+}
 function alphaCommandErrorEnvelope(
   output: unknown,
   action: string | undefined,
 ) {
   const text = String(output ?? "");
+  if (action === "find" && ALPHA_FIND_SOURCE_ERROR_ENVELOPE.test(text)) return true;
   const command = text.match(ALPHA_COMMAND_ERROR_ENVELOPE);
   if (command && command[1].toLowerCase() === action) return true;
   const fetchFailure = text.match(ALPHA_FETCH_FAILURE_ENVELOPE);
@@ -808,6 +796,11 @@ export function parseAlphaSearchResponse(
       "LCX_ALPHA_INVALID_RESPONSE",
     );
   const action = typeof options.action === "string" ? options.action : undefined;
+  if (alphaPageFetchFailed(response.output, action))
+    throw failure(
+      "LCX Alpha Web Search: the page could not be fetched; try another result",
+      "LCX_ALPHA_PAGE_FETCH_FAILED",
+    );
   if (
     ACTION_ERROR.test(response.output) ||
     (["open", "find", "click", "screenshot"].includes(action ?? "") &&
@@ -921,6 +914,24 @@ export function renderAlphaSearchResult(value: unknown): ContentBlock[] {
   parts.push(`检索时间：${String(data.retrievedAt ?? "")}`);
   return [{ type: "text", text: parts.filter(Boolean).join("\n\n") }];
 }
+export function remapAlphaResultRefs<T>(value: T, handles: Record<string, string>): T {
+  const changes = Object.entries(handles).filter(([raw, handle]) => raw !== handle);
+  if (!changes.length) return value;
+  const urlFields = new Set(["url", "source_url", "source_website_url", "image_url", "thumbnail_url", "href"]);
+  const replace = (input: unknown, key = ""): unknown => {
+    if (urlFields.has(key)) return input;
+    if (typeof input === "string") {
+      let output = input;
+      for (const [raw, handle] of changes)
+        output = output.replace(new RegExp(`(?<![\\w-])${raw.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\w-])`, "gu"), handle);
+      return output;
+    }
+    if (Array.isArray(input)) return input.map((item) => replace(item));
+    if (isObject(input)) return Object.fromEntries(Object.entries(input).map(([field, item]) => [field, replace(item, field)]));
+    return input;
+  };
+  return replace(value) as T;
+}
 export const ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS = 1;
 const alphaSessionLocks = new Map<string, { mutex: ServiceMutex; users: number }>();
 export function alphaSearchRetryOptions(maxResponseBytes?: number) {
@@ -1022,6 +1033,7 @@ const ALPHA_PROBE_SEMANTIC_FAILURE =
   /\breference(?: id)?\s+(?:is\s+)?(?:invalid|unavailable)\b/iu;
 function alphaProbeResultHasEvidence(action: string, value: unknown): boolean {
   const data = isObject(value) ? value : {};
+  if (alphaPageFetchFailed(data.content, action)) return false;
   if (alphaCommandErrorEnvelope(data.content, action)) return false;
   if (
     ALPHA_PROBE_SEMANTIC_FAILURE.test(String(data.content ?? "")) &&
@@ -1057,6 +1069,7 @@ function alphaProbeResultHasEvidence(action: string, value: unknown): boolean {
 }
 export async function probeAlphaCapabilities({
   invoke,
+  startChain,
   schemaFingerprint,
   trustedNativeProvenance = false,
   actionProbes = {},
@@ -1064,6 +1077,8 @@ export async function probeAlphaCapabilities({
   screenshotProbeRef,
 }: {
   invoke: AlphaInvoke;
+  /** Begin a fresh body/session id and clear probe history before each independent chain. */
+  startChain: (index: number) => string | Promise<string>;
   schemaFingerprint: unknown;
   trustedNativeProvenance?: boolean;
   actionProbes?: Record<string, RecordValue>;
@@ -1081,76 +1096,80 @@ export async function probeAlphaCapabilities({
     probeVersion: ALPHA_PROBE_VERSION,
     provenance: trustedNativeProvenance ? "trusted-native" : "unavailable",
   };
-  let search;
-  try {
-    search = await invoke({
-      action: "search_query",
-      query: "OpenAI official documentation",
-      responseLength: "short",
-    });
-    actions.search_query = "supported";
-  } catch (error) {
-    actions.search_query = probeFailureState(error);
-    result.classification =
-      actions.search_query === "unsupported" ? "unsupported" : "unknown";
-    return result;
-  }
-  const searchSources = Array.isArray(search.sources) ? search.sources : [];
-  const searchUrl = searchSources
-    .map((source) => isObject(source) ? httpUrl(source.url) : undefined)
-    .find((value): value is string => value !== undefined);
-  const searchRefs = Array.isArray(search.refs) ? search.refs : [];
-  const searchRef = searchRefs[0];
-  const continuationTarget = searchUrl ?? searchRef;
-  if (!continuationTarget) {
-    result.classification = "emulated-search-only";
-    actions.open = "unsupported";
-    actions.find = "unsupported";
-    actions.click = "unsupported";
-    return result;
-  }
-  let opened;
-  try {
-    opened = await invoke({
-      action: "open",
-      refId: continuationTarget,
-      responseLength: "short",
-    });
-    if (!alphaProbeResultHasEvidence("open", opened)) {
-      actions.open = "unsupported";
-      result.classification = "emulated-search-only";
+  let opened: AlphaProbeValue | undefined;
+  const chainIds = new Set<string>();
+  // Two independent chains, each bounded to search + 3 candidate opens + find:
+  // at most 10 mandatory calls, 19 with all optional checks. Only page-fetch
+  // failures allow another candidate; never retry the same ref or failed find.
+  for (let chain = 0; chain < 2; chain++) {
+    try {
+      const chainId = await startChain(chain);
+      if (typeof chainId !== "string" || !chainId || chainIds.has(chainId)) {
+        result.classification = "unknown";
+        return result;
+      }
+      chainIds.add(chainId);
+    } catch { result.classification = "unknown"; return result; }
+    let search: AlphaProbeValue;
+    try {
+      search = await invoke({ action: "search_query", query: ALPHA_PROBE_QUERY, responseLength: "short" });
+      actions.search_query = "supported";
+    } catch (error) {
+      actions.search_query = probeFailureState(error);
+      result.classification = chain === 0 && actions.search_query === "unsupported" ? "unsupported" : "unknown";
       return result;
     }
-    actions.open = "supported";
-  } catch (error) {
-    actions.open = probeFailureState(error);
-    result.classification =
-      actions.open === "unsupported" ? "emulated-search-only" : "unknown";
-    return result;
+    const searchRefs = Array.isArray(search.refs) ? search.refs : [];
+    const candidates = [...new Set(searchRefs.filter((ref) => typeof ref === "string" && ref && !isAlphaHttpUrl(ref)))].slice(0, ALPHA_PROBE_MAX_OPEN_CANDIDATES);
+    if (!candidates.length) {
+      result.classification = chain === 0 ? "emulated-search-only" : "unknown";
+      actions.open = "unsupported";
+      actions.find = "unsupported";
+      actions.click = "unsupported";
+      return result;
+    }
+    opened = undefined;
+    let continuationTarget: unknown;
+    for (const candidate of candidates) {
+      try {
+        const value = await invoke({ action: "open", refId: candidate, responseLength: "short" });
+        if (alphaPageFetchFailed(value.content, "open")) continue;
+        if (!alphaProbeResultHasEvidence("open", value)) {
+          actions.open = "unsupported";
+          result.classification = chain === 0 ? "emulated-search-only" : "unknown";
+          return result;
+        }
+        opened = value;
+        continuationTarget = candidate;
+        actions.open = "supported";
+        break;
+      } catch (error) {
+        if (isObject(error) && error.code === "LCX_ALPHA_PAGE_FETCH_FAILED") continue;
+        actions.open = probeFailureState(error);
+        result.classification = chain === 0 && actions.open === "unsupported" ? "emulated-search-only" : "unknown";
+        return result;
+      }
+    }
+    if (!opened) {
+      actions.open = "unknown";
+      result.classification = "unknown";
+      return result;
+    }
+    const openedRefs = Array.isArray(opened.refs) ? opened.refs : [];
+    const findTarget = openedRefs.find((ref) => typeof ref === "string" && !isAlphaHttpUrl(ref)) ?? continuationTarget;
+    try {
+      const found = await invoke({ action: "find", refId: findTarget, pattern: "Python", responseLength: "short" });
+      actions.find = alphaProbeResultHasEvidence("find", found) ? "supported" : "unsupported";
+    } catch (error) {
+      actions.find = probeFailureState(error);
+    }
+    if (actions.find !== "supported") {
+      result.classification = "unknown";
+      return result;
+    }
   }
-  const openedSources = opened && Array.isArray(opened.sources) ? opened.sources : [];
-  const openedUrl = openedSources
-    .map((source) => isObject(source) ? httpUrl(source.url) : undefined)
-    .find((value): value is string => value !== undefined);
-  const openedRefs = opened && Array.isArray(opened.refs) ? opened.refs : [];
-  const findTarget = searchUrl ?? openedUrl ?? openedRefs[0] ?? continuationTarget;
-  try {
-    const found = await invoke({
-      action: "find",
-      refId: findTarget,
-      pattern: "OpenAI",
-      responseLength: "short",
-    });
-    actions.find = alphaProbeResultHasEvidence("find", found)
-      ? "supported"
-      : "unsupported";
-  } catch (error) {
-    actions.find = probeFailureState(error);
-  }
-  let clickPage = opened,
-    clickProbeUsed = false;
+  let clickPage = opened;
   if (!(clickPage && Array.isArray(clickPage.links) && clickPage.links.length > 0) && clickProbeRef) {
-    clickProbeUsed = true;
     try {
       clickPage = await invoke({
         action: "open",
@@ -1180,16 +1199,7 @@ export async function probeAlphaCapabilities({
       actions.click = probeFailureState(error);
     }
   }
-  if (
-    actions.find === "supported" ||
-    (actions.click === "supported" && !clickProbeUsed)
-  )
-    result.classification = trustedNativeProvenance
-      ? "native"
-      : "command-capable";
-  else if (actions.find === "unsupported" && actions.click === "unsupported")
-    result.classification = "emulated-search-only";
-  else result.classification = "unknown";
+  result.classification = trustedNativeProvenance ? "native" : "command-capable";
   if (screenshotProbeRef) {
     try {
       const pdf = await invoke({

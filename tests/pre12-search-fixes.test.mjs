@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import apply from '../lib/index.js'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 import {
   hostedMediaPresentationMeta,
   parseHostedSearchResponse,
@@ -231,7 +232,7 @@ test('Alpha execution helpers refuse unsupported actions without claiming unknow
 test('Alpha action gating still requires matching schema fingerprint, probe version and route identity', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-pre12-cap-'))
   try {
-    assert.equal(ALPHA_PROBE_VERSION, 12)
+  assert.equal(ALPHA_PROBE_VERSION, 15)
     const store = new AlphaCapabilityStore(join(directory, 'capabilities.json'))
     const verifiedRoute = {
       baseURL: 'https://alpha.example/v1',
@@ -325,28 +326,23 @@ function productionAlphaHarness(directory, actions, { maxAttempts = 3 } = {}) {
     schemaFingerprint: ALPHA_SCHEMA_FINGERPRINT,
   }), commandCapableRecord(actions))
   const handlers = new Map()
+  const provider = providerContext({ fixture: { api: 'openai-responses', baseURL: route.baseURL, apiKeyEnv: 'FIXTURE_KEY' } })
   const ctx = {
     logger: { info() {}, warn() {} },
-    llm: {},
+    llm: provider.llm,
     sessions: {},
     credentials: { resolve: async () => ({ value: 'synthetic-key' }) },
     attachments: {},
     fs: {},
     web: { searchProviderId: 'native', registerSearchProvider() {} },
     tools: { register() { throw new Error('global tool registration is forbidden') } },
-    settings: {
-      get: () => ({ providers: { fixture: { api: 'openai-responses', baseURL: route.baseURL, apiKeyEnv: 'FIXTURE_KEY' } } }),
-      installSection(_owner, _key, _schema, _base, hooks) {
-        hooks.setSource(() => ({ enabled: true, webSearch: true, advancedHostedSearch: false, alphaSearch: true }))
-        hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on(name, handler) { handlers.set(name, handler) },
     get(name) { return this[name] },
     inject() {},
     effect() {},
   }
-  apply(ctx, { alphaCapabilityPath: capabilityPath, alphaRefPath: refPath, maxAttempts })
+  apply(ctx, pluginConfig({ enabled: true, webSearch: true, alphaSearch: true, alphaCapabilityPath: capabilityPath, alphaRefPath: refPath, maxAttempts }))
   const createAgent = (sessionId) => {
     const local = new Map()
     const tools = {
@@ -616,13 +612,76 @@ test('production Alpha execute does not register refs from a top-level open fetc
   await tool.execute({ action: 'search_query', query: 'quickstart' }, { agent, signal: new AbortController().signal })
   await assert.rejects(
     tool.execute({ action: 'open', refId: 'turn0search0' }, { agent, signal: new AbortController().signal }),
-    (error) => error?.code === 'LCX_ALPHA_ACTION_FAILED',
+    (error) => error?.code === 'LCX_ALPHA_PAGE_FETCH_FAILED',
   )
   assert.equal(opens.length, 1)
   const store = new AlphaRefStore(refPath)
   const fingerprint = routeFingerprint({ ...route, sessionId })
   assert.doesNotThrow(() => store.assertUsable(sessionId, fingerprint, 'turn0search0'))
   assert.throws(() => store.assertUsable(sessionId, fingerprint, 'turn1view0'))
+})
+
+test('real DSH Alpha tool returns page fetch error without retry, invalidation or disabling Alpha', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'issue95-page-fetch-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const { createAgent, refPath, route } = productionAlphaHarness(directory, { search_query: 'supported', open: 'supported', click: 'supported' })
+  const { agent, tool, sessionId } = createAgent('page-fetch-session')
+  const recorded = JSON.parse(readFileSync(new URL('./fixtures/issue95-page-fetch-failed.json', import.meta.url), 'utf8'))
+  let calls = 0
+  let fail = true
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    calls++
+    const body = JSON.parse(init.body)
+    const response = body.commands.search_query
+      ? { output: 'Result citeturn0search0', results: [{ ref_id: 'turn0search0' }] }
+      : fail ? recorded : { output: 'Page citeturn2view0', results: [{ ref_id: 'turn2view0' }] }
+    return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } })
+  })
+  await tool.execute({ action: 'search_query', query: 'Python' }, { agent })
+  for (const action of ['open', 'click']) {
+    const before = calls
+    await assert.rejects(tool.execute({ action, refId: 'turn0search0', ...(action === 'click' ? { linkId: 1 } : {}) }, { agent }), error => {
+      assert.equal(error.code, 'LCX_ALPHA_PAGE_FETCH_FAILED')
+      assert.match(error.message, /page could not be fetched; try another result/)
+      return true
+    })
+    assert.equal(calls, before + 1)
+    const store = new AlphaRefStore(refPath)
+    const fp = routeFingerprint({ ...route, sessionId })
+    assert.doesNotThrow(() => store.assertUsable(sessionId, fp, 'turn0search0'))
+    assert.throws(() => store.assertUsable(sessionId, fp, 'turn1view0'), { code: 'LCX_ALPHA_REF_UNAVAILABLE' })
+  }
+  fail = false
+  await assert.doesNotReject(tool.execute({ action: 'open', refId: 'turn0search0' }, { agent }))
+})
+
+test('production Alpha reused raw label is rendered as a new handle and resolves outbound', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-issue95-collision-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const { createAgent } = productionAlphaHarness(directory, { search_query: 'supported', open: 'supported' })
+  const { agent, tool, sessionId } = createAgent('session-collision')
+  const bodies = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body)
+    bodies.push(body)
+    const url = body.commands.search_query
+      ? bodies.length === 1 ? 'https://example.com/first' : 'https://example.com/second'
+      : 'https://example.com/second'
+    return new Response(JSON.stringify({ output: `Result citeturn0search0`, results: [{ ref_id: 'turn0search0', url }] }), { headers: { 'content-type': 'application/json' } })
+  })
+  const first = await tool.execute({ action: 'search_query', query: 'first' }, { agent })
+  const second = await tool.execute({ action: 'search_query', query: 'second' }, { agent })
+  const handle = second.refs[0]
+  assert.deepEqual(first.refs, ['turn0search0'])
+  assert.match(handle, /^lcx-alpha-/)
+  assert.match(second.content, new RegExp(handle))
+  assert.equal(bodies[0].id, sessionId)
+  assert.equal(bodies[1].id, sessionId)
+  assert.equal('previous_response_id' in bodies[1], false)
+  assert.equal('encrypted_output' in bodies[1], false)
+  await assert.rejects(tool.execute({ action: 'open', refId: 'turn0search0' }, { agent }), { code: 'LCX_ALPHA_REF_UNAVAILABLE' })
+  await tool.execute({ action: 'open', refId: handle }, { agent })
+  assert.equal(bodies.at(-1).commands.open[0].ref_id, 'turn0search0')
 })
 
 test('Alpha session lock serializes one session without blocking another session', async () => {

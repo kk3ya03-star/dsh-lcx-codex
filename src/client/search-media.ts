@@ -10,8 +10,10 @@ export type SearchMediaItem = {
 
 export const SEARCH_MEDIA_LIMIT = 60;
 
-const IMAGE_EXTENSION = /\.(?:jpe?g|png|webp|gif|avif)$/i;
 const VIDEO_EXTENSION = /\.(?:mp4|webm|ogv)$/i;
+const IMAGE_EXTENSION = /\.(?:jpe?g|png|webp|gif|avif)$/i;
+/** Image CDNs whose extensionless URLs are always images. */
+const IMAGE_CDN_HOSTS = new Set(["images.unsplash.com", "plus.unsplash.com", "images.pexels.com"]);
 const URL_TOKEN = /https?:\/\/[^\s<>"'`，。；：！？、“”‘’（）【】《》]+/gi;
 const REFERENCE_DEFINITION = /^ {0,3}\[([^\]\r\n]+)\]:[ \t]*(?:<([^>\s]+)>|(\S+))(?:[ \t]+.*)?$/gm;
 const REFERENCE_IMAGE = /!\[([^\]\r\n]*)\](?:\s*\[([^\]\r\n]*)\])?/g;
@@ -245,16 +247,18 @@ function publicHttpUrl(value: unknown): URL | null {
   return parsed;
 }
 
-function mediaItem(value: string): SearchMediaItem | null {
+/**
+ * A prose link qualifies only when it points straight at a media file: a playable
+ * video file, or an image file / known image CDN. Pages (video sites, articles) stay links.
+ */
+function proseMediaItem(value: string): SearchMediaItem | null {
   const parsed = publicHttpUrl(value);
   if (parsed === null) return null;
-  const imageCdn = parsed.protocol === 'https:' && ['images.unsplash.com','plus.unsplash.com','images.pexels.com'].includes(parsed.hostname) && !/\.(svg|html?|js)$/i.test(parsed.pathname);
-  const kind = IMAGE_EXTENSION.test(parsed.pathname) || imageCdn
-    ? "image"
-    : VIDEO_EXTENSION.test(parsed.pathname)
-      ? "video"
-      : null;
-  return kind === null ? null : { kind, url: parsed.href };
+  if (VIDEO_EXTENSION.test(parsed.pathname)) return { kind: "video", url: parsed.href };
+  if (IMAGE_EXTENSION.test(parsed.pathname) ||
+      (parsed.protocol === "https:" && IMAGE_CDN_HOSTS.has(parsed.hostname) && !/\.(?:svg|html?|js)$/i.test(parsed.pathname)))
+    return { kind: "image", url: parsed.href };
+  return null;
 }
 
 function referenceLabel(value: string): string {
@@ -318,8 +322,15 @@ export function mergeSearchMedia(
   return result;
 }
 
-/** Extract bounded remote media linked by visible assistant prose. */
-export function extractSearchMedia(text: string): readonly SearchMediaItem[] {
+/**
+ * Extract bounded direct media links from visible assistant prose, in text order.
+ *
+ * Ownership (Issue #102): Markdown images are rendered by DSH itself, so their
+ * destinations are never returned, and a bare link to an image DSH already renders
+ * natively in the same text is skipped. Plain direct image links and direct video
+ * files are LCX's; everything else (pages, video sites) stays an ordinary link.
+ */
+export function extractDirectMediaLinks(text: string): readonly SearchMediaItem[] {
   let visible = stripHtml(stripInlineCode(stripFencedCode(text)));
   const definitions = new Map<string, string>();
   visible.replace(REFERENCE_DEFINITION, (_match, label: string, angle: string, bare: string) => {
@@ -327,20 +338,19 @@ export function extractSearchMedia(text: string): readonly SearchMediaItem[] {
     return _match;
   });
 
+  // Blank out Markdown image syntax so its destination is never treated as a link,
+  // and remember those destinations: DSH already shows them.
   const nativeImages = new Set<string>();
-  const addNativeImage = (value: string) => {
-    const item = mediaItem(value);
-    if (item?.kind === "image") nativeImages.add(new URL(item.url).href.replace(/#.*$/, ""));
+  const addNative = (value: string) => {
+    const parsed = publicHttpUrl(value);
+    if (parsed) nativeImages.add(parsed.href.replace(/#.*$/, ""));
   };
-  visible = eraseInlineImages(visible, addNativeImage);
-  visible = visible.replace(
-    REFERENCE_IMAGE,
-    (_match, alt: string, explicit: string | undefined) => {
-      const value = definitions.get(referenceLabel(explicit === undefined || explicit === "" ? alt : explicit));
-      if (value !== undefined) addNativeImage(value);
-      return " ".repeat(_match.length);
-    },
-  );
+  visible = eraseInlineImages(visible, addNative);
+  visible = visible.replace(REFERENCE_IMAGE, (_match, alt: string, explicit: string | undefined) => {
+    const value = definitions.get(referenceLabel(explicit === undefined || explicit === "" ? alt : explicit));
+    if (value !== undefined) addNative(value);
+    return " ".repeat(_match.length);
+  });
 
   const candidates: string[] = [];
   visible = collectInlineLinkDestinations(
@@ -349,7 +359,7 @@ export function extractSearchMedia(text: string): readonly SearchMediaItem[] {
   );
   visible.replace(
     REFERENCE_LINK,
-    (_match, prefix: string, label: string, explicit: string) => {
+    (_match, _prefix: string, label: string, explicit: string) => {
       const value = definitions.get(referenceLabel(explicit === "" ? label : explicit));
       if (value !== undefined) candidates.push(value);
       return _match;
@@ -361,13 +371,18 @@ export function extractSearchMedia(text: string): readonly SearchMediaItem[] {
   const result: SearchMediaItem[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
-    const item = mediaItem(candidate);
+    const item = proseMediaItem(candidate);
     if (item === null) continue;
-    const key = item.kind === 'video' ? item.url : item.url.replace(/#.*$/, "");
-    if (nativeImages.has(key) || seen.has(key)) continue;
+    const key = item.kind === "video" ? item.url : item.url.replace(/#.*$/, "");
+    if (seen.has(key) || (item.kind === "image" && nativeImages.has(key))) continue;
     seen.add(key);
     result.push(item);
     if (result.length === SEARCH_MEDIA_LIMIT) break;
   }
   return result;
+}
+
+/** Direct video files only (see `extractDirectMediaLinks`). */
+export function extractDirectVideoLinks(text: string): readonly SearchMediaItem[] {
+  return extractDirectMediaLinks(text).filter((item) => item.kind === "video");
 }

@@ -1,4 +1,4 @@
-// Public Pi 0.86.0 runtime surface used by LCX. The release build bundles this file.
+// Public Pi 0.87.1 runtime surface used by LCX. The release build bundles this file.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { CLOUDFLARE_AI_GATEWAY_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-ai-gateway.models";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";

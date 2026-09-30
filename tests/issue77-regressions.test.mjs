@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import apply from '../lib/index.js'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { portableMessagesForCheckpoint } from '../lib/native-checkpoint.js'
 import { managedFailureChunk } from '../lib/responses-stream.js'
+import { queryContext } from './session-query-fixture.mjs'
 
 const profile = { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE_KEY' }
 
@@ -110,7 +112,7 @@ test('offload requirement reports the count DSH needs to record a durable decisi
 
 const shadowedSummary = { type: 'compaction/summary', data: { compactionId: 'offloaded', shadowedSeqs: [0] } }
 
-test('portable expansion normalizes a missing message projection and fails closed', () => {
+test('portable expansion normalizes a missing message projection and fails closed', async () => {
   const cause = new Error('session message projection "image/offload" was removed or replaced; restore the session with its owning plugin')
   const session = {
     snapshotEvents: () => [shadowedSummary],
@@ -120,8 +122,8 @@ test('portable expansion normalizes a missing message projection and fails close
       throw cause
     },
   }
-  assert.throws(
-    () => portableMessagesForCheckpoint(session, 'offloaded'),
+  await assert.rejects(
+    portableMessagesForCheckpoint(queryContext(session), session, 'offloaded'),
     error => {
       assert.equal(error.code, 'LCX_CHECKPOINT_PROJECTION_UNAVAILABLE')
       assert.equal(error.code === 'LCX_CHECKPOINT_UNSUPPORTED', false, 'must not be confused with an unreadable checkpoint format')
@@ -132,7 +134,7 @@ test('portable expansion normalizes a missing message projection and fails close
   )
 })
 
-test('portable expansion keeps unrelated read failures in the generic checkpoint class', () => {
+test('portable expansion keeps unrelated read failures in the generic checkpoint class', async () => {
   const cause = new Error('projection evaluation failed')
   const session = {
     snapshotEvents: () => [shadowedSummary],
@@ -141,8 +143,8 @@ test('portable expansion keeps unrelated read failures in the generic checkpoint
       throw cause
     },
   }
-  assert.throws(
-    () => portableMessagesForCheckpoint(session, 'offloaded'),
+  await assert.rejects(
+    portableMessagesForCheckpoint(queryContext(session), session, 'offloaded'),
     error => {
       assert.equal(error.code, 'LCX_CHECKPOINT_UNSUPPORTED')
       assert.equal(error.cause, cause, 'the original history error is retained for diagnostics')
@@ -151,14 +153,14 @@ test('portable expansion keeps unrelated read failures in the generic checkpoint
   )
 })
 
-test('portable expansion returns projected content while the projection owner is present', () => {
+test('portable expansion returns projected content while the projection owner is present', async () => {
   const projected = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '[image offloaded]' }] }
   const session = {
     snapshotEvents: () => [shadowedSummary],
     eventAt: () => ({ type: 'user/message' }),
     deriveEventMessage: () => projected,
   }
-  const messages = portableMessagesForCheckpoint(session, 'offloaded')
+  const messages = await portableMessagesForCheckpoint(queryContext(session), session, 'offloaded')
   assert.equal(messages.length, 1)
   assert.equal(messages[0].content[0].text, '[image offloaded]')
 })
@@ -168,27 +170,22 @@ test('portable expansion returns projected content while the projection owner is
 function lifecycleHarness() {
   const handlers = new Map()
   const warnings = []
+  const provider = providerContext({ fixture: profile })
   const ctx = {
     logger: { info() {}, warn(message) { warnings.push(String(message)) } },
     sessions: { get: () => undefined },
     credentials: { resolve: async () => ({ value: 'synthetic-test-key' }) },
-    llm: { resolveModelInfo: async () => ({ input: ['text'] }), fileRequestText: () => '' },
+    llm: { ...provider.llm, resolveModelInfo: async () => ({ input: ['text'] }), fileRequestText: () => '' },
     attachments: { imageHostPath() { return '' }, async readImageRequest() { throw new Error('unused') } },
     web: { searchProviderId: 'native', registerSearchProvider() { throw new Error('global provider registration is forbidden') } },
     tools: { register: () => () => {} },
-    settings: {
-      get: () => ({ providers: { fixture: profile } }),
-      installSection(_owner, _namespace, _schema, value, hooks) {
-        hooks.setSource(() => ({ ...value, enabled: true, webSearch: true }))
-        hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on(event, handler) { handlers.set(event, handler) },
     inject(names, callback) { if (names.every(name => ctx[name])) callback(ctx) },
     get(name) { return ctx[name] },
     effect() {},
   }
-  apply(ctx, {})
+  apply(ctx, pluginConfig({ enabled: true, webSearch: true }))
   return { handlers, warnings }
 }
 

@@ -12,6 +12,7 @@ import { abortError } from "./abort-error.js";
 import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry } from "./transport.js";
+import { sanitizeContextDetails, type ProviderContextDetails } from "./search-accounting.js";
 import {
   createGrokNativeReplayEnvelope,
   grokPendingSourcesStart,
@@ -73,7 +74,14 @@ type ResponseWireMeta = {
   nativeOutput?: unknown[];
   nativeServerSearchEchoCallIds?: string[];
   inputTokenScope?: "request" | "aggregate";
+  contextDetails?: ProviderContextDetails;
 };
+/** Durable LCX-only pressure evidence; canonical usage stays on Pi/DSH billing. */
+function responseUsageMarker(meta: ResponseWireMeta) {
+  return {version:1,inputTokenScope:meta.inputTokenScope,
+    ...(meta.inputTokenScope==='aggregate' && meta.contextDetails
+      ? {contextDetails:meta.contextDetails,contextProvenance:'provider-context-details'} : {})};
+}
 export type ServerToolUsage = {
   webSearchCalls: number;
   xSearchCalls: number;
@@ -909,6 +917,7 @@ async function* normalizedResponseEvents(
     isObject(value) && (options.serverToolTypes?.has(String(value.type ?? "")) === true ||
       options.isServerToolItem?.(value) === true);
   const observeServerTool = (item: WireItem) => {
+    meta.inputTokenScope = "aggregate";
     const type = String(item.type);
     if (type === "custom_tool_call" && typeof item.call_id === "string")
       nativeServerSearchEchoCallIds.add(item.call_id);
@@ -940,6 +949,21 @@ async function* normalizedResponseEvents(
   for await (const raw of source) {
     if (!isObject(raw)) continue;
     const event = /** @type {UnknownRecord} */ raw;
+    if (options.serverToolTypes && ['response.completed','response.failed','response.incomplete'].includes(String(event.type))) {
+      meta.contextDetails = sanitizeContextDetails(isObject(event.response) && isObject(event.response.usage)
+        ? event.response.usage.context_details : undefined);
+    }
+    // Scope is response-local evidence, including failed/incomplete terminal samples.
+    if (options.serverToolTypes && isObject(event.response)) {
+      const response = event.response;
+      const usage = isObject(response.usage) ? response.usage : {};
+      const details = isObject(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
+      if (Number(usage.num_server_side_tools_used ?? 0) > 0 ||
+          Number(details.web_search_calls ?? 0) > 0 || Number(details.x_search_calls ?? 0) > 0)
+        meta.inputTokenScope = "aggregate";
+      if (Array.isArray(response.output))
+        if (response.output.some(isServerToolItem)) meta.inputTokenScope = "aggregate";
+    }
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : 0;
@@ -1145,7 +1169,7 @@ async function* normalizedResponseEvents(
         meta.nativeServerSearchEchoCallIds = [...nativeServerSearchEchoCallIds];
         const usage = isObject(response.usage) ? response.usage : {};
         const details = isObject(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
-        meta.inputTokenScope = serverToolIds.size > 0 || nativeOutput.some(isServerToolItem)
+        meta.inputTokenScope = meta.inputTokenScope === "aggregate" || serverToolIds.size > 0 || nativeOutput.some(isServerToolItem)
           || Number(usage.num_server_side_tools_used ?? 0) > 0
           || Number(details.web_search_calls ?? 0) > 0 || Number(details.x_search_calls ?? 0) > 0
           ? "aggregate" : "request";
@@ -1538,7 +1562,7 @@ async function* toDshChunks(
           reason,
           ...(replay === undefined && !nativeReplayRoute ? {} : { replayState: {
             ...replay,
-            response: {...replay?.response,...(nativeReplayRoute ? {lcxUsage:{version:1,inputTokenScope:wireMeta?.inputTokenScope ?? "aggregate"}} : {})},
+            response: {...replay?.response,...(nativeReplayRoute && wireMeta?.inputTokenScope ? {lcxUsage:responseUsageMarker(wireMeta)} : {})},
           } }),
         };
         return;
@@ -1578,7 +1602,7 @@ async function* toDshChunks(
             normalizedFailure.code === "ABORTED"
               ? { kind: "aborted", failure: normalizedFailure }
               : { kind: "error", failure: normalizedFailure },
-          ...(nativeReplayRoute ? {replayState:{response:{lcxUsage:{version:1,inputTokenScope:"aggregate"}}}} : {}),
+          ...(nativeReplayRoute && wireMeta?.inputTokenScope ? {replayState:{response:{lcxUsage:responseUsageMarker(wireMeta)}}} : {}),
         };
         return;
       }

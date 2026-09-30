@@ -1,10 +1,8 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { type Session } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-settings";
-import { resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 type HeaderMap = Record<string, string>;
-type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
 type CacheRetention = "none" | "short" | "long";
 type ResponsesCompat = {
     supportsDeveloperRole?: boolean;
@@ -27,31 +25,6 @@ type RouteOptions = {
     provider?: unknown;
     model?: unknown;
     sessionId?: unknown;
-};
-type ProviderModelProfile = {
-    id?: unknown;
-    compat?: unknown;
-    reasoningEfforts?: unknown;
-};
-type ProviderProfile = {
-    api?: string;
-    baseURL?: string;
-    apiKeyEnv?: string;
-    headers?: HeaderMap;
-    reasoning?: unknown;
-    cacheRetention?: unknown;
-    timeoutMs?: unknown;
-    streamIdleTimeoutMs?: unknown;
-    maxRequestImageBytes?: unknown;
-    requestImagePixelBudget?: unknown;
-    requestImageMaxBytes?: unknown;
-    retryPolicy?: RetryPolicyConfig;
-    compat?: unknown;
-    models?: ProviderModelProfile[];
-    modelOverrides?: Record<string, ProviderModelProfile>;
-};
-type LlmSettingsSection = {
-    providers?: Record<string, ProviderProfile>;
 };
 type RequestHeaderConfig = {
     provider?: unknown;
@@ -128,8 +101,6 @@ export declare function promptCacheKey(route: Partial<RouteIdentity> | null | un
 export declare function grokPromptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>): string | undefined;
 /** @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention' | 'supportsLongCacheRetention' | 'responsesCompat'>>} [config] */
 export declare function promptCacheRetention(config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">>): "24h" | undefined;
-/** @param {RouteContext | null | undefined} ctx @param {string} namespace */
-export declare function settingsValue(ctx: RouteContext | null | undefined, namespace: string): LlmSettingsSection | undefined;
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & {
     purpose?: string;

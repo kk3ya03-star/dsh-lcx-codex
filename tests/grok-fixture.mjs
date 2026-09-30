@@ -1,4 +1,6 @@
 import apply from '../lib/index.js'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 
 export const xaiProfile = {
   api: 'openai-responses',
@@ -47,12 +49,14 @@ export function grokHarness({
   const logs = []
   const imageOptions = []
   const modelInfoRequests = []
-  let schema, settingsEntry, settingsChanged
+  const config = pluginConfig({ enabled, grokNativeWebSearch: nativeWeb, grokNativeXSearch: nativeX, maxAttempts: 1 })
+  const provider = providerContext(profiles)
   const ctx = {
     logger: { info(message) { logs.push(message) }, warn() {} },
     sessions: { get: () => undefined },
     credentials: { resolve: async () => ({ value: 'synthetic-test-key' }) },
     llm: {
+      ...provider.llm,
       resolveModelInfo: async (provider, model) => {
         modelInfoRequests.push({ provider, model })
         return {
@@ -72,28 +76,19 @@ export function grokHarness({
     fs: { processPathFromHostPath: path => path },
     web: { searchProviderId: 'native', registerSearchProvider() {} },
     tools: { register: () => () => {} },
-    settings: {
-      get: namespace => namespace === 'llm-pi-ai' ? { providers: profiles } : undefined,
-      installSection(_owner, _namespace, valueSchema, value, hooks) {
-        schema = valueSchema
-        settingsEntry = { ...value, enabled, grokNativeWebSearch: nativeWeb, grokNativeXSearch: nativeX }
-        settingsChanged = hooks.onChange
-        hooks.setSource(() => settingsEntry)
-        hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on(event, handler) { handlers.set(event, handler) },
     inject() {},
     get(name) { return ctx[name] },
     effect() {},
   }
-  apply(ctx, { maxAttempts: 1 })
+  apply(ctx, config)
   return {
-    ctx, handlers, logs, imageOptions, modelInfoRequests, schema,
+    ctx, handlers, logs, imageOptions, modelInfoRequests,
     stream: handlers.get('llm/stream'),
     setMediaPreview(value) {
-      settingsEntry.searchMediaPreview = Boolean(value)
-      settingsChanged()
+      updateVolatile(config.searchMediaPreview, pluginConfig({ searchMediaPreview: Boolean(value) }).searchMediaPreview)
+      handlers.get('loader/volatile-update')()
     },
   }
 }

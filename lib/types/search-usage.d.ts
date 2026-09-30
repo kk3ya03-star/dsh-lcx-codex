@@ -3,13 +3,17 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session, EpochHeader } from '@deepseek-ai/dsh-session';
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection';
 import type { TokenMeasurement } from '@deepseek-ai/dsh-token-meter';
-import { type Buckets } from './search-accounting.js';
+import { type Buckets, type ProviderContextDetails } from './search-accounting.js';
 type SearchUsageState = {
     auxiliary: Buckets;
     aggregateContext: boolean;
     pending: Record<string, string>;
+    headerKey?: string;
+    sampleHeaderKey?: string;
+    contextDetails?: ProviderContextDetails;
+    contextProvenance?: 'provider-context-details';
 };
-type SearchUsageView = Omit<SearchUsageState, 'pending'>;
+type SearchUsageView = Omit<SearchUsageState, 'pending' | 'headerKey' | 'sampleHeaderKey'>;
 declare module '@deepseek-ai/dsh-session-projection/types' {
     interface SessionProjectionStateMap {
         lcxSearchUsage: SearchUsageState;
@@ -30,7 +34,14 @@ export declare const searchUsageProjection: {
             cacheWriteTokens: z.ZodNumber;
         }, z.core.$strict>;
         aggregateContext: z.ZodBoolean;
+        contextDetails: z.ZodOptional<z.ZodObject<{
+            input_tokens: z.ZodNumber;
+            output_tokens: z.ZodNumber;
+        }, z.core.$strict>>;
+        contextProvenance: z.ZodOptional<z.ZodLiteral<"provider-context-details">>;
         pending: z.ZodRecord<z.ZodString, z.ZodString>;
+        headerKey: z.ZodOptional<z.ZodString>;
+        sampleHeaderKey: z.ZodOptional<z.ZodString>;
     }, z.core.$strict>;
     init: () => {
         auxiliary: Buckets;
@@ -47,10 +58,17 @@ export declare const searchUsageProjection: {
                 cacheWriteTokens: z.ZodNumber;
             }, z.core.$strict>;
             aggregateContext: z.ZodBoolean;
+            contextDetails: z.ZodOptional<z.ZodObject<{
+                input_tokens: z.ZodNumber;
+                output_tokens: z.ZodNumber;
+            }, z.core.$strict>>;
+            contextProvenance: z.ZodOptional<z.ZodLiteral<"provider-context-details">>;
         }, z.core.$strict>;
-        view: ({ auxiliary, aggregateContext }: SearchUsageState) => {
+        view: ({ auxiliary, aggregateContext, contextDetails, contextProvenance }: SearchUsageState) => {
             auxiliary: Buckets;
             aggregateContext: boolean;
+            contextDetails?: ProviderContextDetails | undefined;
+            contextProvenance?: "provider-context-details" | undefined;
         };
     };
 };

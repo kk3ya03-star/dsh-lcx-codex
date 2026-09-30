@@ -33,3 +33,7 @@ web-alpha-*.json
 .vscode/
 .idea/
 Thumbs.db
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc

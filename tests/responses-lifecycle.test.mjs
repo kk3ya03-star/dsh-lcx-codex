@@ -132,7 +132,7 @@ test('two ordinary turns preserve the canonical cacheable prefix and tool order'
         },
       },
     },
-    { role: 'user', content: [{ type: 'tool-result', toolCallId: 'call_1|fc_1', toolName: 'first', content: [{ type: 'text', text: 'result one' }] }] },
+    { role: 'tool', toolCallId: 'call_1|fc_1', content: [{ type: 'text', text: 'result one' }] },
   ]
   const options = { model: model(), systemPrompt: 'stable workspace/environment prelude', includeSystemPrompt: true, tools }
   const request1 = await serializeDshMessages(firstTurn, {}, options)
@@ -154,13 +154,13 @@ test('Native Compact is the standard request plus one trigger and feature-specif
   assert.throws(() => buildCompactionResponsesBody({ model: model(), input: [{ type: 'compaction_trigger' }] }), (error) => error?.code === 'LCX_COMPACT_DUPLICATE_TRIGGER')
 })
 
-test('Pi 0.84 dynamic-tool modes do not infer provenance from public DSH tool results', async () => {
+test('Pi dynamic-tool modes do not infer provenance from DSH 0.2 tool-role results', async () => {
   const messages = [
     { role: 'assistant', content: [{ type: 'tool-call', id: 'call_load|fc_load', name: 'loader', arguments: '{}' }], source: { kind: 'model', provider: 'lcx', model: 'gpt-5.6-sol' } },
     {
-      role: 'user',
+      role: 'tool', toolCallId: 'call_load|fc_load',
       source: { kind: 'tool', callId: 'call_load|fc_load' },
-      content: [{ type: 'tool-result', toolCallId: 'call_load|fc_load', content: [{ type: 'text', text: 'loaded' }] }],
+      content: [{ type: 'text', text: 'loaded' }],
     },
   ]
   const tools = [

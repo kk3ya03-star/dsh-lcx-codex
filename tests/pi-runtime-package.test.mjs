@@ -12,11 +12,14 @@ function plain(value) {
 }
 
 test('bounded Pi catalog preserves every public Responses descriptor previously reachable', () => {
-  const expected = Object.fromEntries(getAllProviders().flatMap(provider => {
+  const bundled = ['cloudflare-ai-gateway', 'github-copilot', 'openai', 'opencode', 'opencode-go', 'xai']
+  assert.deepEqual([...getBuiltinProviders()].sort(), bundled, 'Responses bundle provider scope changed')
+  const expected = Object.fromEntries(bundled.flatMap(provider => {
     const models = getAllModels(provider).filter(model => model.api === 'openai-responses')
     return models.length ? [[provider, plain(models)]] : []
   }))
   assert.deepEqual([...getBuiltinProviders()].sort(), Object.keys(expected).sort())
+  assert.ok(getAllProviders().includes('meta'), 'Pi 0.87.1 catalog shape changed; review bundle scope')
   for (const provider of getBuiltinProviders())
     assert.deepEqual(plain(getBuiltinModels(provider)), expected[provider], provider)
   assert.deepEqual(getBuiltinModels('unrelated-provider'), [])
@@ -25,13 +28,20 @@ test('bounded Pi catalog preserves every public Responses descriptor previously 
 test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
-  assert.equal(pkg.version, '0.4.4-pre.1')
+  assert.equal(pkg.version, '0.5.0-pre.1')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.1.6-alpha.2')
-  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.1.6-alpha.2 <0.1.7', verifiedDsh: '0.1.6-alpha.2', verifiedHostPi: '0.85.1', verifiedPluginPi: '0.86.0' })
-  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.86.0')
+  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.0-rc.2')
+  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.0-rc.2 <0.2.1', verifiedDsh: '0.2.0-rc.2', verifiedHostPi: '0.87.1', verifiedPluginPi: '0.87.1' })
+  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.87.1')
   for (const [name, version] of Object.entries(pkg.peerDependencies))
     if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, pkg.lcxCompatibility.dshInstallRange, name)
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-settings'], pkg.lcxCompatibility.dshInstallRange)
+  assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/dsh-client-ui-settings'].optional, true)
+  const officialPi = readJson('node_modules/@deepseek-ai/dsh-llm-pi-ai/package.json')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/cordis-plugin-loader'], officialPi.peerDependencies['@deepseek-ai/cordis-plugin-loader'])
+  assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/cordis-plugin-loader'].optional, true)
+  assert.equal(lock.packages[''].peerDependencies['@deepseek-ai/cordis-plugin-loader'], pkg.peerDependencies['@deepseek-ai/cordis-plugin-loader'])
+  assert.equal(lock.packages[''].peerDependencies['@deepseek-ai/dsh-client-ui-settings'], pkg.lcxCompatibility.dshInstallRange)
   assert.equal(lock.packages[''].dependencies, undefined)
   assert.deepEqual(pkg.files.filter(path => path.includes('/types/') || path.includes('types/')), [
     'lib/types/index.d.ts', 'lib/types/client/index.d.ts', 'lib/types/client/search-media.d.ts',

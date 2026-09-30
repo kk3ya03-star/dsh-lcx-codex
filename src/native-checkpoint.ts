@@ -2,15 +2,18 @@
 
 import { isCompactCheckpointSource } from "@deepseek-ai/dsh-compaction";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
+import type { Context } from "@deepseek-ai/cordis";
 import {
   Session,
   SessionSeq,
   type SessionEvent,
 } from "@deepseek-ai/dsh-session";
 import {
+  projectToolUpdates,
   requestImageHandleText,
   type ContentBlock,
   type Message,
+  type RequestMessage,
   type StreamChunk,
   type TokenUsage,
 } from "@deepseek-ai/dsh-llm";
@@ -103,6 +106,7 @@ type CheckpointRouteRecord = {
   sourceSessionId: unknown;
 };
 type CreateCheckpointOptions = {
+  ctx: SessionQueryContext;
   session: Session;
   route: RouteIdentity;
   result: NativeCompactionResult;
@@ -112,6 +116,24 @@ type CreateCheckpointOptions = {
   retentionOptions?: RetentionOptions;
 };
 type LcxError = Error & { code?: string };
+type SessionQueryContext = Pick<Context, "get">;
+
+function sessionQueryUnavailable(cause?: unknown): LcxError {
+  return Object.assign(
+    new Error("LCX checkpoint history requires the DSH session query service", { cause }),
+    { code: "LCX_SESSION_QUERY_UNAVAILABLE" },
+  );
+}
+
+async function observeEvents(ctx: SessionQueryContext, session: Session) {
+  const query = ctx.get("sessionQuery");
+  if (!query) throw sessionQueryUnavailable();
+  try {
+    return await query.observeSession(session.id, { projectionMode: "none" });
+  } catch (cause) {
+    throw sessionQueryUnavailable(cause);
+  }
+}
 /**
  * @typedef {object} NativeCheckpointBase
  * @property {string} compactionId
@@ -150,6 +172,7 @@ type LcxError = Error & { code?: string };
 /** @typedef {Error & { code?: string }} LcxError */
 
 export const NATIVE_BLOCK_TYPE = "lcx-native-compaction-v5";
+const MIGRATED_NATIVE_BLOCK_PREFIX = "plugin:lcx-native-compaction-";
 export const NATIVE_BLOCK_VERSION = 5;
 
 export const RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
@@ -433,45 +456,58 @@ function hasCompactionId(
 }
 
 export function compactCheckpointId(
-  message: Message | null | undefined,
+  message: RequestMessage | null | undefined,
 ): string | undefined {
   const source = message?.source;
   return source && hasCompactionId(source) ? source.compactionId : undefined;
 }
 /** Reject reserved checkpoint markers without interpreting unsupported formats or opening sidecars. */
-export function assertSupportedCheckpointMessage(message: Message): void {
+export function assertSupportedCheckpointMessage(message: RequestMessage): void {
+  // Legacy marker-only messages had no DSH checkpoint source. A marker quoted
+  // inside ordinary content (for example a tool's source-file excerpt) is data.
+  const legacyMarkerOnly = message.role === "user" && message.content.length === 1 &&
+    message.content[0]?.type === "text" &&
+    /^\[dsh-lcx-codex-[^\]\r\n]*checkpoint:[^\]\r\n]*\]$/iu.test(message.content[0].text.trim());
   for (const block of message.content) {
     if (
-      block.type.startsWith("lcx-native-compaction-") && block.type !== NATIVE_BLOCK_TYPE ||
-      block.type === "text" && /\[dsh-lcx-codex-[^\]\r\n]*checkpoint:/iu.test(block.text)
+      (block.type.startsWith("lcx-native-compaction-") && block.type !== NATIVE_BLOCK_TYPE) ||
+      block.type.startsWith(MIGRATED_NATIVE_BLOCK_PREFIX) ||
+      block.type === "text" && (legacyMarkerOnly ||
+        compactCheckpointId(message) !== undefined && /\[dsh-lcx-codex-[^\]\r\n]*checkpoint:/iu.test(block.text))
     ) throw Object.assign(new Error("Unsupported LCX checkpoint format; start a new session"), {
       code: "LCX_CHECKPOINT_UNSUPPORTED",
     });
   }
 }
-/** @param {Session | null | undefined} session */
-export function activeCompactionId(session: Session | null | undefined) {
+/** The active transaction is read from one immutable query observation. */
+export async function activeCompactionId(ctx: SessionQueryContext, session: Session | null | undefined) {
   if (!session) return undefined;
   /** @type {Set<string>} */ const ended = new Set();
-  const events = session.snapshotEvents();
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!event) continue;
-    if (event.type === "compaction/end") ended.add(String(event.data.compactionId));
-    if (
-      event.type === "compaction/start" &&
-      !ended.has(String(event.data.compactionId))
-    )
-      return String(event.data.compactionId);
+  const lease = await observeEvents(ctx, session);
+  try {
+    const events = lease.events;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event) continue;
+      if (event.type === "compaction/end") ended.add(String(event.data.compactionId));
+      if (
+        event.type === "compaction/start" &&
+        !ended.has(String(event.data.compactionId))
+      )
+        return String(event.data.compactionId);
+    }
+    return undefined;
+  } finally {
+    lease[Symbol.dispose]();
   }
-  return undefined;
 }
 
 /**
  * @param {CreateCheckpointOptions} options
- * @returns {NativeCheckpointV5}
+ * @returns {Promise<NativeCheckpointV5>}
  */
-export function createNativeCheckpointBlock({
+export async function createNativeCheckpointBlock({
+  ctx,
   session,
   route,
   result,
@@ -479,8 +515,8 @@ export function createNativeCheckpointBlock({
   ephemeralPreludeItemCount = 0,
   imageMap,
   retentionOptions = {},
-}: CreateCheckpointOptions): NativeCheckpointV5 {
-  const compactionId = activeCompactionId(session);
+}: CreateCheckpointOptions): Promise<NativeCheckpointV5> {
+  const compactionId = await activeCompactionId(ctx, session);
   if (!compactionId) {
     const error: LcxError = new Error(
       "Native compaction could not correlate the active DSH compaction transaction",
@@ -550,23 +586,29 @@ export function nativeCheckpointChunks(
 /**
  * @param {Session | null | undefined} session
  * @param {string | null | undefined} compactionId
- * @returns {CompactionSummaryEvent | undefined}
+ * @returns {Promise<CompactionSummaryEvent | undefined>}
  */
-export function compactionSummaryEvent(
+export async function compactionSummaryEvent(
+  ctx: SessionQueryContext,
   session: Session | null | undefined,
   compactionId: string | null | undefined,
-): CompactionSummaryEvent | undefined {
+): Promise<CompactionSummaryEvent | undefined> {
   if (!session || !compactionId) return undefined;
-  const events = session.snapshotEvents();
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (
-      event?.type === "compaction/summary" &&
-      String(event.data.compactionId) === compactionId
-    )
-      return event;
+  const lease = await observeEvents(ctx, session);
+  try {
+    const events = lease.events;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (
+        event?.type === "compaction/summary" &&
+        String(event.data.compactionId) === compactionId
+      )
+        return event;
+    }
+    return undefined;
+  } finally {
+    lease[Symbol.dispose]();
   }
-  return undefined;
 }
 /**
  * rawOutput elements remain untrusted until stateFromSummaryEvent validates them.
@@ -587,9 +629,18 @@ function nativeBlockFromSummary(
 ): NativeCheckpointCandidate | undefined {
   const raw = event?.data.rawOutput;
   if (!raw) return undefined;
-  for (const value of raw)
+  assertNoMigratedNativeBlock(raw);
+  for (const value of raw) {
     if (isNativeCheckpointCandidate(value)) return value;
+  }
   return undefined;
+}
+function assertNoMigratedNativeBlock(raw: readonly unknown[] | undefined): void {
+  if (raw?.some(value => isObject(value) && typeof value.type === "string" &&
+    value.type.startsWith(MIGRATED_NATIVE_BLOCK_PREFIX)))
+    throw Object.assign(new Error("Unsupported LCX checkpoint format; start a new session"), {
+      code: "LCX_CHECKPOINT_UNSUPPORTED",
+    });
 }
 /** @param {unknown} value */
 function validateCount(value: unknown): value is number | undefined {
@@ -690,14 +741,19 @@ export function stateFromSummaryEvent(
  * @param {Session} session
  * @param {Message} message
  */
-export function checkpointStateForMessage(session: Session, message: Message) {
+export function checkpointStateForMessage(ctx: SessionQueryContext, session: Session, message: Message) {
   assertSupportedCheckpointMessage(message);
   const id = compactCheckpointId(message);
   if (!id) return undefined;
-  const event = compactionSummaryEvent(session, id);
+  return checkpointStateForMessageAsync(ctx, session, id);
+}
+
+async function checkpointStateForMessageAsync(ctx: SessionQueryContext, session: Session, id: string) {
+  const event = await compactionSummaryEvent(ctx, session, id);
   const state = stateFromSummaryEvent(event);
   const hasNativeBlock = event?.data.rawOutput?.some(value =>
-    isObject(value) && typeof value.type === "string" && value.type.startsWith("lcx-native-compaction-"),
+    isObject(value) && typeof value.type === "string" &&
+      (value.type.startsWith("lcx-native-compaction-") || value.type.startsWith(MIGRATED_NATIVE_BLOCK_PREFIX)),
   );
   if (hasNativeBlock && !state) throw Object.assign(
     new Error("Unsupported or invalid LCX checkpoint; start a new session"),
@@ -763,13 +819,13 @@ function checkpointHistoryReadError(cause: unknown) {
  * @param {number} seq
  * @returns {Message | undefined}
  */
-function eventMessage(session: Session, seq: number) {
+function eventMessage(session: Session, events: readonly SessionEvent[], seq: number) {
   if (!Number.isSafeInteger(seq) || seq < 0)
     throw checkpointHistoryReadError(
       new Error("Portable checkpoint history contains an invalid event sequence"),
     );
   try {
-    const event = session.eventAt(SessionSeq(seq));
+    const event = events[seq];
     if (!event)
       throw new Error(`Portable checkpoint history is missing event at seq ${seq}`);
     return session.deriveEventMessage(event) ?? undefined;
@@ -797,52 +853,63 @@ function estimateChars(message: Message) {
 /**
  * @param {Session} session
  * @param {string} compactionId
- * @returns {Message[]}
+ * @returns {Promise<Message[]>}
  */
-function expandedCheckpointMessages(
+async function expandedCheckpointMessages(
+  ctx: SessionQueryContext,
   session: Session,
   compactionId: string,
-): Message[] {
-  const summaries = new Map<string, CompactionSummaryEvent>();
-  for (const event of session.snapshotEvents())
-    if (event.type === "compaction/summary") summaries.set(String(event.data.compactionId), event);
-  const active = new Set<string>();
-  const stack: { id: string; seqs: readonly SessionSeq[]; index: number }[] = [];
-  const enter = (id: string) => {
-    const summary = summaries.get(id);
-    if (active.has(id) || !summary)
-      throw Object.assign(new Error("Portable checkpoint history is cyclic or incomplete"), { code: "LCX_CHECKPOINT_UNSUPPORTED" });
-    active.add(id);
-    stack.push({ id, seqs: summary.data.shadowedSeqs, index: 0 });
-  };
-  // Walk the DSH event graph iteratively so repeated compaction has no depth cutoff.
-  const result: Message[] = [];
-  enter(compactionId);
-  while (stack.length) {
-    const frame = stack[stack.length - 1];
-    if (frame.index === frame.seqs.length) {
-      active.delete(frame.id);
-      stack.pop();
-      continue;
+): Promise<Message[]> {
+  const lease = await observeEvents(ctx, session);
+  try {
+    const events = lease.events;
+    const summaries = new Map<string, CompactionSummaryEvent>();
+    for (const event of events)
+      if (event.type === "compaction/summary") summaries.set(String(event.data.compactionId), event);
+    const active = new Set<string>();
+    const stack: { id: string; seqs: readonly SessionSeq[]; index: number }[] = [];
+    const enter = (id: string) => {
+      const summary = summaries.get(id);
+      if (active.has(id) || !summary)
+        throw Object.assign(new Error("Portable checkpoint history is cyclic or incomplete"), { code: "LCX_CHECKPOINT_UNSUPPORTED" });
+      assertNoMigratedNativeBlock(summary.data.rawOutput);
+      active.add(id);
+      stack.push({ id, seqs: summary.data.shadowedSeqs, index: 0 });
+    };
+    // Walk the DSH event graph iteratively so repeated compaction has no depth cutoff.
+    const result: Message[] = [];
+    enter(compactionId);
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      if (frame.index === frame.seqs.length) {
+        active.delete(frame.id);
+        stack.pop();
+        continue;
+      }
+      const message = eventMessage(session, events, frame.seqs[frame.index++]);
+      if (!message) continue;
+      assertSupportedCheckpointMessage(message);
+      const nested = compactCheckpointId(message);
+      if (nested) enter(nested);
+      else result.push(structuredClone(message));
     }
-    const message = eventMessage(session, frame.seqs[frame.index++]);
-    if (!message) continue;
-    const nested = compactCheckpointId(message);
-    if (nested) enter(nested);
-    else result.push(structuredClone(message));
+    // Same projection DSH applies for routes without toolUpdate (Decision 6).
+    return projectToolUpdates(result, undefined, undefined, undefined).messages as Message[];
+  } finally {
+    lease[Symbol.dispose]();
   }
-  return result;
 }
 /**
  * @param {Session} session
  * @param {string} compactionId
- * @returns {Message[]}
+ * @returns {Promise<Message[]>}
  */
-export function shadowedMessagesForCheckpoint(
+export async function shadowedMessagesForCheckpoint(
+  ctx: SessionQueryContext,
   session: Session,
   compactionId: string,
 ) {
-  return expandedCheckpointMessages(session, compactionId);
+  return expandedCheckpointMessages(ctx, session, compactionId);
 }
 /**
  * @param {readonly Message[]} messages
@@ -872,15 +939,7 @@ function groupMessages(messages: readonly Message[]): Message[][] {
     while (cursor < messages.length && pending.size > 0) {
       const next = messages[cursor];
       if (!next) break;
-      const results =
-        next.role === "user"
-          ? next.content
-              .filter(
-                (block): block is Extract<ContentBlock, { type: "tool-result" }> =>
-                  block.type === "tool-result",
-              )
-              .map((block) => String(block.toolCallId))
-          : [];
+      const results = next.role === "tool" ? [String(next.toolCallId)] : [];
       if (results.length === 0) break;
       group.push(next);
       for (const id of results) pending.delete(id);
@@ -895,13 +954,14 @@ function groupMessages(messages: readonly Message[]): Message[][] {
  * @param {Session} session
  * @param {string} compactionId
  * @param {{ maxChars?: number }} [options]
- * @returns {Message[]}
+ * @returns {Promise<Message[]>}
  */
-export function portableMessagesForCheckpoint(
+export async function portableMessagesForCheckpoint(
+  ctx: SessionQueryContext,
   session: Session,
   compactionId: string,
   options: { maxChars?: number } = {},
-): Message[] {
+): Promise<Message[]> {
   const configuredMaxChars = options.maxChars;
   const maxChars =
     typeof configuredMaxChars === "number" &&
@@ -910,7 +970,7 @@ export function portableMessagesForCheckpoint(
       ? configuredMaxChars
       : 80_000;
   const maxTokens = portableTokenCeiling(maxChars) ?? 1;
-  const expanded = shadowedMessagesForCheckpoint(session, compactionId);
+  const expanded = await shadowedMessagesForCheckpoint(ctx, session, compactionId);
   if (expanded.length === 0) return [];
   const groups = groupMessages(expanded);
   const kept = [];

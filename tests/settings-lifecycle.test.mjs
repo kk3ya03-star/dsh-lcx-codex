@@ -26,13 +26,12 @@ class SettingsFixture extends Service {
     this.registerCalls = 0
   }
 
-  installSection(_owner, namespace, _schema, entry, hooks) {
+  configure(options) {
+    assert.deepEqual(options, { auto: false }, 'LCX owns its DSH 0.2 Config form rendering')
     this.registerCalls += 1
     this.ctx.effect(() => {
-      this.namespaces.add(namespace)
-      hooks.setSource(() => entry)
-      hooks.onChange()
-      return () => this.namespaces.delete(namespace)
+      this.namespaces.add('lcx-codex')
+      return () => this.namespaces.delete('lcx-codex')
     })
   }
 }
@@ -70,7 +69,7 @@ test('plugin waits for required services, initializes once and cleanly re-enable
   })
 
   const first = ctx.plugin(apply)
-  assert.equal(web.registerCalls, 0, 'plugin waits for its route settings service')
+  assert.equal(web.registerCalls, 0, 'plugin waits for the settings forms service')
   let settings
   await ctx.plugin((services) => { settings = new SettingsFixture(services) })
   await first
@@ -80,7 +79,7 @@ test('plugin waits for required services, initializes once and cleanly re-enable
   assert.equal(web.providers.size, 0)
   assertListenerCounts(ctx, 1)
 
-  assert.equal(settings.registerCalls, 1, 'settings section mounts after the required provider is available')
+  assert.equal(settings.registerCalls, 1, 'Config form selection mounts after the required service is available')
   assert.deepEqual([...settings.namespaces], ['lcx-codex'])
 
   await first.dispose()
