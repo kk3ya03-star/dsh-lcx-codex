@@ -136,6 +136,7 @@ When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), i
 - [Changelog](CHANGELOG.md)
 - [Architecture](ARCHITECTURE.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 

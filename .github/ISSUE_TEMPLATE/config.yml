@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 参与贡献说明 / Contributing guide
+    url: https://github.com/kk3ya03-star/dsh-lcx-codex/blob/main/CONTRIBUTING.md
+    about: 为什么 PR 不会直接合并，以及如何反馈问题 / Why PRs are not merged directly and how to report issues

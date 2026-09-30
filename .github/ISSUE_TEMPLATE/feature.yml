@@ -1,0 +1,21 @@
+name: 功能建议 / Feature request
+description: 提出新功能或改进 / Suggest a new feature or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景 / Use case
+      description: 你想解决什么问题？/ What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的效果 / Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: 插件与 DSH 版本 / Plugin and DSH versions

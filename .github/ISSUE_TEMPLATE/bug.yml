@@ -1,0 +1,50 @@
+name: Bug 反馈 / Bug report
+description: 插件出现错误或行为不符合预期 / Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请不要粘贴 API Key、完整请求内容或未脱敏的会话日志。
+        Do not paste API keys, full requests, or unredacted session logs.
+  - type: input
+    id: plugin
+    attributes:
+      label: 插件版本 / Plugin version
+      placeholder: "0.5.0-pre.1"
+    validations:
+      required: true
+  - type: input
+    id: dsh
+    attributes:
+      label: DSH 版本 / DSH version (`dsh --version`)
+      placeholder: "0.2.0-rc.2"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js 版本 / Node.js version
+      placeholder: "24.x"
+  - type: input
+    id: model
+    attributes:
+      label: 模型和网关类型 / Model and gateway type
+      placeholder: "gpt-5.6 via official API / grok-4.6 via gateway ..."
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果与实际结果 / Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误信息（已脱敏）/ Error messages (redacted)
+      render: text

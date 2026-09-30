@@ -163,6 +163,7 @@ dsh web
 - [更新日志](CHANGELOG.md)
 - [架构说明](ARCHITECTURE.md)
 - [第三方许可](THIRD_PARTY_NOTICES.md)
+- [参与贡献](CONTRIBUTING.md)
 
 ## 许可证
 
