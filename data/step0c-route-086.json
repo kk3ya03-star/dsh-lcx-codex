@@ -1,0 +1,138 @@
+{
+  "explicit": {
+    "lcx gpt-5.6-sol": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-5.6-luna": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-5.6-terra": {
+      "gpt": true,
+      "grok": false
+    },
+    "xai grok-4.6": {
+      "gpt": false,
+      "grok": true
+    },
+    "lcx gpt-6-sol": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-6-luna": {
+      "gpt": true,
+      "grok": false
+    },
+    "openai gpt-6-sol (bundled provider)": {
+      "gpt": true,
+      "grok": false
+    },
+    "openai gpt-6-luna (bundled provider)": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-6-astra (already in 0.86.0 catalog)": {
+      "gpt": true,
+      "grok": false
+    },
+    "xai grok-4.7": {
+      "gpt": false,
+      "grok": true
+    },
+    "lcx grok-4.6 (grok on lcx provider)": {
+      "gpt": false,
+      "grok": true
+    },
+    "relay gpt-5.6-sol (non-lcx provider, same id)": {
+      "gpt": true,
+      "grok": false
+    },
+    "relay gpt-fixture (generic gpt-*)": {
+      "gpt": true,
+      "grok": false
+    },
+    "relay gpt-6-sol (generic gpt-6 on non-lcx)": {
+      "gpt": true,
+      "grok": false
+    },
+    "relay GPT-6-SOL (case)": {
+      "gpt": true,
+      "grok": false
+    },
+    "relay grok-4.7 (grok on non-xai)": {
+      "gpt": false,
+      "grok": true
+    },
+    "completions gpt-6-sol (non-responses profile)": {
+      "gpt": false,
+      "grok": false
+    },
+    "bareopenai gpt-6-sol (profile without api)": {
+      "gpt": false,
+      "grok": false
+    },
+    "bareopenai gpt-5.6-sol (profile without api)": {
+      "gpt": false,
+      "grok": false
+    },
+    "noprofile gpt-6-sol (no llm-pi-ai profile)": {
+      "gpt": false,
+      "grok": false
+    },
+    "LCX gpt-5.6-sol (provider case)": {
+      "gpt": false,
+      "grok": false
+    },
+    "lcx GPT-5.6-SOL (model case)": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-5.6-sol-preview (suffix)": {
+      "gpt": true,
+      "grok": false
+    },
+    "lcx gpt-5.6-astra": {
+      "gpt": true,
+      "grok": false
+    }
+  },
+  "omitted": {
+    "openai gpt-5.6-sol": {
+      "gpt": true,
+      "grok": false
+    },
+    "openai gpt-5.6-terra": {
+      "gpt": true,
+      "grok": false
+    },
+    "openai gpt-6-sol": {
+      "gpt": false,
+      "grok": false
+    },
+    "openai gpt-6-luna": {
+      "gpt": false,
+      "grok": false
+    },
+    "openai gpt-6-astra": {
+      "gpt": true,
+      "grok": false
+    },
+    "xai grok-4.6": {
+      "gpt": false,
+      "grok": true
+    },
+    "xai grok-4.7": {
+      "gpt": false,
+      "grok": false
+    },
+    "github-copilot gpt-6-sol": {
+      "gpt": false,
+      "grok": false
+    },
+    "github-copilot grok-4.7": {
+      "gpt": false,
+      "grok": false
+    }
+  }
+}

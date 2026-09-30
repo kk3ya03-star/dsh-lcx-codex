@@ -2,7 +2,7 @@
 
 ## 0.5.0-pre.1 - release candidate
 
-Prerelease for DSH `>=0.2.0-rc.2 <0.2.1` (verified baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`). Stable `0.4.3` remains the release for the DSH `0.1.5` line.
+Prerelease for DSH `>=0.2.0-rc.2 <0.2.1` (accepted validation baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`). Stable `0.4.3` remains the release for the DSH `0.1.5` line.
 
 - Retarget LCX to the DSH 0.2 contract: tool-history replay handles DSH `role: 'tool'` messages (multi-step, error and image results), dynamic tool changes are safe in replay and checkpoint paths, and Native-first / emergency compaction bands use DSH's pressure budget (`window - output reserve - headroom`).
 - Old long sessions carrying a previous LCX checkpoint report `LCX_CHECKPOINT_UNSUPPORTED` on the LCX path after DSH migrates them; start a new session. Quoted legacy checkpoint markers no longer cause false rejection.

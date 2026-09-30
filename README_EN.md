@@ -41,7 +41,7 @@ Run `dsh --version` first, then pick the plugin line for your DSH version. Node.
 | `0.1.6` line (`0.1.6-alpha.2` and later) | `0.4.4-pre.1` (previous prerelease) | `@0.4.4-pre.1` |
 | `0.1.5` line (`0.1.5-rc.1` and later) | `0.4.3` (stable) | `@latest` |
 
-The three lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `0.5.0-pre.1` is a prerelease whose fully verified baseline is DSH `0.2.0-rc.2` with host/plugin Pi `0.87.1`.
+The three lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `0.5.0-pre.1` is a prerelease; its validated/accepted release baseline is DSH `0.2.0-rc.2` with host/plugin Pi `0.87.1`.
 
 DSH `0.2.0` line:
 
@@ -111,7 +111,7 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 ## Compatibility and known limits
 
-- Verified baselines: `0.5.0-pre.1` on DSH `0.2.0-rc.2`; `0.4.4-pre.1` on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
+- Baselines: `0.5.0-pre.1` validated/accepted on DSH `0.2.0-rc.2` (prerelease); `0.4.4-pre.1` verified on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
 - When upgrading, starting a new session is recommended; old saved compaction state is not guaranteed to remain compatible. On DSH `0.2`, an old long session carrying a previous LCX checkpoint reports `LCX_CHECKPOINT_UNSUPPORTED` on the LCX path; start a new session. Other routes are unaffected.
 - Grok native search supports API-key / API-gateway routes. xAI OAuth / SuperGrok login is outside the current scope. Native X Search has been verified on `grok-4.6` only.
 - Grok agentic calls report usage that is cumulative across internal requests. When the terminal response carries complete live-context details, `0.5.0-pre.1` uses them for compaction pressure and otherwise falls back to an estimate; billed usage is unchanged.

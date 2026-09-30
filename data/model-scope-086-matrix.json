@@ -1,0 +1,506 @@
+{
+  "omitted": {
+    "openai": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      }
+    },
+    "xai": {
+      "gpt-5.6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-terra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-astra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      }
+    },
+    "github-copilot": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      }
+    },
+    "lcx": {
+      "gpt-5.6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-terra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-astra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      }
+    },
+    "relay": {
+      "gpt-5.6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-5.6-terra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-astra": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-sol": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "gpt-6-luna": {
+        "gpt": false,
+        "grok": false,
+        "request": "fail-closed",
+        "compaction": "fail-closed"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": false,
+        "request": "passthrough",
+        "compaction": "passthrough"
+      }
+    }
+  },
+  "explicit": {
+    "openai": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      }
+    },
+    "xai": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      }
+    },
+    "github-copilot": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      }
+    },
+    "lcx": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      }
+    },
+    "relay": {
+      "gpt-5.6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-5.6-terra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-astra": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-sol": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "gpt-6-luna": {
+        "gpt": true,
+        "grok": false,
+        "request": "managed-gpt",
+        "compaction": "native-v2"
+      },
+      "grok-4.6": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      },
+      "grok-4.7": {
+        "gpt": false,
+        "grok": true,
+        "request": "grok-native",
+        "compaction": "passthrough"
+      }
+    }
+  }
+}
