@@ -4,7 +4,8 @@ approval:
   product_owner: private-issue-109-po-approved-2026-09-30
   controller_review: ACCEPTED
   reference: docs/qa/issue-109/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
+  final_irreversible_confirmation: RECORDED_2026-09-30
+  final_confirmation_reference: docs/qa/issue-109/PO-FINAL-CONFIRMATION.md
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   commit: 7d610062b9f50b4fe66b57b6c3667ef464dfcf42
@@ -17,7 +18,7 @@ public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
   tag: v0.5.0-pre.1
-  qualification: Product Owner approved the exact candidate. Public tag creation remains operationally blocked until the final readiness confirmation recorded in private Issue #109.
+  qualification: Product Owner approved the exact candidate and gave the final irreversible confirmation after the Release Readiness Report (private Issue #109). This exact candidate is authorized for publication.
   npm_dist_tag: prelatest
   stable_latest_must_remain: 0.4.3
 public_export:
@@ -90,7 +91,7 @@ runtime_basis:
   remaining: Final irreversible Product Owner confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 is an upstream CSS-cleanup tracker; neither is a release blocker. Real provider Alpha spill-threshold crossing remains not covered, while deterministic F13 spill/cold-locator coverage passes.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner release approval is recorded for this exact candidate. Reversible export/readiness work is authorized. Per Issue #109, public tag/GitHub prerelease/npm/prelatest actions require one final Product Owner confirmation after the Release Readiness Report.
+  policy: Product Owner release approval and final irreversible confirmation are recorded for this exact candidate. Public tag, npm prelatest publication and GitHub prerelease are authorized for this exact candidate only; stable latest must remain 0.4.3.
 previous_release:
   version: 0.4.4-pre.1
   tag: v0.4.4-pre.1
