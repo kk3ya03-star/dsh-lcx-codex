@@ -108,10 +108,7 @@ function richPiFixture() {
        },
 
     },
-    {
-      role: 'user',
-      content: [{ type: 'tool-result', toolCallId: 'call_fixture|fc_fixture', content: [{ type: 'text', text: 'O' }], addedToolNames: [DEFERRED_TOOL.name] }],
-    },
+    { role: 'tool', toolCallId: 'call_fixture|fc_fixture', content: [{ type: 'text', text: 'O' }] },
   ]
   const model = {
     id: MODEL_ID,
@@ -149,17 +146,18 @@ test('parent_child_never_sends_opaque_native_state', () => {
   assert.equal(childMayReplayNative ? state.nativeOutput : undefined, undefined, 'child request must omit parent native output')
 })
 
-test('canonical_role_only_messages_remain_durable_and_image_safe', () => {
+test('canonical developer, system and user messages remain durable and image safe after F3 projection', () => {
   const imageUrl = 'https://image.example.invalid/request-image'
   const attachment = { id: 'attachment-fixture', mediaType: 'image/png' }
   const canonical = [
-    { role: 'developer', content: 'system-shape' },
+    { role: 'developer', content: 'developer-shape' },
+    { role: 'system', content: 'system-shape' },
     { role: 'user', content: [{ type: 'input_image', detail: 'auto', image_url: imageUrl }] },
   ]
   const retained = retainedConversationInput(canonical)
-  assert.equal(retained.length, 2, 'role-only canonical developer/user items must survive retained-history selection')
+  assert.deepEqual(retained.map(item => item.role), ['developer', 'system', 'user'], 'canonical input roles must survive retained-history selection')
   const persisted = persistNativeImageReferences(retained, new Map([[imageUrl, attachment]]))
-  assert.equal(persisted[1].content[0].type, 'dsh_image_attachment')
+  assert.equal(persisted[2].content[0].type, 'dsh_image_attachment')
   assert.equal(JSON.stringify(persisted).includes(imageUrl), false, 'checkpoint must not persist request image URLs/payloads')
 })
 
@@ -218,7 +216,7 @@ test('invalid_replay_state_degrades_without_reusing_signatures', async () => {
 })
 
 test('tool_search_defaults_off_without_trusted_compat', async () => {
-  const messages = [{ role: 'user', content: [{ type: 'tool-result', toolCallId: 'call_fixture', toolName: LOOKUP_TOOL.name, content: [{ type: 'text', text: 'O' }], addedToolNames: [DEFERRED_TOOL.name] }] }]
+  const messages = [{ role: 'tool', toolCallId: 'call_fixture', content: [{ type: 'text', text: 'O' }] }]
   const serialized = await serializeDshMessages(messages, undefined, {
     imageSupport: 'unsupported',
     route: { provider: PROVIDER_ID, model: MODEL_ID, baseURL: BASE_URL },
@@ -330,15 +328,12 @@ test('generic file projection preserves text, multiple files, and nested tool re
         { type: 'text', text: 'before' },
         { type: 'file', attachment: { name: 'one.txt' } },
         { type: 'file', attachment: { name: 'two.csv' } },
-        {
-          type: 'tool-result', toolCallId: 'call_files', toolName: 'read',
-          content: [
-            { type: 'text', text: 'nested' },
-            { type: 'file', attachment: { name: 'nested.json' } },
-          ],
-        },
       ],
     },
+    { role: 'tool', toolCallId: 'call_files', content: [
+      { type: 'text', text: 'nested' },
+      { type: 'file', attachment: { name: 'nested.json' } },
+    ] },
   ])
   const wire = JSON.stringify(input)
   for (const expected of ['before', '[file:one.txt]', '[file:two.csv]', 'nested', '[file:nested.json]'])

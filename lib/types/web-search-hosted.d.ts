@@ -62,12 +62,14 @@ export declare const HOSTED_SEARCH_PARAMETERS: {
             items: {
                 type: "string";
             };
+            description: string;
         };
         blockedDomains: {
             type: "array";
             items: {
                 type: "string";
             };
+            description: string;
         };
         userLocation: {
             type: "object";
@@ -100,9 +102,11 @@ export declare const HOSTED_SEARCH_PARAMETERS: {
                 type: "string";
                 enum: string[];
             };
+            description: string;
         };
         imageSettings: {
             type: "object";
+            description: string;
             properties: {
                 maxResults: {
                     type: "integer";

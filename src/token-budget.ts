@@ -1,4 +1,10 @@
 export const PORTABLE_BUDGET_ERROR_CODE = "LCX_PORTABLE_BUDGET_EXCEEDED";
+export const PORTABLE_UNSUPPORTED_CONTENT_CODE = "LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT";
+function unsupportedContent(kind: unknown): Error & { code: string } {
+  return Object.assign(new Error(`LCX cannot budget unsupported message content: ${String(kind)}`), {
+    code: PORTABLE_UNSUPPORTED_CONTENT_CODE,
+  });
+}
 const MAX_BUDGET_INPUT_CHARS = 2_000_000;
 const CONSERVATIVE_IMAGE_TOKEN_COST = 2_048;
 const CJK =
@@ -97,7 +103,7 @@ function visibleContent(content: unknown): unknown[] | undefined {
   if (!Array.isArray(content)) return undefined;
   const parts: unknown[] = [];
   for (const part of content) {
-    if (!isObject(part) || typeof part.type !== "string") return undefined;
+    if (!isObject(part) || typeof part.type !== "string") throw unsupportedContent("missing block type");
     if (["text", "input_text", "output_text"].includes(part.type)) {
       if (typeof part.text !== "string") return undefined;
       parts.push({ type: part.type, text: part.text });
@@ -117,24 +123,6 @@ function visibleContent(content: unknown): unknown[] | undefined {
       parts.push({ type: "tool-call", id, name, arguments: argumentsText });
       continue;
     }
-    if (part.type === "tool-result") {
-      const toolCallId = safeScalar(part.toolCallId);
-      const toolName = safeScalar(part.toolName ?? part.name ?? "unknown");
-      const nested = visibleContent(part.content);
-      if (
-        toolCallId === undefined ||
-        toolName === undefined ||
-        nested === undefined
-      )
-        return undefined;
-      parts.push({
-        type: "tool-result",
-        toolCallId,
-        toolName,
-        content: nested,
-      });
-      continue;
-    }
     if (
       ["image", "input_image", "output_image", "dsh_image_attachment"].includes(
         part.type,
@@ -143,7 +131,7 @@ function visibleContent(content: unknown): unknown[] | undefined {
       parts.push({ type: part.type, image: true });
       continue;
     }
-    return undefined;
+    throw unsupportedContent(part.type);
   }
   return parts;
 }
@@ -181,15 +169,18 @@ export function modelVisibleBudgetView(item: unknown) {
   }
   if (item.type !== undefined && item.type !== "message") return undefined;
   if (
-    !["developer", "system", "user", "assistant"].includes(
+    !["developer", "system", "user", "assistant", "tool"].includes(
       String(item.role ?? ""),
     )
-  )
-    return undefined;
+  ) throw unsupportedContent(item.role);
   const content = visibleContent(item.content);
+  if (item.role === "tool" && safeScalar(item.toolCallId) === undefined)
+    throw unsupportedContent("tool message without toolCallId");
   return content === undefined
     ? undefined
-    : { role: String(item.role), content };
+    : item.role === "tool"
+      ? { role: "tool", toolCallId: safeScalar(item.toolCallId), content }
+      : { role: String(item.role), content };
 }
 
 /**

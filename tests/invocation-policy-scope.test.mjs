@@ -100,19 +100,19 @@ test('host descriptor replacement invalidates fastpath and exclusive fallback wa
   assert.equal(compaction.config, hostConfig)
 })
 
-test('formal DSH 0.1.5 classes consume scoped config and pruner with original receivers', async () => {
+test('formal DSH 0.2 classes consume scoped config and pruner with original receivers', async () => {
   const ctx = new Context()
   const gate = deferred()
   const totals = new Map([
-    ['formal-gpt-below', 85],
-    ['formal-gpt-native', 90],
-    ['formal-grok', 85],
+    ['formal-gpt-below', 850_000],
+    ['formal-gpt-native', 900_000],
+    ['formal-grok', 850_000],
   ])
   let holdGpt = true
   ctx.provide('llm', {
     async resolveModelInfo(provider) {
       if (provider === 'gpt-route' && holdGpt) await gate.promise
-      return { context: { contextWindow: 100 } }
+      return { context: { contextWindow: 1_000_000 } }
     },
   })
   ctx.provide('tokenMeter', {
@@ -196,15 +196,15 @@ test('formal BasicCompactionEngine durable lock rejects same-session overlap and
   const ctx = new Context()
   const summaryStarted = deferred(), summaryGate = deferred()
   ctx.provide('llm', {
-    async resolveModelInfo() { return { context: { contextWindow: 100 } } },
+    async resolveModelInfo() { return { context: { contextWindow: 1_000_000 } } },
   })
   ctx.provide('tokenMeter', {
     measure(session) {
       const compacted = session.surface.replaceGeneration > 0
       const nodes = session.surface.nodes.map(seq => ({
         seq,
-        tokens: compacted ? 2 : 40,
-        heuristicTokens: compacted ? 2 : 40,
+        tokens: compacted ? 2 : 400_000,
+        heuristicTokens: compacted ? 2 : 400_000,
       }))
       return {
         totalTokens: nodes.reduce((sum, node) => sum + node.tokens, 0),

@@ -14,7 +14,7 @@ test('media client keeps helper names isolated from adjacent bundled plugins', (
   assert.deepEqual(Object.keys(sandbox).sort(), keys)
 })
 
-function fixture() {
+function fixture({ extras = {}, modules = {} } = {}) {
   let client, definition, settings, settingsView, media, mediaView
   let scopeListener
   const stores = [], disposers = [], writes = [], elements = [], definitions = []
@@ -66,10 +66,11 @@ function fixture() {
   }
   const dictionaries = new Map()
   vm.runInNewContext(readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'), {
-    URL, AbortController, DOMException,
+    URL, AbortController, DOMException, ...extras,
     window: { __ModuleLoader__: { load({ factory }) {
       client = factory(name => {
         if (name === 'react') return React
+        if (Object.hasOwn(modules, name)) return modules[name]
         if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore(initial, options) {
           let state = initial
           const store = {
@@ -90,7 +91,8 @@ function fixture() {
       dictionaries.set(language, dictionary)
       return () => dictionaries.delete(language)
     } },
-    settingsScope: scope,
+    configForms: { get: ns => ns === 'lcx-codex' ? scope : undefined },
+    get(name) { return this[name] },
     uiConversation: { events: { register(value) {
       definitions.push(value?.kind)
       // Selected by kind: the client registers the usage producer alongside this one.
@@ -192,8 +194,12 @@ test('media definition projects completed historical GPT/Grok text at the assist
     assert.equal(node.anchorSeq, 917, 'media stays before the assistant + 0.1 turn tail')
     assert.equal(node.visibility, 'visible')
     assert.equal(node.data.model, model)
+    // Ownership (#102): plain direct image and video links are LCX's; Markdown images are DSH's.
     assert.deepEqual(Array.from(node.data.items, item => item.kind), ['image', 'video'])
   }
+  const mixed = project(f.definition, assistantEvent({ text: 'an image link https://example.com/a.jpg and ![native](https://example.com/b.png)' }))
+  assert.deepEqual(Array.from(mixed.data.items, item => item.url), ['https://example.com/a.jpg'], 'the native Markdown image is not duplicated')
+  assert.equal(project(f.definition, assistantEvent({ text: 'only ![native](https://example.com/b.png)' })), null)
   assert.equal(project(f.definition, assistantEvent({ model: 'claude-4', text: 'https://example.com/a.jpg' })), null)
   assert.equal(project(f.definition, assistantEvent({ interrupted: true, text: 'https://example.com/a.jpg' })), null)
   assert.equal(project(f.definition, assistantEvent({ text: 'ordinary link https://example.com/page' })), null)
@@ -205,11 +211,17 @@ test('structured tool metadata is primary and zero-candidate answers emit no row
     kind: 'image', url: 'https://images.example.com/full', previewUrl: 'https://images.example.com/thumb',
     sourceUrl: 'https://example.com/source', caption: 'Structured result', structured: true,
   }] } }
-  const node = project(f.definition, assistantEvent({ text: 'fallback https://example.com/fallback.jpg' }), meta)
+  const node = project(f.definition, assistantEvent({ text: 'prose https://example.com/prose.jpg' }), meta)
+  // Structured candidates come first; a prose image link follows as a plain (unstructured) item.
   assert.deepEqual(structuredClone(node.data.items), [{
     kind: 'image', url: 'https://images.example.com/full', previewUrl: 'https://images.example.com/thumb',
     sourceUrl: 'https://example.com/source', caption: 'Structured result', structured: true,
-  }])
+  }, { kind: 'image', url: 'https://example.com/prose.jpg' }])
+  // Structured images and a direct video in the same answer are two independent LCX surfaces.
+  const both = project(f.definition, assistantEvent({ text: 'clip https://example.com/clip.mp4' }), meta)
+  assert.deepEqual(Array.from(both.data.items, item => [item.kind, item.url]), [
+    ['image', 'https://images.example.com/full'], ['video', 'https://example.com/clip.mp4'],
+  ])
   assert.equal(project(f.definition, assistantEvent({ text: 'ordinary answer' })), null)
   assert.equal(project(f.definition, assistantEvent({ text: 'foreign tool answer' }), meta, 'foreign_tool'), null)
 })
@@ -226,4 +238,72 @@ test('media client disposes definition, both slots, dictionaries and settings su
   f.dispose()
   assert.deepEqual(f.disposed, { definition: 2, slots: 2, scope: 1 })
   assert.equal(f.dictionaries.size, 0)
+})
+
+test('media dictionaries carry every label the media surface uses in both languages', () => {
+  const f = fixture()
+  const keys = ['mediaTitle', 'mediaImagePreview', 'mediaPlay', 'mediaEnlarge', 'mediaClose', 'mediaHeading', 'mediaFailed', 'mediaVideoFailed', 'mediaPrevious', 'mediaNext', 'mediaOpen']
+  for (const language of ['zh', 'en']) {
+    const dictionary = f.dictionaries.get(language)
+    for (const key of keys) assert.equal(typeof dictionary[key], 'string', language + '.' + key)
+    for (const retired of ['mediaMore', 'mediaLess']) assert.equal(dictionary[retired], undefined, language + '.' + retired)
+  }
+})
+
+const PAGE = "<html><body><div data-chat-flow>\n    <div data-chat-group-key='[\"process\",\"tool-3\",null]' data-chat-turn=\"3\" data-step-process></div>\n    <div data-chat-flow-kind=\"assistant-step\" data-chat-group-part=\"response\" data-chat-turn=\"3\"><p>Answer</p></div>\n    <div data-chat-group-key='[\"process\",\"media-3\",null]' data-chat-turn=\"3\" data-step-process><div data-chat-flow-kind=\"lcx-search-media\" data-chat-turn=\"3\"><span id=\"marker\"></span></div></div>\n  </div></body></html>"
+function domExtras(window, document) {
+  return { document, MutationObserver: window.MutationObserver, requestAnimationFrame: fn => { queueMicrotask(fn); return 1 }, cancelAnimationFrame() {}, queueMicrotask }
+}
+function mount(f, document, language, candidates) {
+  const meta = { lcxHostedMedia: { version: 1, tool: 'web_search', candidates } }
+  const node = project(f.definition, assistantEvent({ text: 'answer' }), meta)
+  const dictionary = f.dictionaries.get(language)
+  const element = f.mediaView({ node, t: key => dictionary[key], useMediaPreview: selector => selector({ enabled: true }) })
+  f.renderComponent('inline', element).props.ref(document.getElementById('marker'))
+  f.renderComponent('inline', element)
+  return dictionary
+}
+
+test('structured image click mounts the public DSH ImageLightbox via baseline modules and unmounts cleanly', async () => {
+  const { parseHTML } = await import('linkedom')
+  const { window, document } = parseHTML(PAGE)
+  function ImageLightbox() {}
+  const roots = []
+  const modules = {
+    '@deepseek-ai/dsh-client-ui-primitives': { ImageLightbox },
+    'react-dom/client': { createRoot(container) {
+      const root = { container, unmounted: false, render(node) { this.node = node }, unmount() { this.unmounted = true } }
+      roots.push(root); return root
+    } },
+  }
+  const f = fixture({ modules, extras: domExtras(window, document) })
+  const dictionary = mount(f, document, 'en', [{ kind: 'image', url: 'https://images.example.com/full', previewUrl: 'https://images.example.com/thumb', sourceUrl: 'https://example.com/s', caption: 'Caption', structured: true }])
+  assert.equal(document.querySelectorAll('.lcx-media-tile').length, 1)
+  document.querySelector('.lcx-media-open').onclick()
+  assert.equal(document.querySelector('dialog'), null, 'no LCX dialog when the DSH lightbox is available')
+  assert.equal(roots.length, 1)
+  assert.equal(roots[0].node.type, ImageLightbox)
+  assert.deepEqual(structuredClone({ src: roots[0].node.props.src, alt: roots[0].node.props.alt, labels: roots[0].node.props.labels }),
+    { src: 'https://images.example.com/full', alt: 'Caption', labels: { dialog: dictionary.mediaImagePreview, close: dictionary.mediaClose } })
+  assert.equal(document.querySelectorAll('[data-lcx-media-lightbox]').length, 1)
+  roots[0].node.props.onClose(); roots[0].node.props.onClose()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(roots[0].unmounted, true)
+  assert.equal(document.querySelectorAll('[data-lcx-media-lightbox]').length, 0)
+  f.unmountEffects()
+  assert.equal(document.querySelector('.lcx-media'), null)
+})
+
+test('a missing or broken DSH lightbox module falls back to the LCX dialog', async () => {
+  const { parseHTML } = await import('linkedom')
+  const { window, document } = parseHTML(PAGE)
+  const create = document.createElement.bind(document)
+  document.createElement = name => { const element = create(name); if (name === 'dialog') element.showModal = () => { element.open = true }; return element }
+  const f = fixture({ extras: domExtras(window, document) })
+  mount(f, document, 'zh', [{ kind: 'image', url: 'https://images.example.com/full', structured: true }])
+  document.querySelector('.lcx-media-open').onclick()
+  assert.equal(document.querySelectorAll('dialog.lcx-media-dialog').length, 1)
+  assert.equal(document.querySelector('dialog img').src, 'https://images.example.com/full')
+  f.unmountEffects()
+  assert.equal(document.querySelector('dialog'), null)
 })

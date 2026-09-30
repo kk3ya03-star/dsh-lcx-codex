@@ -10,6 +10,7 @@ import { ALPHA_PROBE_VERSION, ALPHA_SCHEMA_FINGERPRINT } from '../lib/web-search
 import { AlphaCapabilityStore, alphaCapabilityFingerprint } from '../lib/web-search-capability.js'
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { routeFingerprint } from '../lib/route.js'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
 
 test('registered Alpha tool conforms to DSH output schema while persisting private refs', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-lifecycle-'))
@@ -28,23 +29,18 @@ test('registered Alpha tool conforms to DSH output schema while persisting priva
     definitions.set(definition.name, definition)
     return () => definitions.delete(definition.name)
   } }
+  const provider = providerContext({ fixture: { api: 'openai-responses', baseURL: route.baseURL, apiKeyEnv: 'FIXTURE_KEY' } })
   const ctx = {
-    llm: {}, sessions: {}, attachments: {}, fs: {}, tools,
+    llm: provider.llm, sessions: {}, attachments: {}, fs: {}, tools,
     credentials: { resolve: async () => ({ value: 'synthetic-only' }) },
     web: { searchProviderId: 'native', registerSearchProvider() {} },
-    settings: {
-      get: () => ({ providers: { fixture: { api: 'openai-responses', baseURL: route.baseURL, apiKeyEnv: 'FIXTURE_KEY' } } }),
-      installSection(_owner, _key, _schema, _base, hooks) {
-        hooks.setSource(() => ({ enabled: true, webSearch: true, advancedHostedSearch: false, alphaSearch: true }))
-        hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on(name, handler) { handlers.set(name, handler) },
     get(name) { return this[name] },
     inject() {}, effect() {},
     logger: { info() {}, warn(message) { assert.fail(message) } },
   }
-  apply(ctx, { alphaCapabilityPath: capabilityPath, alphaRefPath: refPath })
+  apply(ctx, pluginConfig({ enabled: true, webSearch: true, alphaSearch: true, alphaCapabilityPath: capabilityPath, alphaRefPath: refPath }))
   const agent = { options: route, session: Session.create(SessionId(route.sessionId)), ctx: { get: name => name === 'tools' ? tools : undefined } }
   handlers.get('agent/created')({ agent })
   const tool = definitions.get('websearch_alpha')
@@ -89,22 +85,18 @@ test('plugin apply accepts a valid V1 ref store while Alpha is disabled without 
     },
   }, null, 2)}\n`
   writeFileSync(refPath, source)
+  const provider = providerContext({})
   const ctx = {
-    llm: {}, sessions: {}, attachments: {}, fs: {}, tools: { register() {} }, credentials: {},
+    llm: provider.llm, sessions: {}, attachments: {}, fs: {}, tools: { register() {} }, credentials: {},
     web: { searchProviderId: 'native', registerSearchProvider() {} },
-    settings: {
-      get: () => ({ providers: {} }),
-      installSection(_owner, _key, _schema, _base, hooks) {
-        hooks.setSource(() => ({ enabled: true, webSearch: true, advancedHostedSearch: false, alphaSearch: false }))
-        hooks.onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on() {}, get(name) { return this[name] }, inject() {}, effect() {},
     logger: { info() {}, warn() {} },
   }
-  assert.doesNotThrow(() => apply(ctx, {
+  assert.doesNotThrow(() => apply(ctx, pluginConfig({
+    enabled: true, webSearch: true,
     alphaRefPath: refPath,
     alphaCapabilityPath: join(directory, 'capabilities.json'),
-  }))
+  })))
   assert.equal(readFileSync(refPath, 'utf8'), source)
 })

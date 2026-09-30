@@ -38,6 +38,39 @@ function requestOptions(content) {
   }
 }
 
+for (const [label, context, scope] of [
+  ['complete', {input_tokens:5022,output_tokens:571,ignored:'discard'}, 'aggregate'],
+  ['zero', {input_tokens:0,output_tokens:0}, 'aggregate'],
+  ['partial', {input_tokens:5022}, 'aggregate'],
+  ['negative', {input_tokens:5022,output_tokens:-1}, 'aggregate'],
+  ['fractional', {input_tokens:5022.5,output_tokens:571}, 'aggregate'],
+  ['unsafe', {input_tokens:5022,output_tokens:Number.MAX_SAFE_INTEGER+1}, 'aggregate'],
+  ['string', {input_tokens:'5022',output_tokens:571}, 'aggregate'],
+  ['missing', undefined, 'aggregate'],
+  ['request', {input_tokens:5022,output_tokens:571}, 'request'],
+]) {
+  test(`terminal Grok context_details is sanitized separately from canonical billing: ${label}`, async t => {
+    t.mock.method(globalThis, 'fetch', async () => sseResponse([{
+      type:'response.completed',response:{id:'resp_context',model:'grok-4.6',status:'completed',
+        output:[{type:'message',id:'msg_context',role:'assistant',status:'completed',content:[{type:'output_text',text:'done',annotations:[]}]}],
+        usage:{input_tokens:6003,output_tokens:711,total_tokens:6714,
+          context_details:context,...(scope==='aggregate'?{num_server_side_tools_used:1}:{})}},
+    }]));
+    const h=grokHarness({nativeWeb:true});
+    const chunks=await collect(h.stream(requestOptions([{type:'text',text:'fixture'}]),()=>{throw new Error('Unexpected adapter')}));
+    assert.deepEqual(chunks.find(c=>c.type==='usage').usage,{inputTokens:6003,outputTokens:711,totalTokens:6714,cacheReadTokens:0,cacheWriteTokens:0});
+    const marker=chunks.at(-1).replayState.response.lcxUsage;
+    assert.equal(marker.inputTokenScope,scope);
+    if(label==='complete' || label==='zero') {
+      assert.deepEqual(marker.contextDetails,{input_tokens:context.input_tokens,output_tokens:context.output_tokens});
+      assert.equal(marker.contextProvenance,'provider-context-details');
+    } else {
+      assert.equal(marker.contextDetails,undefined);
+      assert.equal(marker.contextProvenance,undefined);
+    }
+  });
+}
+
 test('ordinary Grok bridge emits exact native tools and preserves DSH controls', async t => {
   const requests = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {

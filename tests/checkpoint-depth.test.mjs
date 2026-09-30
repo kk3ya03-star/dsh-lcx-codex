@@ -4,8 +4,9 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { portableMessagesForCheckpoint, stateFromSummaryEvent } from '../lib/native-checkpoint.js'
 import { parseHostedSearchResponse } from '../lib/web-search-hosted.js'
+import { queryContext } from './session-query-fixture.mjs'
 
-test('portable replay preserves history after 25 real DSH compaction replacements', () => {
+test('portable replay preserves history after 25 real DSH compaction replacements', async () => {
   const session = Session.create(SessionId('checkpoint-depth'))
   let previous = session.append('user/message', { role: 'user', id: 'initial', source: { kind: 'user' }, content: [{ type: 'text', text: 'original decision' }] }, { surfaceOp: 'append' }).seq
   for (let i = 0; i < 25; i++) {
@@ -18,14 +19,14 @@ test('portable replay preserves history after 25 real DSH compaction replacement
     session.append('compaction/end', { compactionId: id, turn: null })
   }
   assert.equal(session.surface.nodes.length, 1)
-  assert.equal(portableMessagesForCheckpoint(session, 'checkpoint-24')[0].content[0].text, 'original decision')
-  assert.throws(() => portableMessagesForCheckpoint(session, 'missing'), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
+  assert.equal((await portableMessagesForCheckpoint(queryContext(session), session, 'checkpoint-24'))[0].content[0].text, 'original decision')
+  await assert.rejects(portableMessagesForCheckpoint(queryContext(session), session, 'missing'), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
 })
 
-test('portable replay rejects cyclic checkpoint references rather than dropping them', () => {
+test('portable replay rejects cyclic checkpoint references rather than dropping them', async () => {
   const summary = { type: 'compaction/summary', data: { compactionId: 'cycle', shadowedSeqs: [0] } }
   const session = { snapshotEvents: () => [summary], eventAt: () => ({}), deriveEventMessage: () => ({ role: 'user', source: compactCheckpointSource('cycle'), content: [] }) }
-  assert.throws(() => portableMessagesForCheckpoint(session, 'cycle'), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
+  await assert.rejects(portableMessagesForCheckpoint(queryContext(session), session, 'cycle'), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
 })
 
 test('restoration rejects empty opaque state and malformed additional native items', () => {

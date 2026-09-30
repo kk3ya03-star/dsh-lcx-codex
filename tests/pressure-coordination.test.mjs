@@ -3,6 +3,18 @@ import assert from 'node:assert/strict'
 import { ServiceMutex } from '../lib/service-mutex.js'
 import apply, { compactionPressureBand } from '../lib/index.js'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+
+const CONTEXT_WINDOW = 262_144
+const OUTPUT_RESERVE = 32_768
+const HEADROOM = 65_536
+const PRESSURE_BUDGET = CONTEXT_WINDOW - OUTPUT_RESERVE - HEADROOM
+const NATIVE_THRESHOLD = Math.floor(PRESSURE_BUDGET * 0.9)
+const EMERGENCY_THRESHOLD = Math.floor(PRESSURE_BUDGET * 0.95)
+const SCOPED_RATIO = NATIVE_THRESHOLD / CONTEXT_WINDOW
+const NATIVE_POINT = 150_000
+const EMERGENCY_POINT = 160_000
 
 const deferred = () => { let resolve, reject; const promise = new Promise((res, rej) => { resolve = res; reject = rej }); return { promise, resolve, reject } }
 const turn = () => new Promise(resolve => setImmediate(resolve))
@@ -48,11 +60,12 @@ test('ServiceMutex aborts queued callers and close drains the active owner', asy
   await assert.rejects(mutex.run(undefined, async () => 'late'), /closing/u)
 })
 
-test('90% native and 95% emergency thresholds use resolved operational context windows', () => {
-  const policy = { auto: 90, emergency: 95 }
+test('F5 native and emergency thresholds use DSH pressure budget after output reserve and headroom', () => {
+  const policy = { auto: 90, emergency: 95, outputReserve: OUTPUT_RESERVE, headroomTokens: HEADROOM }
   for (const contextWindow of [262_144, 272_000]) {
-    const nativeStart = Math.ceil(contextWindow * 0.9)
-    const emergencyStart = Math.ceil(contextWindow * 0.95)
+    const budget = contextWindow - OUTPUT_RESERVE - HEADROOM
+    const nativeStart = Math.floor(budget * 0.9)
+    const emergencyStart = Math.floor(budget * 0.95)
     assert.equal(compactionPressureBand(nativeStart - 1, contextWindow, policy).band, 'below')
     assert.equal(compactionPressureBand(nativeStart, contextWindow, policy).band, 'native')
     assert.equal(compactionPressureBand(emergencyStart - 1, contextWindow, policy).band, 'native')
@@ -62,7 +75,7 @@ test('90% native and 95% emergency thresholds use resolved operational context w
 
 function pressureFixture({ legacyConfig = false } = {}) {
   const handlers = new Map(), logs = [], effects = []
-  const config = { thresholdRatio: 0.8, modelPolicies: [{ provider: 'fixture', model: 'gpt-fixture', thresholdRatio: 0.7 }] }
+  const config = { thresholdRatio: 0.8, headroomTokens: HEADROOM, modelPolicies: [{ provider: 'fixture', model: 'gpt-fixture', thresholdRatio: 0.7 }] }
   const pruner = { calls: [], pruneSession(session) { this.calls.push(session.id); return { pruned: [], charsRemoved: 0 } } }
   const originalPrune = pruner.pruneSession
   let enabled = true
@@ -90,21 +103,20 @@ function pressureFixture({ legacyConfig = false } = {}) {
     value: config,
   })
   const originalCompact = compaction.compactIfNeeded
+  const provider = providerContext({ fixture: { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE' } })
+  const plugin = pluginConfig({ enabled: true })
   const ctx = {
-    llm: { resolveModelInfo: async () => ({ context: { contextWindow: 262144 } }) },
+    llm: { ...provider.llm, resolveModelInfo: async () => ({ context: { contextWindow: CONTEXT_WINDOW }, defaultMaxTokens: OUTPUT_RESERVE }) },
     sessions: {}, tools: { register() {} }, credentials: {}, attachments: {}, fs: {},
     web: { registerSearchProvider() {} },
-    settings: {
-      get: () => ({ providers: { fixture: { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE' } } }),
-      installSection(_owner, _ns, _schema, _base, hooks) { hooks.setSource(() => ({ enabled, webSearch: false, advancedHostedSearch: false, alphaSearch: false })); this.refresh = hooks.onChange; hooks.onChange() },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     agentPresets: { serviceFor: (_agent, name) => ({ compaction, toolResultPruner: pruner })[name] },
     get(name) { return this[name] }, inject() {},
     on(name, handler) { handlers.set(name, handler) },
     effect(setup) { effects.push(setup()) },
     logger: { info: message => logs.push(message), warn: message => logs.push(message) },
   }
-  apply(ctx)
+  apply(ctx, plugin)
   const agent = (id, totalTokens) => {
     const result = { session: Session.create(SessionId(id)), options: { provider: 'fixture', model: 'gpt-fixture' }, ctx: { get: name => name === 'tokenMeter' ? { measure: () => ({ totalTokens }) } : name === 'toolResultPruner' ? pruner : undefined } }
     handlers.get('agent/created')({ agent: result })
@@ -120,26 +132,26 @@ function pressureFixture({ legacyConfig = false } = {}) {
         value,
       })
     },
-    disable() { enabled = false; ctx.settings.refresh() },
-    restart() { apply(ctx) },
+    disable() { enabled = false; updateVolatile(plugin.enabled, pluginConfig({ enabled }).enabled); handlers.get('loader/volatile-update')() },
+    restart() { apply(ctx, pluginConfig({ enabled })) },
     async dispose() { for (const effect of effects.splice(0).reverse()) if (typeof effect === 'function') await effect() },
   }
 }
 
 test('installed pressure wrapper switches at exact tokens and restores host policy', async () => {
   const f = pressureFixture()
-  const native = Math.ceil(262144 * 0.9), emergency = Math.ceil(262144 * 0.95)
+  const native = NATIVE_THRESHOLD, emergency = EMERGENCY_THRESHOLD
   for (const tokens of [native - 1, native, emergency - 1, emergency]) {
     const before = f.compaction.calls.length, prunes = f.pruner.calls.length
     const agent = f.agent(`boundary-${tokens}`, tokens)
     await f.compaction.compactIfNeeded(agent, 'pressure', new AbortController().signal)
-    assert.equal(f.compaction.calls.length - before, tokens < native ? 0 : 1, JSON.stringify({ tokens, logs: f.logs, calls: f.compaction.calls }))
-    assert.equal(f.pruner.calls.length - prunes, tokens >= emergency ? 1 : 0)
+    assert.equal(f.compaction.calls.length - before, 1, JSON.stringify({ tokens, logs: f.logs, calls: f.compaction.calls }))
+    assert.equal(f.pruner.calls.length - prunes, tokens < native || tokens >= emergency ? 1 : 0)
     assert.equal(f.compaction.config, f.config)
     assert.equal(f.pruner.pruneSession, f.originalPrune)
     if (tokens >= native) {
-      assert.equal(f.compaction.calls.at(-1).threshold, 0.9)
-      assert.equal(f.compaction.calls.at(-1).modelThreshold, 0.9)
+      assert.equal(f.compaction.calls.at(-1).threshold, SCOPED_RATIO)
+      assert.equal(f.compaction.calls.at(-1).modelThreshold, SCOPED_RATIO)
     }
   }
   f.disable()
@@ -154,7 +166,7 @@ test('installed pressure wrapper switches at exact tokens and restores host poli
 
 test('two GPT sessions use independent native/emergency policy and recover after failure', async () => {
   const f = pressureFixture(), gate = deferred()
-  const first = f.agent('native-failure', 240000), second = f.agent('emergency-concurrent', 250000)
+  const first = f.agent('native-failure', NATIVE_POINT), second = f.agent('emergency-concurrent', EMERGENCY_POINT)
   first.work = () => gate.promise
   const running = f.compaction.compactIfNeeded(first, 'pressure', new AbortController().signal)
   const rejected = assert.rejects(running, /synthetic failure/)
@@ -162,8 +174,8 @@ test('two GPT sessions use independent native/emergency policy and recover after
   const concurrent = f.compaction.compactIfNeeded(second, 'pressure', new AbortController().signal)
   assert.equal(await settlesBeforeGate(concurrent), true)
   assert.deepEqual(f.compaction.calls.map(({ id, threshold, modelThreshold }) => ({ id, threshold, modelThreshold })), [
-    { id: 'native-failure', threshold: 0.9, modelThreshold: 0.9 },
-    { id: 'emergency-concurrent', threshold: 0.9, modelThreshold: 0.9 },
+    { id: 'native-failure', threshold: SCOPED_RATIO, modelThreshold: SCOPED_RATIO },
+    { id: 'emergency-concurrent', threshold: SCOPED_RATIO, modelThreshold: SCOPED_RATIO },
   ])
   assert.notEqual(f.compaction.calls[0].config, f.compaction.calls[1].config)
   assert.deepEqual(f.pruner.calls, ['emergency-concurrent'])
@@ -171,7 +183,7 @@ test('two GPT sessions use independent native/emergency policy and recover after
   assert.equal(f.pruner.pruneSession, f.originalPrune)
   gate.reject(new Error('synthetic failure'))
   await rejected
-  await f.compaction.compactIfNeeded(f.agent('after-failure', 250000), 'pressure', new AbortController().signal)
+  await f.compaction.compactIfNeeded(f.agent('after-failure', EMERGENCY_POINT), 'pressure', new AbortController().signal)
   assert.deepEqual(f.pruner.calls, ['emergency-concurrent', 'after-failure'])
   assert.equal(f.compaction.config, f.config)
   assert.equal(f.pruner.pruneSession, f.originalPrune)
@@ -180,9 +192,9 @@ test('two GPT sessions use independent native/emergency policy and recover after
 
 test('Grok and DeepSeek pressure complete under a long GPT compaction with host policy', async () => {
   const f = pressureFixture(), gate = deferred()
-  const gpt = f.agent('gpt-held', 240000)
-  const deepseek = f.agent('deepseek-native', 240000)
-  const grok = f.agent('grok-native', 240000)
+  const gpt = f.agent('gpt-held', NATIVE_POINT)
+  const deepseek = f.agent('deepseek-native', NATIVE_POINT)
+  const grok = f.agent('grok-native', NATIVE_POINT)
   deepseek.options = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
   grok.options = { provider: 'relay', model: 'grok-4.6' }
   gpt.work = () => gate.promise
@@ -193,7 +205,7 @@ test('Grok and DeepSeek pressure complete under a long GPT compaction with host 
   assert.equal(await settlesBeforeGate(Promise.all(nativeCalls)), true)
   assert.deepEqual(f.compaction.calls.map(({ id, threshold, modelThreshold }) =>
     ({ id, threshold, modelThreshold })), [
-    { id: 'gpt-held', threshold: 0.9, modelThreshold: 0.9 },
+    { id: 'gpt-held', threshold: SCOPED_RATIO, modelThreshold: SCOPED_RATIO },
     { id: 'deepseek-native', threshold: 0.8, modelThreshold: 0.7 },
     { id: 'grok-native', threshold: 0.8, modelThreshold: 0.7 },
   ])
@@ -207,14 +219,14 @@ test('Grok and DeepSeek pressure complete under a long GPT compaction with host 
 
 test('a nested non-GPT pressure call starts from host policy, then restores outer GPT policy', async () => {
   const f = pressureFixture()
-  const gpt = f.agent('gpt-outer', 240000)
-  const grok = f.agent('grok-inner', 240000)
+  const gpt = f.agent('gpt-outer', NATIVE_POINT)
+  const grok = f.agent('grok-inner', NATIVE_POINT)
   grok.options = { provider: 'relay', model: 'grok-4.6' }
   gpt.checkAfterWork = true
   gpt.work = () => f.compaction.compactIfNeeded(grok, 'pressure', new AbortController().signal)
   await f.compaction.compactIfNeeded(gpt, 'pressure', new AbortController().signal)
   assert.deepEqual(f.compaction.calls.map(({ id, threshold, afterThreshold }) => ({ id, threshold, afterThreshold })), [
-    { id: 'gpt-outer', threshold: 0.9, afterThreshold: 0.9 },
+    { id: 'gpt-outer', threshold: SCOPED_RATIO, afterThreshold: SCOPED_RATIO },
     { id: 'grok-inner', threshold: 0.8, afterThreshold: undefined },
   ])
   assert.deepEqual(f.pruner.calls, ['grok-inner'])
@@ -225,13 +237,13 @@ test('a nested non-GPT pressure call starts from host policy, then restores oute
 
 test('below-threshold GPT pressure returns while another GPT compaction is active', async () => {
   const f = pressureFixture(), gate = deferred()
-  const held = f.agent('held-high', 240000)
+  const held = f.agent('held-high', NATIVE_POINT)
   held.work = () => gate.promise
   const running = f.compaction.compactIfNeeded(held, 'pressure', new AbortController().signal)
   await turn()
   const below = f.compaction.compactIfNeeded(f.agent('below', 1000), 'pressure', new AbortController().signal)
   assert.equal(await settlesBeforeGate(below), true)
-  assert.deepEqual(f.compaction.calls.map(call => call.id), ['held-high'])
+  assert.deepEqual(f.compaction.calls.map(call => call.id), ['held-high', 'below'], 'F5 leaves DSH pressure active below LCX Native band')
   gate.resolve()
   await running
   await f.dispose()
@@ -239,17 +251,18 @@ test('below-threshold GPT pressure returns while another GPT compaction is activ
 
 test('production wrapper rechecks replaced config descriptors and preserves host replacement', async () => {
   const f = pressureFixture(), gate = deferred()
-  const active = f.agent('descriptor-active', 240000)
+  const active = f.agent('descriptor-active', NATIVE_POINT)
   active.work = () => gate.promise
   const running = f.compaction.compactIfNeeded(active, 'pressure', new AbortController().signal)
   await turn()
   const hostConfig = {
     thresholdRatio: 0.75,
+    headroomTokens: HEADROOM,
     modelPolicies: [{ provider: 'fixture', model: 'gpt-fixture', thresholdRatio: 0.65 }],
   }
   f.replaceConfig(hostConfig)
   const fallback = f.compaction.compactIfNeeded(
-    f.agent('descriptor-fallback', 250000),
+    f.agent('descriptor-fallback', EMERGENCY_POINT),
     'pressure',
     new AbortController().signal,
   )
@@ -258,8 +271,8 @@ test('production wrapper rechecks replaced config descriptors and preserves host
   gate.resolve()
   await Promise.all([running, fallback])
   assert.deepEqual(f.compaction.calls.map(({ id, threshold, modelThreshold }) => ({ id, threshold, modelThreshold })), [
-    { id: 'descriptor-active', threshold: 0.9, modelThreshold: 0.9 },
-    { id: 'descriptor-fallback', threshold: 0.9, modelThreshold: 0.9 },
+    { id: 'descriptor-active', threshold: SCOPED_RATIO, modelThreshold: SCOPED_RATIO },
+    { id: 'descriptor-fallback', threshold: SCOPED_RATIO, modelThreshold: SCOPED_RATIO },
   ])
   assert.equal(f.compaction.config, hostConfig)
   await f.dispose()
@@ -274,18 +287,18 @@ test('production wrapper rechecks replaced config descriptors and preserves host
 
 test('legacy fallback aborts queued pressure and remains usable', async () => {
   const f = pressureFixture({ legacyConfig: true }), gate = deferred()
-  const held = f.agent('legacy-held', 240000)
+  const held = f.agent('legacy-held', NATIVE_POINT)
   held.work = () => gate.promise
   const running = f.compaction.compactIfNeeded(held, 'pressure', new AbortController().signal)
   await turn()
   const aborter = new AbortController()
-  const queued = f.compaction.compactIfNeeded(f.agent('legacy-queued', 250000), 'pressure', aborter.signal)
+  const queued = f.compaction.compactIfNeeded(f.agent('legacy-queued', EMERGENCY_POINT), 'pressure', aborter.signal)
   aborter.abort(new DOMException('queued cancelled', 'AbortError'))
   await assert.rejects(queued, error => error?.name === 'AbortError')
   assert.deepEqual(f.compaction.calls.map(call => call.id), ['legacy-held'])
   gate.resolve()
   await running
-  await f.compaction.compactIfNeeded(f.agent('legacy-after', 250000), 'pressure', new AbortController().signal)
+  await f.compaction.compactIfNeeded(f.agent('legacy-after', EMERGENCY_POINT), 'pressure', new AbortController().signal)
   assert.deepEqual(f.compaction.calls.map(call => call.id), ['legacy-held', 'legacy-after'])
   assert.equal(f.compaction.config, f.config)
   assert.equal(f.pruner.pruneSession, f.originalPrune)
@@ -295,7 +308,7 @@ test('legacy fallback aborts queued pressure and remains usable', async () => {
 test('active abort propagates and later scoped pressure recovers', async () => {
   const f = pressureFixture()
   const aborter = new AbortController()
-  const active = f.agent('active-abort', 240000)
+  const active = f.agent('active-abort', NATIVE_POINT)
   active.work = signal => new Promise((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true })
   })
@@ -303,7 +316,7 @@ test('active abort propagates and later scoped pressure recovers', async () => {
   await turn()
   aborter.abort(new DOMException('active cancelled', 'AbortError'))
   await assert.rejects(running, error => error?.name === 'AbortError')
-  await f.compaction.compactIfNeeded(f.agent('after-active-abort', 250000), 'pressure', new AbortController().signal)
+  await f.compaction.compactIfNeeded(f.agent('after-active-abort', EMERGENCY_POINT), 'pressure', new AbortController().signal)
   assert.equal(f.compaction.calls.at(-1).id, 'after-active-abort')
   assert.equal(f.compaction.config, f.config)
   assert.equal(f.pruner.pruneSession, f.originalPrune)
@@ -312,7 +325,7 @@ test('active abort propagates and later scoped pressure recovers', async () => {
 
 test('cold restart reinstalls scoped pressure after complete teardown', async () => {
   const f = pressureFixture()
-  const before = f.agent('before-restart', 240000)
+  const before = f.agent('before-restart', NATIVE_POINT)
   await f.compaction.compactIfNeeded(before, 'pressure', new AbortController().signal)
   await f.dispose()
   assert.equal(f.compaction.compactIfNeeded, f.originalCompact)
@@ -320,12 +333,12 @@ test('cold restart reinstalls scoped pressure after complete teardown', async ()
   assert.equal(f.pruner.pruneSession, f.originalPrune)
 
   f.restart()
-  const after = f.agent('after-restart', 240000)
+  const after = f.agent('after-restart', NATIVE_POINT)
   await f.compaction.compactIfNeeded(after, 'pressure', new AbortController().signal)
   assert.notEqual(f.compaction.compactIfNeeded, f.originalCompact)
   assert.deepEqual(f.compaction.calls.map(({ id, threshold }) => ({ id, threshold })), [
-    { id: 'before-restart', threshold: 0.9 },
-    { id: 'after-restart', threshold: 0.9 },
+    { id: 'before-restart', threshold: SCOPED_RATIO },
+    { id: 'after-restart', threshold: SCOPED_RATIO },
   ])
   assert.equal(f.compaction.config, f.config)
   assert.equal(f.pruner.pruneSession, f.originalPrune)
@@ -335,7 +348,7 @@ test('cold restart reinstalls scoped pressure after complete teardown', async ()
 
 test('unload cancels admission, drains active scope, and restores host descriptors', async () => {
   const f = pressureFixture(), gate = deferred()
-  const active = f.agent('unload-active', 240000)
+  const active = f.agent('unload-active', NATIVE_POINT)
   active.work = () => gate.promise
   const running = f.compaction.compactIfNeeded(active, 'pressure', new AbortController().signal)
   await turn()
@@ -344,7 +357,7 @@ test('unload cancels admission, drains active scope, and restores host descripto
   await turn()
   assert.equal(disposed, false)
   await assert.rejects(
-    f.compaction.compactIfNeeded(f.agent('unload-late', 250000), 'pressure', new AbortController().signal),
+    f.compaction.compactIfNeeded(f.agent('unload-late', EMERGENCY_POINT), 'pressure', new AbortController().signal),
     /shutting down/u,
   )
   gate.resolve()

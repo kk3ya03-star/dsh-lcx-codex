@@ -1,4 +1,5 @@
 import type { ClientModuleLoaderTarget } from "@deepseek-ai/dsh-client-modules/client";
+import type { ConfigForm, ConfigFormSnapshot, ConfigForms } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type { LocaleRuntime } from "@deepseek-ai/dsh-client-locale/client";
 import type {
   ConversationLocation,
@@ -6,13 +7,13 @@ import type {
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { ChatConversationViewNode } from "@deepseek-ai/dsh-client-ui-chat/client";
 import {
-  extractSearchMedia,
+  extractDirectMediaLinks,
   mergeSearchMedia,
   structuredSearchMedia,
   type SearchMediaItem,
   type StructuredMediaTool,
 } from "./search-media.js";
-import { installInlineMedia, inlineMediaCss } from "./inline-media.js";
+import { installInlineMedia, inlineMediaCss, nativeMarkdownImageCss, type InlineMediaHost, type MediaLabels } from "./inline-media.js";
 import { installUsageSlots, searchUsageDefinition } from "./search-usage-ui.js";
 
 const SEARCH_MEDIA_KIND = "lcx-search-media";
@@ -40,18 +41,7 @@ type Field =
 
 type Values = Record<Field, boolean>;
 
-type ScopeSnapshot = {
-  status: string;
-  writable: boolean;
-  value?: Record<string, unknown>;
-};
-
-type SettingsScope = {
-  bind(options: { namespace: string }): SettingsScope;
-  subscribe(listener: () => void): () => void;
-  getSnapshot(): ScopeSnapshot;
-  mutate(ops: readonly { op: "set"; path: [Field]; value: boolean }[]): Promise<void>;
-};
+type ScopeSnapshot = ConfigFormSnapshot<Values>;
 
 type Store<T> = {
   getSnapshot(): T;
@@ -124,10 +114,10 @@ type UiConversation = {
 type PluginContext = {
   locale?: LocaleRuntime;
   slots?: Slots;
-  settingsScope?: SettingsScope;
+  configForms?: ConfigForms;
   uiConversation?: UiConversation;
   get(key: "slots"): Slots | undefined;
-  get(key: "settingsScope"): SettingsScope | undefined;
+  get(key: "configForms"): ConfigForms | undefined;
   get(key: "locale"): LocaleRuntime | undefined;
   get(key: "uiConversation"): UiConversation | undefined;
   effect(setup: () => () => void, name: string): void;
@@ -178,7 +168,7 @@ window.__ModuleLoader__.load({
     const DEFAULTS: Values = Object.fromEntries(
       FIELDS.map((field) => [field, false]),
     ) as Values;
-    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-search-usage{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}` + inlineMediaCss;
+    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-search-usage{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}` + inlineMediaCss + nativeMarkdownImageCss;
     function mountCss(): () => void {
       if (typeof document === "undefined") return () => {};
       if (document.querySelector('style[data-plugin-css="dsh-lcx-codex"]'))
@@ -208,15 +198,16 @@ window.__ModuleLoader__.load({
           "仅 capability probe 对当前 route/schema 验证通过后才真正注册。",
         mediaPreview: "搜索媒体预览",
         mediaPreviewHelp:
-          "在回答下显示可用的搜索图片或直链预览，点击放大或播放；不可预览时保留原始回答与网页链接。此设置只改变界面显示。",
-        mediaTitle: "媒体预览",
+          "在回答下方显示搜索返回的图片、回答里的图片直链，以及可直接播放的视频直链；点击放大或播放。回答正文里的 Markdown 图片由 DSH 原生渲染，普通网页链接保持为链接。此设置只改变界面显示。",
+        mediaTitle: "视频预览",
+        mediaImagePreview: "图片预览",
         mediaPlay: "播放视频",
         mediaEnlarge: "放大图片", mediaClose: "关闭预览",
-        mediaMore: "展开其余 {count} 项", mediaLess: "收起预览", mediaPrevious: "上一张", mediaNext: "下一张",
-        mediaResolve: "加载素材预览",
-        mediaLoading: "正在获取媒体…",
-        mediaUnavailable: "暂不能预览",
-        mediaAll:"全部",mediaImages:"图片",mediaVideos:"视频",mediaImage:"图片",mediaVideo:"视频",mediaFilter:"媒体类型",
+        mediaHeading: "搜索图片",
+        mediaPrevious: "上一组图片",
+        mediaNext: "下一组图片",
+        mediaFailed: "图片加载失败",
+        mediaVideoFailed: "视频无法播放",
         mediaOpen: "打开原始媒体",
         usageTurn: "本轮搜索用量",
         usageSession: "搜索用量",
@@ -248,15 +239,16 @@ window.__ModuleLoader__.load({
         alphaHelp: "Registered only after a matching capability probe.",
         mediaPreview: "Search media previews",
         mediaPreviewHelp:
-          "Preview available search images or direct media links below the answer. Unavailable media leaves the original answer and links intact. This setting changes presentation only.",
-        mediaTitle: "Media previews",
+          "Show images returned by search, direct image links in the answer and directly playable video links below the answer; click to enlarge or play. Markdown images in the answer are rendered natively by DSH, and ordinary page links stay links. This setting changes presentation only.",
+        mediaTitle: "Video preview",
+        mediaImagePreview: "Image preview",
         mediaPlay: "Play video",
         mediaEnlarge: "Enlarge image", mediaClose: "Close preview",
-        mediaMore: "Show {count} more", mediaLess: "Show fewer", mediaPrevious: "Previous image", mediaNext: "Next image",
-        mediaResolve: "Load media preview",
-        mediaLoading: "Resolving media…",
-        mediaUnavailable: "Preview unavailable",
-        mediaAll:"All",mediaImages:"Photos",mediaVideos:"Videos",mediaImage:"Photo",mediaVideo:"Video",mediaFilter:"Media type",
+        mediaHeading: "Search images",
+        mediaPrevious: "Previous images",
+        mediaNext: "Next images",
+        mediaFailed: "Image failed to load",
+        mediaVideoFailed: "Video cannot be played",
         mediaOpen: "Open original media",
         usageTurn: "Turn search usage",
         usageSession: "Search usage",
@@ -273,7 +265,7 @@ window.__ModuleLoader__.load({
       },
     };
     function valueFrom(snapshot: ScopeSnapshot): Values {
-      const value = snapshot.value ?? {};
+      const value: Partial<Record<Field, unknown>> = snapshot.value ?? {};
       return {
         ...DEFAULTS,
         ...(Object.fromEntries(
@@ -361,9 +353,12 @@ window.__ModuleLoader__.load({
           ...context.state,
           anchorSeq: match.event.seq,
           location: match.location,
-          items: context.state.structuredItems.length
-            ? context.state.structuredItems
-            : extractSearchMedia(text),
+          // Ownership (Issue #102): structured provider candidates + direct image/video file links
+          // from the answer text. Markdown images belong to DSH and are never duplicated.
+          items: mergeSearchMedia(
+            context.state.structuredItems,
+            extractDirectMediaLinks(text),
+          ),
           provider: source.provider,
           model: source.model,
           ready: true,
@@ -396,7 +391,7 @@ window.__ModuleLoader__.load({
     };
 
     class Controller {
-      scope: SettingsScope;
+      scope: ConfigForm<Values>;
       draft: Partial<Values> | null;
       dirty: boolean;
       saving: boolean;
@@ -405,7 +400,7 @@ window.__ModuleLoader__.load({
       stop: () => void;
       saveEpoch: number;
 
-      constructor(scope: SettingsScope) {
+      constructor(scope: ConfigForm<Values>) {
         this.scope = scope;
         this.draft = null;
         this.dirty = false;
@@ -670,6 +665,39 @@ window.__ModuleLoader__.load({
           : null,
       );
     }
+    /**
+     * DSH's own image lightbox is a public export of the platform-baseline module
+     * `@deepseek-ai/dsh-client-ui-primitives` (`ImageLightbox`, documented in its README).
+     * Mount it through the baseline `react-dom/client` in an LCX-owned container; no DSH
+     * internal state is touched. Any failure falls back to LCX's own theme-aware dialog.
+     */
+    const lightboxHost: InlineMediaHost = {
+      openImage({ src, alt, labels, onClose }) {
+        try {
+          const primitives = require("@deepseek-ai/dsh-client-ui-primitives") as {
+            ImageLightbox?: unknown;
+          };
+          const reactDom = require("react-dom/client") as {
+            createRoot?(container: Element): { render(node: unknown): void; unmount(): void };
+          };
+          if (typeof primitives?.ImageLightbox !== "function" || typeof reactDom?.createRoot !== "function") return null;
+          const container = document.createElement("div");
+          container.dataset.lcxMediaLightbox = "";
+          document.body.appendChild(container);
+          const root = reactDom.createRoot(container);
+          root.render(React.createElement(primitives.ImageLightbox, { src, alt, labels, onClose }));
+          let done = false;
+          return () => {
+            if (done) return;
+            done = true;
+            // Never unmount a root from inside its own event handler.
+            queueMicrotask(() => { root.unmount(); container.remove(); });
+          };
+        } catch {
+          return null;
+        }
+      },
+    };
     type MediaNodeProps = {
       node: ChatConversationViewNode & {
         readonly kind: typeof SEARCH_MEDIA_KIND;
@@ -685,7 +713,8 @@ window.__ModuleLoader__.load({
       const [marker,setMarker]=React.useState<HTMLElement|null>(null);
       React.useEffect(()=>{
         if (!marker) return;
-        return installInlineMedia(marker,node.data.items,{image:t('mediaEnlarge'),video:t('mediaPlay'),close:t('mediaClose'),source:t('mediaOpen'),more:t('mediaMore'),less:t('mediaLess'),previous:t('mediaPrevious'),next:t('mediaNext')});
+        const labels: MediaLabels = {image:t('mediaEnlarge'),video:t('mediaPlay'),close:t('mediaClose'),source:t('mediaOpen'),failed:t('mediaFailed'),videoFailed:t('mediaVideoFailed'),heading:t('mediaHeading'),previous:t('mediaPrevious'),next:t('mediaNext'),dialog:t('mediaTitle'),imageDialog:t('mediaImagePreview')};
+        return installInlineMedia(marker,node.data.items,labels,lightboxHost);
       },[marker,node.data.items,t]);
       return React.createElement('span',{ref:setMarker,'aria-hidden':true});
     }
@@ -694,10 +723,10 @@ window.__ModuleLoader__.load({
       return enabled?React.createElement(InlineMedia,{node:props.node,t:props.t}):null;
     }
 
-    const inject = ["slots", "locale", "settingsScope", "uiConversation"];
+    const inject = ["slots", "locale", "configForms", "uiConversation"];
     function apply(ctx: PluginContext): void {
       const slots = ctx.slots ?? ctx.get("slots"),
-        svc = ctx.settingsScope ?? ctx.get("settingsScope"),
+        svc = ctx.configForms ?? ctx.get("configForms"),
         locale = ctx.locale ?? ctx.get("locale"),
         uiConversation =
           ctx.uiConversation ?? ctx.get("uiConversation");
@@ -722,7 +751,7 @@ window.__ModuleLoader__.load({
             if (typeof cleanup === "function") cleanup();
           };
         }, label);
-      const controller = new Controller(svc.bind({ namespace: NAMESPACE }));
+      const controller = new Controller(svc.get<Values>(NAMESPACE));
       installSlot("plugins.bundle.config", "lcx-codex plugin configuration", () =>
         slots.register(
           {

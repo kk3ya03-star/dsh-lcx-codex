@@ -1,4 +1,4 @@
-import { Session, type SessionStore } from "@deepseek-ai/dsh-session";
+import { Session, type SessionStore, type SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
@@ -39,11 +39,14 @@ export interface ConfigPatchRecord {
 export declare function agentSessionId(agent: unknown): string;
 export declare function agentUsesSession(agent: unknown, session: Session): boolean;
 export declare function sessionFromAgent(agent: unknown): Session | undefined;
+export declare function recordAgentRouteEvent(session: Session, event: SessionEvent): void;
 export declare function readAgentRouteState(agent: unknown): {
     requestConfig: unknown;
     options: unknown;
     sessionId: string;
 };
+/** Selected next-request route, for tool advertisement before header persistence. */
+export declare function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof readAgentRouteState>;
 export declare function scopedToolRuntime(agent: unknown): (Pick<ToolRuntime, "register"> & Partial<Pick<ToolRuntime, "get">>) | undefined;
 export declare function tokenMeterTotal(value: unknown, session: Session): number | undefined;
 export declare function sessionsService(ctx: unknown): Pick<SessionStore, "get"> | undefined;

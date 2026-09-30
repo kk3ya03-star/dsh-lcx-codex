@@ -65,7 +65,8 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
       dictionaries.set(language, dict)
       return () => dictionaries.delete(language)
     } },
-    settingsScope: scope,
+    configForms: { get: ns => ns === 'lcx-codex' ? scope : undefined },
+    get(name) { return this[name] },
     uiConversation: { events: { register() { return () => {} } } },
     slots: {
       inject(_slot, callback) { callback() },

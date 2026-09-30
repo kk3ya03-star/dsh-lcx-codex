@@ -21,7 +21,7 @@ export type HostedMediaCandidate = {
   structured: true;
 }
 
-export const HOSTED_SEARCH_PARAMETERS = { type: "object", properties: { query: { type: "string", description: "Advanced Responses Hosted Web Search query. Use DSH web_search for ordinary searches." }, searchContextSize: { type: "string", enum: ["low", "medium", "high"] }, allowedDomains: { type: "array", items: { type: "string" } }, blockedDomains: { type: "array", items: { type: "string" } }, userLocation: { type: "object", properties: { country: { type: "string" }, city: { type: "string" }, region: { type: "string" }, timezone: { type: "string" } }, additionalProperties: false }, externalWebAccess: { type: "boolean" }, returnTokenBudget: { type: "string", enum: ["default", "unlimited"] }, searchContentTypes: { type: "array", items: { type: "string", enum: ["text", "image"] } }, imageSettings: { type: "object", properties: { maxResults: { type: "integer" }, caption: { type: "boolean" } }, additionalProperties: false } }, required: ["query"], additionalProperties: false } satisfies JsonSchemaNode;
+export const HOSTED_SEARCH_PARAMETERS = { type: "object", properties: { query: { type: "string", description: "Advanced Responses Hosted Web Search query. Use DSH web_search for ordinary searches." }, searchContextSize: { type: "string", enum: ["low", "medium", "high"] }, allowedDomains: { type: "array", items: { type: "string" }, description: "Optional allow filter. Omit or use [] for no filter; only nonempty lists are sent." }, blockedDomains: { type: "array", items: { type: "string" }, description: "Optional block filter. Omit or use [] for no filter; only nonempty lists are sent." }, userLocation: { type: "object", properties: { country: { type: "string" }, city: { type: "string" }, region: { type: "string" }, timezone: { type: "string" } }, additionalProperties: false }, externalWebAccess: { type: "boolean" }, returnTokenBudget: { type: "string", enum: ["default", "unlimited"] }, searchContentTypes: { type: "array", items: { type: "string", enum: ["text", "image"] }, description: "Optional content types. Omit unless image results are needed; [] means no explicit content-type override." }, imageSettings: { type: "object", description: "Optional image settings. Omit unless searchContentTypes includes image; ignored (after validation) without image search.", properties: { maxResults: { type: "integer" }, caption: { type: "boolean" } }, additionalProperties: false } }, required: ["query"], additionalProperties: false } satisfies JsonSchemaNode;
 export const HOSTED_SEARCH_OUTPUT = { type: "object", properties: { mode: { type: "string", enum: ["hosted"] }, action: { type: "string" }, emulation: { type: "string", enum: ["native"] }, content: { type: "string" }, sources: { type: "array", items: { type: "object" } }, citations: { type: "array", items: { type: "object" } }, images: { type: "array", items: { type: "object" } }, warnings: { type: "array", items: { type: "string" } }, outputBlocks: { type: "array", items: { type: "object" } }, domains: { type: "array", items: { type: "string" } }, lineRange: { type: "object" }, requestId: { type: "string" }, responseId: { type: "string" }, retrievedAt: { type: "string" }, truncated: { type: "boolean" }, usage: { type: "object", properties: { inputTokens: { type: "number" }, outputTokens: { type: "number" }, totalTokens: { type: "number" }, cachedInputTokens: { type: "number" }, actionCount: { type: "number" }, serverWebSearchCalls: { type: "number" } }, additionalProperties: false } }, required: ["mode", "action", "emulation", "content", "sources", "citations", "images", "warnings", "requestId", "retrievedAt", "truncated"], additionalProperties: false } satisfies JsonSchemaNode;
 
 function failure(message: string | undefined, code = "WEB_INVALID_REQUEST"): Error & { code: string } { return Object.assign(new Error(message), { code }); }
@@ -32,7 +32,8 @@ function httpUrl(value: unknown): URL | undefined { if (typeof value !== "string
 
 function normalizeDomains(value: unknown, field: string): string[] | undefined {
   if (value === undefined) return undefined;
-  if (!isStringArray(value) || value.length < 1 || value.length > 100) throw failure(`websearch_gpt_advanced.${field} must contain 1 to 100 domains`);
+  if (!isStringArray(value) || value.length > 100) throw failure(`websearch_gpt_advanced.${field} must contain 0 to 100 domains`);
+  if (value.length === 0) return undefined;
   const result = value.map((item) => {
     const domain = item.trim().toLowerCase();
     if (!domain || domain.length > 253 || domain.includes("/") || domain.includes(":") || domain.endsWith(".") || domain.split(".").length < 2) throw failure(`websearch_gpt_advanced.${field} contains an invalid domain`);
@@ -42,25 +43,25 @@ function normalizeDomains(value: unknown, field: string): string[] | undefined {
   return result;
 }
 
-function normalizeLocation(value: unknown): UserLocation {
+function normalizeLocation(value: unknown): UserLocation | undefined {
   if (!isRecord(value)) throw failure("websearch_gpt_advanced.userLocation must be an object");
   const result: UserLocation = {};
-  if (value.country !== undefined) {
+  if (value.country !== undefined && !(typeof value.country === "string" && !value.country.trim())) {
     if (typeof value.country !== "string" || !/^[a-z]{2}$/iu.test(value.country.trim())) throw failure("userLocation.country must be ISO alpha-2");
     result.country = value.country.trim().toUpperCase();
   }
   for (const field of ["city", "region"] as const) if (value[field] !== undefined) {
     const text = value[field];
-    if (typeof text !== "string" || !text.trim() || text.length > 200) throw failure(`userLocation.${field} is invalid`);
+    if (typeof text === "string" && !text.trim()) continue;
+    if (typeof text !== "string" || text.length > 200) throw failure(`userLocation.${field} is invalid`);
     result[field] = text.trim();
   }
-  if (value.timezone !== undefined) {
+  if (value.timezone !== undefined && !(typeof value.timezone === "string" && !value.timezone.trim())) {
     if (typeof value.timezone !== "string") throw failure("userLocation.timezone must be an IANA timezone");
     try { new Intl.DateTimeFormat("en-US", { timeZone: value.timezone }).format(); } catch { throw failure("userLocation.timezone must be an IANA timezone"); }
     result.timezone = value.timezone;
   }
-  if (!Object.keys(result).length) throw failure("userLocation is empty");
-  return result;
+  return Object.keys(result).length ? result : undefined;
 }
 
 export function normalizeHostedSearchArgs(args: unknown): HostedSearchArgs {
@@ -71,16 +72,23 @@ export function normalizeHostedSearchArgs(args: unknown): HostedSearchArgs {
   const allowedDomains = normalizeDomains(args.allowedDomains, "allowedDomains"); const blockedDomains = normalizeDomains(args.blockedDomains, "blockedDomains");
   if (allowedDomains) result.allowedDomains = allowedDomains; if (blockedDomains) result.blockedDomains = blockedDomains;
   if (allowedDomains && blockedDomains && allowedDomains.some((domain) => blockedDomains.includes(domain))) throw failure("domain filters conflict");
-  if (args.userLocation !== undefined) result.userLocation = normalizeLocation(args.userLocation);
+  if (args.userLocation !== undefined) {
+    const userLocation = normalizeLocation(args.userLocation);
+    if (userLocation) result.userLocation = userLocation;
+  }
   if (args.externalWebAccess !== undefined) { if (typeof args.externalWebAccess !== "boolean") throw failure("externalWebAccess must be boolean"); result.externalWebAccess = args.externalWebAccess; }
   if (args.returnTokenBudget !== undefined) { if (args.returnTokenBudget !== "default" && args.returnTokenBudget !== "unlimited") throw failure("returnTokenBudget is invalid"); result.returnTokenBudget = args.returnTokenBudget; }
-  if (args.searchContentTypes !== undefined) { if (!isStringArray(args.searchContentTypes) || !args.searchContentTypes.length || args.searchContentTypes.length > 2 || args.searchContentTypes.some((value) => value !== "text" && value !== "image")) throw failure("searchContentTypes is invalid"); result.searchContentTypes = [...new Set(args.searchContentTypes)] as SearchContentType[]; }
+  if (args.searchContentTypes !== undefined) { if (!isStringArray(args.searchContentTypes) || args.searchContentTypes.length > 2 || args.searchContentTypes.some((value) => value !== "text" && value !== "image")) throw failure("searchContentTypes is invalid"); if (args.searchContentTypes.length) result.searchContentTypes = [...new Set(args.searchContentTypes)] as SearchContentType[]; }
   if (args.imageSettings !== undefined) {
-    if (!result.searchContentTypes?.includes("image") || !isRecord(args.imageSettings)) throw failure("imageSettings requires image search");
+    // Always validated structurally. Without image search the object is inert model padding: it is
+    // dropped entirely, and maxResults 0 is tolerated only there. With image search, 1..100 is strict.
+    const imageSearch = result.searchContentTypes?.includes("image") === true;
+    if (!isRecord(args.imageSettings)) throw failure("imageSettings must be an object");
+    if (Object.keys(args.imageSettings).some((key) => key !== "maxResults" && key !== "caption")) throw failure("imageSettings has unsupported fields");
     const imageSettings: ImageSettings = {};
-    if (args.imageSettings.maxResults !== undefined) { const maxResults = args.imageSettings.maxResults; if (!isInteger(maxResults) || maxResults < 1 || maxResults > 100) throw failure("imageSettings.maxResults is invalid"); imageSettings.maxResults = maxResults; }
+    if (args.imageSettings.maxResults !== undefined) { const maxResults = args.imageSettings.maxResults; if (!isInteger(maxResults) || maxResults < (imageSearch ? 1 : 0) || maxResults > 100) throw failure("imageSettings.maxResults is invalid"); imageSettings.maxResults = maxResults; }
     if (args.imageSettings.caption !== undefined) { if (typeof args.imageSettings.caption !== "boolean") throw failure("imageSettings.caption must be boolean"); imageSettings.caption = args.imageSettings.caption; }
-    result.imageSettings = imageSettings;
+    if (imageSearch) result.imageSettings = imageSettings;
   }
   return result;
 }

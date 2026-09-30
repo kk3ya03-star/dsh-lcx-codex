@@ -1,6 +1,7 @@
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
+import type { Context } from "@deepseek-ai/cordis";
 import { Session, type SessionEvent } from "@deepseek-ai/dsh-session";
-import { requestImageHandleText, type Message, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
+import { requestImageHandleText, type Message, type RequestMessage, type StreamChunk, type TokenUsage } from "@deepseek-ai/dsh-llm";
 type CompactionItem = {
     type: "compaction";
     encrypted_content: string;
@@ -63,6 +64,7 @@ type CheckpointRouteRecord = {
     sourceSessionId: unknown;
 };
 type CreateCheckpointOptions = {
+    ctx: SessionQueryContext;
     session: Session;
     route: RouteIdentity;
     result: NativeCompactionResult;
@@ -71,6 +73,7 @@ type CreateCheckpointOptions = {
     imageMap?: ReadonlyMap<string, ImageAttachmentRef>;
     retentionOptions?: RetentionOptions;
 };
+type SessionQueryContext = Pick<Context, "get">;
 /**
  * @typedef {object} NativeCheckpointBase
  * @property {string} compactionId
@@ -131,16 +134,16 @@ export declare function retainedConversationPlan(input: readonly unknown[] | nul
 export declare function retainedConversationInput<T>(input: readonly T[] | null | undefined, options?: RetentionOptions): T[];
 /** @param {unknown[] | null | undefined} items */
 export declare function hasRetainedCompactionInput(items: readonly unknown[] | null | undefined): boolean;
-export declare function compactCheckpointId(message: Message | null | undefined): string | undefined;
+export declare function compactCheckpointId(message: RequestMessage | null | undefined): string | undefined;
 /** Reject reserved checkpoint markers without interpreting unsupported formats or opening sidecars. */
-export declare function assertSupportedCheckpointMessage(message: Message): void;
-/** @param {Session | null | undefined} session */
-export declare function activeCompactionId(session: Session | null | undefined): string | undefined;
+export declare function assertSupportedCheckpointMessage(message: RequestMessage): void;
+/** The active transaction is read from one immutable query observation. */
+export declare function activeCompactionId(ctx: SessionQueryContext, session: Session | null | undefined): Promise<string | undefined>;
 /**
  * @param {CreateCheckpointOptions} options
- * @returns {NativeCheckpointV5}
+ * @returns {Promise<NativeCheckpointV5>}
  */
-export declare function createNativeCheckpointBlock({ session, route, result, input, ephemeralPreludeItemCount, imageMap, retentionOptions, }: CreateCheckpointOptions): NativeCheckpointV5;
+export declare function createNativeCheckpointBlock({ ctx, session, route, result, input, ephemeralPreludeItemCount, imageMap, retentionOptions, }: CreateCheckpointOptions): Promise<NativeCheckpointV5>;
 /**
  * @param {NativeCheckpointBlock} block
  * @param {unknown} usage
@@ -150,9 +153,9 @@ export declare function nativeCheckpointChunks(block: NativeCheckpointBlock, usa
 /**
  * @param {Session | null | undefined} session
  * @param {string | null | undefined} compactionId
- * @returns {CompactionSummaryEvent | undefined}
+ * @returns {Promise<CompactionSummaryEvent | undefined>}
  */
-export declare function compactionSummaryEvent(session: Session | null | undefined, compactionId: string | null | undefined): CompactionSummaryEvent | undefined;
+export declare function compactionSummaryEvent(ctx: SessionQueryContext, session: Session | null | undefined, compactionId: string | null | undefined): Promise<CompactionSummaryEvent | undefined>;
 /**
  * @param {CompactionSummaryEvent | null | undefined} event
  * @returns {NativeCheckpointBlock | undefined}
@@ -175,7 +178,7 @@ export declare function stateFromSummaryEvent(event: CompactionSummaryEvent | nu
  * @param {Session} session
  * @param {Message} message
  */
-export declare function checkpointStateForMessage(session: Session, message: Message): {
+export declare function checkpointStateForMessage(ctx: SessionQueryContext, session: Session, message: Message): Promise<{
     compactionId: string;
     provider: string;
     model: string;
@@ -188,7 +191,7 @@ export declare function checkpointStateForMessage(session: Session, message: Mes
     retainedAssistantCount?: number | undefined;
     type: string;
     version: number;
-} | undefined;
+} | undefined> | undefined;
 /**
  * @param {NativeCheckpointBlock} state
  * @param {RouteIdentity} route
@@ -198,16 +201,16 @@ export declare function stateRouteCompatible(state: CheckpointRouteRecord | null
 /**
  * @param {Session} session
  * @param {string} compactionId
- * @returns {Message[]}
+ * @returns {Promise<Message[]>}
  */
-export declare function shadowedMessagesForCheckpoint(session: Session, compactionId: string): Message[];
+export declare function shadowedMessagesForCheckpoint(ctx: SessionQueryContext, session: Session, compactionId: string): Promise<Message[]>;
 /**
  * @param {Session} session
  * @param {string} compactionId
  * @param {{ maxChars?: number }} [options]
- * @returns {Message[]}
+ * @returns {Promise<Message[]>}
  */
-export declare function portableMessagesForCheckpoint(session: Session, compactionId: string, options?: {
+export declare function portableMessagesForCheckpoint(ctx: SessionQueryContext, session: Session, compactionId: string, options?: {
     maxChars?: number;
-}): Message[];
+}): Promise<Message[]>;
 export {};

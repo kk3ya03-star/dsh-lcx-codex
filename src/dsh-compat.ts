@@ -1,8 +1,10 @@
+import type {} from "@deepseek-ai/dsh-api-session-controller";
 import { symbols as cordisSymbols } from "@deepseek-ai/cordis";
 import {
   Session,
   SessionId,
   type SessionStore,
+  type SessionEvent,
 } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
@@ -99,6 +101,27 @@ export function sessionFromAgent(agent: unknown): Session | undefined {
   return session instanceof Session ? session : undefined;
 }
 
+// Event-driven next-route cache for live Agents; no Session log reads or polling.
+const agentRouteStates = new WeakMap<Session, {
+  config: unknown;
+  pending?: { provider: string; model: string };
+}>();
+export function recordAgentRouteEvent(session: Session, event: SessionEvent): void {
+  if (!(session instanceof Session)) return;
+  if (event.type !== "model/selection" && event.type !== "request/header") return;
+  const previous = agentRouteStates.get(session);
+  let config = previous?.config;
+  let pending = previous?.pending;
+  if (event.type === "model/selection") pending = event.data;
+  else {
+    config = event.data.header.config;
+    // An in-flight old-route request must not consume a newer selection.
+    if (pending?.provider === event.data.header.config.provider &&
+        pending.model === event.data.header.config.model) pending = undefined;
+  }
+  agentRouteStates.set(session, { config, pending });
+}
+
 export function readAgentRouteState(agent: unknown): {
   requestConfig: unknown;
   options: unknown;
@@ -110,6 +133,22 @@ export function readAgentRouteState(agent: unknown): {
     options: value?.options,
     sessionId: agentSessionId(value),
   };
+}
+
+/** Selected next-request route, for tool advertisement before header persistence. */
+export function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof readAgentRouteState> {
+  const route = readAgentRouteState(agent);
+  const session = sessionFromAgent(agent);
+  if (!session) return route;
+  // Cold/resumed Agents recover pending selection from DSH's public projection.
+  const projections = resolveScopedService(agent, "sessionProjections");
+  if (mutableService(projections) && typeof projections.stateOf === "function") {
+    const selection = Reflect.apply(projections.stateOf, projections, [session, "modelSelection"]);
+    if (mutableService(selection))
+      return { ...route, requestConfig: selection.pending ?? route.requestConfig };
+  }
+  const cached = agentRouteStates.get(session);
+  return cached ? { ...route, requestConfig: cached.pending ?? cached.config } : route;
 }
 
 export function scopedToolRuntime(

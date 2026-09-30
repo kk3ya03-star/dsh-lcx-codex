@@ -33,7 +33,7 @@ Alpha stores session/route-scoped reference provenance and rejects conflicting o
 
 ## Client lifecycle and current limits
 
-Search-media previews prefer structured metadata and conservatively handle direct media URLs. Owned observers, listeners, dialogs and players are disposed when the feature is disabled or the client fiber is actually disposed. Request-invariance tests cover the UI boundary. Changing host profile inventory does not recompose an already-open browser boot graph; reload remains required.
+Search-media previews follow a fixed ownership boundary: DSH 0.2 owns Markdown images and its image lightbox (LCX only adds one scoped CSS rule so a Markdown image starts its own line), while LCX renders structured provider image candidates and plain direct image links as one image rail under the owning response (opened through DSH's public `ImageLightbox`, LCX dialog fallback) and direct playable video URLs as cards that expand into an inline player; page links stay ordinary links. Owned observers, listeners, dialogs and players are disposed when the feature is disabled or the client fiber is actually disposed. Request-invariance tests cover the UI boundary. Changing host profile inventory does not recompose an already-open browser boot graph; reload remains required.
 
 The exact alpha.2 usage-slot adapter fails closed on absent, ambiguous or unsupported shapes and restores only the wrapper it owns. A public immutable slot-owner identity is still unavailable. Dynamic-tool cache deltas and Grok aggregate billing/context pressure also remain upstream compatibility limits.
 

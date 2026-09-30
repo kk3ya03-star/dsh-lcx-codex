@@ -7,6 +7,7 @@ export declare const ALPHA_SEARCH_PARAMETERS: {
         action: {
             type: "string";
             enum: string[];
+            description: string;
         };
         query: {
             type: "string";
@@ -22,9 +23,11 @@ export declare const ALPHA_SEARCH_PARAMETERS: {
         };
         refId: {
             type: "string";
+            description: string;
         };
         lineNumber: {
             type: "integer";
+            description: string;
         };
         linkId: {
             type: "integer";
@@ -180,7 +183,9 @@ export declare const ALPHA_SEARCH_OUTPUT: {
     additionalProperties: false;
 };
 export declare const ALPHA_SCHEMA_FINGERPRINT: string;
-export declare const ALPHA_PROBE_VERSION = 12;
+export declare const ALPHA_PROBE_VERSION = 15;
+export declare const ALPHA_PROBE_QUERY = "Python official documentation docs.python.org/3/";
+export declare const ALPHA_PROBE_MAX_OPEN_CANDIDATES = 3;
 type RecordValue = Record<string, unknown>;
 type AlphaAction = (typeof ALPHA_ACTIONS)[number];
 type NormalizedAlphaArgs = RecordValue & {
@@ -203,16 +208,10 @@ type AlphaProbeValue = RecordValue & {
 type AlphaInvoke = (args: RecordValue) => Promise<AlphaProbeValue>;
 export declare function normalizeAlphaSearchArgs(args: unknown): NormalizedAlphaArgs;
 export declare function alphaActionCommand(args: NormalizedAlphaArgs): Record<string, unknown>;
-export declare function buildAlphaSearchBody(args: NormalizedAlphaArgs, model: unknown, sessionId: string, externalWebAccess?: boolean, maxOutputTokens?: number): {
+export declare function buildAlphaSearchBody(args: NormalizedAlphaArgs, model: unknown, sessionId: string, externalWebAccess?: boolean, maxOutputTokens?: number, input?: Record<string, unknown>[]): {
     id: string;
     model: unknown;
-    input: {
-        role: string;
-        content: {
-            type: string;
-            text: string;
-        }[];
-    }[];
+    input?: Record<string, unknown>[] | undefined;
     commands: Record<string, unknown>;
     settings: {
         allowed_callers: string[];
@@ -275,6 +274,7 @@ export declare function parseAlphaSearchResponse(response: AlphaResponse, option
     refRecords: AlphaRefObservation[];
 };
 export declare function renderAlphaSearchResult(value: unknown): ContentBlock[];
+export declare function remapAlphaResultRefs<T>(value: T, handles: Record<string, string>): T;
 export declare const ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS = 1;
 export declare function alphaSearchRetryOptions(maxResponseBytes?: number): {
     maxAttempts: number;
@@ -290,8 +290,10 @@ export declare function fetchAlphaSearchJson(options: {
     maxResponseBytes?: number;
     sessionId: unknown;
 }): Promise<any>;
-export declare function probeAlphaCapabilities({ invoke, schemaFingerprint, trustedNativeProvenance, actionProbes, clickProbeRef, screenshotProbeRef, }: {
+export declare function probeAlphaCapabilities({ invoke, startChain, schemaFingerprint, trustedNativeProvenance, actionProbes, clickProbeRef, screenshotProbeRef, }: {
     invoke: AlphaInvoke;
+    /** Begin a fresh body/session id and clear probe history before each independent chain. */
+    startChain: (index: number) => string | Promise<string>;
     schemaFingerprint: unknown;
     trustedNativeProvenance?: boolean;
     actionProbes?: Record<string, RecordValue>;

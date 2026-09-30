@@ -1,4 +1,4 @@
-import { requestImageHandleText, type Message } from "@deepseek-ai/dsh-llm";
+import { requestImageHandleText, type RequestMessage } from "@deepseek-ai/dsh-llm";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
 type ImageAttachmentRef = Parameters<typeof requestImageHandleText>[0];
@@ -67,7 +67,7 @@ export declare function resolvePiResponsesModel(options: {
         [x: string]: unknown;
     } | undefined;
 };
-export declare function serializeDshMessages(messages: readonly Message[], ctx: DshContext | undefined, options?: SerializeOptions): Promise<{
+export declare function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options?: SerializeOptions): Promise<{
     input: unknown[];
     imageMap: Map<string, import("@deepseek-ai/dsh-attachment").ImageAttachmentRef>;
     tools: import("openai/resources/responses/responses.js").Tool[] | undefined;

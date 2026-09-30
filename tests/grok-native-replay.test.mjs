@@ -60,6 +60,7 @@ function assistantFrom(chunks) {
   const finish = chunks.find(chunk => chunk.type === 'finish')
   assert.equal(finish.reason.kind, 'tool-calls')
   return {
+    id: 'assistant-native-replay',
     role: 'assistant',
     source: { kind: 'model', provider, model, replayState: finish.replayState },
     content: chunks
@@ -70,11 +71,9 @@ function assistantFrom(chunks) {
 
 function toolResult() {
   return {
-    role: 'user', source: { kind: 'tool', callId: `${clientCall.call_id}|${clientCall.id}` },
-    content: [{
-      type: 'tool-result', toolCallId: `${clientCall.call_id}|${clientCall.id}`,
-      toolName: clientCall.name, content: [{ type: 'text', text: 'synthetic local result' }],
-    }],
+    role: 'tool', source: { kind: 'tool', callId: `${clientCall.call_id}|${clientCall.id}` },
+    toolCallId: `${clientCall.call_id}|${clientCall.id}`,
+    content: [{ type: 'text', text: 'synthetic local result' }],
   }
 }
 
@@ -267,6 +266,7 @@ test(`opaque X without client call preserves every original item after cold reop
   assert.equal(finish.replayState.grokNative.version, 3)
   assert.deepEqual(finish.replayState.grokNative.output, originalOutput)
   const assistant = {
+    id: 'assistant-native-no-client',
     role: 'assistant', source: { kind: 'model', provider, model, replayState: finish.replayState },
     content: chunks.filter(chunk => chunk.type === 'block-end').map(chunk => chunk.block),
   }

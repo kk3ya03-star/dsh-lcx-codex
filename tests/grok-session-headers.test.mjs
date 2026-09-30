@@ -68,8 +68,8 @@ test(`Grok child replay ignores attribution overrides but retains child/ordinary
     provider: 'xai', model: 'grok-4.6', sessionId: 'child-a-59',
     baseURL: xaiProfile.baseURL, apiKeyEnv: xaiProfile.apiKeyEnv, headers: { 'x-custom': 'route-a' },
   }), 'same selected headers keep the previous v2 fingerprint; generated attribution is not selected authority')
-  const assistant = { role: 'assistant', source: { kind: 'model', provider: 'xai', model: 'grok-4.6', replayState: finish.replayState }, content: chunks.filter(chunk => chunk.type === 'block-end').map(chunk => chunk.block) }
-  const result = { role: 'user', source: { kind: 'tool', callId: 'call_59|fc_59' }, content: [{ type: 'tool-result', toolCallId: 'call_59|fc_59', toolName: 'read', content: [{ type: 'text', text: 'fixture' }] }] }
+  const assistant = { id: 'assistant-child-replay', role: 'assistant', source: { kind: 'model', provider: 'xai', model: 'grok-4.6', replayState: finish.replayState }, content: chunks.filter(chunk => chunk.type === 'block-end').map(chunk => chunk.block) }
+  const result = { role: 'tool', source: { kind: 'tool', callId: 'call_59|fc_59' }, toolCallId: 'call_59|fc_59', content: [{ type: 'text', text: 'fixture' }] }
   const history = JSON.parse(JSON.stringify([user('fixture'), assistant, result]))
   globalThis.fetch.mock.mockImplementation(async (_url, init) => { request = JSON.parse(String(init.body)); return response() })
   profiles.xai.headers = { 'user-agent': 'ignored-b', 'x-custom': 'route-a' }

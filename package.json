@@ -1,6 +1,6 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.4.4-pre.1",
+  "version": "0.5.0-pre.1",
   "description": "Model-scoped DSH plugin: GPT Responses lifecycle, Native V2 compaction and Hosted/Alpha Search; Grok native Web/X Search",
   "keywords": [
     "deepseek-harness",
@@ -56,13 +56,14 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-chat",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-plugin-manager"
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
   "devDependencies": {
-    "@deepseek-ai/dsh": "0.1.6-alpha.2",
-    "@earendil-works/pi-ai": "0.86.0",
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@earendil-works/pi-ai": "0.87.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
@@ -72,30 +73,36 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-agent": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-attachment": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-modules": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-store": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-ui-chat": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-client-ui-plugin-manager": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-compaction": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-credentials": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-fs": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-llm": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-session": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-settings": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-tool-web": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-tools": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-web": ">=0.1.6-alpha.2 <0.1.7",
+    "@deepseek-ai/cordis-plugin-loader": "~1.0.5",
+    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-attachment": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-modules": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-store": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-ui-chat": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-compaction": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-credentials": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-fs": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-session-query": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-tool-web": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-web": ">=0.2.0-rc.2 <0.2.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "react": "^18.2.0",
-    "@deepseek-ai/dsh-token-meter": ">=0.1.6-alpha.2 <0.1.7",
-    "@deepseek-ai/dsh-session-projection": ">=0.1.6-alpha.2 <0.1.7",
+    "@deepseek-ai/dsh-token-meter": ">=0.2.0-rc.2 <0.2.1",
+    "@deepseek-ai/dsh-session-projection": ">=0.2.0-rc.2 <0.2.1",
     "zod": "^4.5.4"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/cordis-plugin-loader": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-client-locale": {
       "optional": true
     },
@@ -120,6 +127,9 @@
     "@deepseek-ai/dsh-client-ui-plugin-manager": {
       "optional": true
     },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-compaction": {
       "optional": true
     },
@@ -133,6 +143,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-query": {
       "optional": true
     },
     "@deepseek-ai/dsh-settings": {
@@ -166,9 +179,9 @@
   },
   "license": "MIT",
   "lcxCompatibility": {
-    "dshInstallRange": ">=0.1.6-alpha.2 <0.1.7",
-    "verifiedDsh": "0.1.6-alpha.2",
-    "verifiedHostPi": "0.85.1",
-    "verifiedPluginPi": "0.86.0"
+    "dshInstallRange": ">=0.2.0-rc.2 <0.2.1",
+    "verifiedDsh": "0.2.0-rc.2",
+    "verifiedHostPi": "0.87.1",
+    "verifiedPluginPi": "0.87.1"
   }
 }

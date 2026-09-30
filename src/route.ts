@@ -9,6 +9,7 @@ import {
   getBuiltinModels,
   getBuiltinProviders,
 } from "./pi-responses-runtime.js";
+import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
 
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
@@ -22,7 +23,6 @@ type ProviderModelProfile = {
   reasoningEfforts?: unknown;
 };
 type ProviderProfile = { api?: string; baseURL?: string; apiKeyEnv?: string; headers?: HeaderMap; reasoning?: unknown; cacheRetention?: unknown; timeoutMs?: unknown; streamIdleTimeoutMs?: unknown; maxRequestImageBytes?: unknown; requestImagePixelBudget?: unknown; requestImageMaxBytes?: unknown; retryPolicy?: RetryPolicyConfig; compat?: unknown; models?: ProviderModelProfile[]; modelOverrides?: Record<string, ProviderModelProfile> };
-type LlmSettingsSection = { providers?: Record<string, ProviderProfile> };
 type RequestHeaderConfig = {
   provider?: unknown;
   model?: unknown;
@@ -62,13 +62,6 @@ function isPositiveInteger(value: unknown): value is number {
 }
 function isPositiveFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-function asLlmSettingsSection(value: unknown): LlmSettingsSection | undefined {
-  if (!isRecord(value)) return undefined;
-  const providers = value.providers;
-  if (providers === undefined) return {};
-  if (!isRecord(providers)) return undefined;
-  return { providers: providers as Record<string, ProviderProfile> };
 }
 
 /** @param {unknown} value */
@@ -141,30 +134,26 @@ function retryAttempts(policy: RetryPolicyConfig | null | undefined, fallback = 
   return fallback;
 }
 
-/** @param {RouteContext | null | undefined} ctx @param {string} namespace */
-export function settingsValue(
-  ctx: RouteContext | null | undefined,
-  namespace: string,
-): LlmSettingsSection | undefined {
-  return asLlmSettingsSection(ctx?.settings?.get(namespace));
-}
-
-/** The DSH 0.1.5 contract exposes deferred provider diagnostics separately from saved settings. */
-function providerDirectoryUsable(
+/** Follow the live directory entry to its SettingsForms profile. */
+function configuredProviderProfile(
   ctx: RouteContext | null | undefined,
   provider: string,
-): boolean {
-  const llm = ctx?.llm;
-  const list = llm?.listConfigurableProviders;
-  if (typeof list !== "function") return true;
+): ProviderProfile | undefined {
+  // Only llm-pi-ai profiles: other provider plugins' profiles are not LCX routes (Decision 8).
   try {
-    const entry = list.call(llm).find(
-      (candidate) =>
-        candidate.provider === provider && candidate.settingsNs === "llm-pi-ai",
+    const entry = ctx?.llm.listConfigurableProviders().find(
+      (candidate) => candidate.provider === provider && candidate.settingsNs === "llm-pi-ai",
     );
-    return typeof entry?.error !== "string" || entry.error.trim() === "";
+    if (!entry || (typeof entry.error === "string" && entry.error.trim())) return undefined;
+    const descriptor = ctx?.settings.describe().find((candidate) => candidate.ns === entry.settingsNs);
+    let value: unknown = descriptor?.value;
+    for (const segment of entry.settingsPath) {
+      if (!isRecord(value)) return undefined;
+      value = value[segment];
+    }
+    return isRecord(value) ? value as ProviderProfile : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -187,6 +176,8 @@ function builtinResponsesModel(
   modelId: unknown,
 ): PiResponsesModel | undefined {
   const providerName = String(provider ?? "");
+  // A newer plugin-Pi catalog must not grant LCX a route that Pi 0.86 lacked.
+  if (!wasPi086ResponsesModel(providerName, String(modelId ?? ""))) return undefined;
   const builtinProvider = getBuiltinProviders().find(
     (candidate) => candidate === providerName,
   );
@@ -279,8 +270,8 @@ function isLcxCapabilityRoute(
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
-  if (!provider.trim() || !/^gpt-/iu.test(model) || !providerDirectoryUsable(ctx, provider)) return undefined;
-  const section = settingsValue(ctx, "llm-pi-ai"); const profile = section?.providers?.[provider];
+  if (!provider.trim() || !/^gpt-/iu.test(model)) return undefined;
+  const profile = configuredProviderProfile(ctx, provider);
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
   const configured = profile;
@@ -337,9 +328,8 @@ export function resolveGrokResponsesRouteConfig(
 ): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? "");
   const model = String(options?.model ?? "");
-  if (!provider.trim() || !/^grok/iu.test(model) || !providerDirectoryUsable(ctx, provider)) return undefined;
-  const section = settingsValue(ctx, "llm-pi-ai");
-  const configured = section?.providers?.[provider];
+  if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
+  const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
   const selectedBuiltin = builtinResponsesModel(provider, model);
   const api = configured.api ?? selectedBuiltin?.api;
@@ -407,7 +397,6 @@ export function resolveGrokResponsesRouteConfig(
 export async function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string> {
   const resolved = await ctx?.credentials.resolve(credentialRef(config.apiKeyEnv));
   if (resolved?.value.trim()) return resolved.value.trim();
-  const ambient = String(process.env[config.apiKeyEnv] ?? "").trim(); if (ambient) return ambient;
   const error: LcxError = new Error(
     `DSH provider credential is unavailable: ${config.apiKeyEnv}`,
   );

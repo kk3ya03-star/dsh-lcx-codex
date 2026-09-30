@@ -7,13 +7,15 @@ import apply, { Config } from '../lib/index.js'
 import { assertSupportedCheckpointMessage, checkpointStateForMessage, stateFromSummaryEvent } from '../lib/native-checkpoint.js'
 import { baseURLFingerprint, resolveResponsesRouteConfig, routeCompatible } from '../lib/route.js'
 import { buildResponsesBody } from '../lib/responses-request.js'
+import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { queryContext } from './session-query-fixture.mjs'
 
 const selected = { provider: 'fixture', model: 'gpt-fixture', sessionId: 'session-cleanup' }
 const profile = { api: 'openai-responses', baseURL: 'https://example.invalid/v1', apiKeyEnv: 'FIXTURE_KEY' }
-const user = text => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+const user = text => ({ id: `user-${text}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
 const collect = async stream => { const result = []; for await (const item of stream) result.push(item); return result }
 
-test('remote compaction trusts DSH directive provenance, never matching user prompt text', async (t) => {
+test('remote compaction strips only the DSH 0.2 request-only directive, never durable user text (F4)', async (t) => {
   const session = Session.create(SessionId(selected.sessionId))
   const h = harness({ session, config: { maxAttempts: 1 } })
   let body
@@ -21,13 +23,13 @@ test('remote compaction trusts DSH directive provenance, never matching user pro
     body = JSON.parse(init.body)
     return new Response('synthetic unauthorized', { status: 401 })
   })
-  for (const [source, text, retained] of [
-    [{ kind: 'plugin', plugin: 'dsh-compaction-basic' }, 'Future DSH summary instruction', false],
-    [{ kind: 'user' }, 'You are now acting as a compaction engine: please review this prompt', true],
-    [{ kind: 'plugin', plugin: 'another-plugin' }, 'You are now acting as a compaction engine: quoted content', true],
+  for (const [message, text, retained] of [
+    [{ role: 'user', content: [{ type: 'text', text: 'Future DSH summary instruction' }] }, 'Future DSH summary instruction', false],
+    [user('You are now acting as a compaction engine: please review this prompt'), 'You are now acting as a compaction engine: please review this prompt', true],
+    [{ ...user('You are now acting as a compaction engine: quoted content'), source: { kind: 'plugin', plugin: 'another-plugin' } }, 'You are now acting as a compaction engine: quoted content', true],
   ]) {
     await assert.rejects(collect(h.handlers.get('llm/stream')({
-      ...selected, purpose: 'compaction', messages: [user('history survives'), { ...user(text), source }],
+      ...selected, purpose: 'compaction', messages: [user('history survives'), message],
     }, () => { throw new Error('Basic must not run') })), { code: 'LCX_HTTP_ERROR' })
     assert.equal(JSON.stringify(body.input).includes(text), retained)
     assert.equal(JSON.stringify(body.input).includes('history survives'), true)
@@ -37,13 +39,14 @@ test('remote compaction trusts DSH directive provenance, never matching user pro
 
 function harness({ profiles = { fixture: profile }, enabled = true, session, config = {}, settings = {} } = {}) {
   const handlers = new Map()
-  let schema, entry, onChange
+  const provider = providerContext(profiles)
   const imageOptions = []
   const ctx = {
     logger: { info() {}, warn() {} },
     sessions: { get: () => session },
     credentials: { resolve: async () => ({ value: 'synthetic-test-key' }) },
     llm: {
+      ...provider.llm,
       resolveModelInfo: async () => ({ input: ['text', 'image'], context: { contextWindow: 262144 } }),
       fileRequestText: () => 'file fixture',
     },
@@ -56,23 +59,14 @@ function harness({ profiles = { fixture: profile }, enabled = true, session, con
     },
     web: { searchProviderId: 'native', registerSearchProvider() { throw new Error('global provider registration is forbidden') } },
     tools: { register: () => () => {} },
-    settings: {
-      get: () => ({ providers: profiles }),
-      installSection(_owner, _namespace, valueSchema, value, hooks) {
-        schema = valueSchema
-        entry = { ...value, ...settings, enabled, webSearch: true }
-        hooks.setSource(() => entry)
-        onChange = hooks.onChange
-        onChange()
-      },
-    },
+    settings: { ...provider.settings, configure: () => () => {} },
     on(event, handler) { handlers.set(event, handler) },
     inject(names, callback) { if (names.every(name => ctx[name])) callback(ctx) },
     get(name) { return ctx[name] },
     effect() {},
   }
-  apply(ctx, config)
-  return { ctx, handlers, schema, entry, imageOptions, change() { onChange() } }
+  apply(ctx, pluginConfig({ ...settings, enabled, webSearch: true, ...config }))
+  return { ctx, handlers, imageOptions }
 }
 
 test('removed config and stored settings fields are absent, not migration aliases', () => {
@@ -80,8 +74,10 @@ test('removed config and stored settings fields are absent, not migration aliase
   for (const field of ['provider', 'model', 'baseURL', 'apiKeyEnv', 'headers', 'legacyCheckpointPath', 'checkpointPath', 'webSearchTimeoutMs', 'autoCompactionThresholdPercent', 'emergencyPruneThresholdPercent']) {
     assert.equal(Object.hasOwn(fields, field), false, field)
   }
-  const h = harness()
-  assert.deepEqual(Object.keys(h.schema.dict).sort(), ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'searchMediaPreview', 'webSearch'])
+  assert.deepEqual(Object.entries(Config.dict)
+    .filter(([, schema]) => schema.meta?.volatile === true)
+    .map(([field]) => field).sort(),
+    ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'searchMediaPreview', 'webSearch'])
   for (const path of ['src/legacy-v3.ts', 'lib/legacy-v3.js', 'lib/types/legacy-v3.d.ts']) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, path)
   }
@@ -143,7 +139,7 @@ test('old marker-only checkpoints are rejected before network access', async () 
   } finally { globalThis.fetch = oldFetch }
 })
 
-test('unsupported checkpoint versions cannot fall through to portable or Basic summaries', () => {
+test('unsupported checkpoint versions cannot fall through to portable or Basic summaries', async () => {
   const message = { role: 'user', source: compactCheckpointSource('checkpoint'), content: [{ type: 'text', text: 'checkpoint' }] }
   const route = { ...selected, baseURL: profile.baseURL }
   for (const version of [3, 4, 6]) {
@@ -151,17 +147,20 @@ test('unsupported checkpoint versions cannot fall through to portable or Basic s
     const event = { type: 'compaction/summary', data: { compactionId: 'checkpoint', rawOutput: [block] } }
     assert.equal(stateFromSummaryEvent(event), undefined)
     assert.equal(routeCompatible(block, route), false)
-    assert.throws(() => checkpointStateForMessage({ snapshotEvents: () => [event] }, message), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
+    const session = { snapshotEvents: () => [event] }
+    await assert.rejects(checkpointStateForMessage(queryContext(session), session, message), { code: 'LCX_CHECKPOINT_UNSUPPORTED' })
   }
 })
 
-test('current v5 checkpoint survives reconstruction and Basic summaries remain valid', () => {
+test('current v5 checkpoint survives reconstruction and Basic summaries remain valid', async () => {
   const block = { type: 'lcx-native-compaction-v5', version: 5, compactionId: 'checkpoint', provider: selected.provider, model: selected.model, baseURLFingerprint: baseURLFingerprint(profile.baseURL), sourceSessionId: selected.sessionId, nativeOutput: [{ type: 'compaction', encrypted_content: 'synthetic' }], retainedInputCount: 0 }
   const event = { type: 'compaction/summary', data: { compactionId: 'checkpoint', rawOutput: [block] } }
   const message = { ...user('checkpoint'), source: compactCheckpointSource('checkpoint') }
   const restored = JSON.parse(JSON.stringify(event))
-  assert.equal(checkpointStateForMessage({ snapshotEvents: () => [restored] }, message).version, 5)
-  assert.equal(checkpointStateForMessage({ snapshotEvents: () => [{ ...event, data: { ...event.data, rawOutput: [{ type: 'text', text: 'Basic summary' }] } }] }, message), undefined)
+  const restoredSession = { snapshotEvents: () => [restored] }
+  const basicSession = { snapshotEvents: () => [{ ...event, data: { ...event.data, rawOutput: [{ type: 'text', text: 'Basic summary' }] } }] }
+  assert.equal((await checkpointStateForMessage(queryContext(restoredSession), restoredSession, message)).version, 5)
+  assert.equal(await checkpointStateForMessage(queryContext(basicSession), basicSession, message), undefined)
 })
 
 test('current first-checkpoint retryable failure still invokes Basic fallback even with obsolete false setting', async () => {
@@ -179,7 +178,7 @@ test('current first-checkpoint retryable failure still invokes Basic fallback ev
 
 test('DSH explicit cache opt-out overrides plugin capability and image policy resolves from DSH', () => {
   const configured = { ...profile, maxRequestImageBytes: 7, requestImagePixelBudget: 8, requestImageMaxBytes: 9, compat: { supportsExplicitPromptCacheMode: false } }
-  const ctx = { settings: { get: () => ({ providers: { lcx: configured } }) } }
+  const ctx = providerContext({ lcx: configured })
   const route = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, { supportsExplicitPromptCacheMode: true, maxRequestImageBytes: 100 })
   assert.equal(route.responsesCompat.supportsExplicitPromptCacheMode, false)
   assert.equal(route.maxRequestImageBytes, 7)

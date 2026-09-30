@@ -119,8 +119,8 @@ test('historical tool call restores grammar tool name for custom output pairing 
         },
       },
     },
-    { role: 'user', source: { kind: 'tool', callId: 'call_custom|ctc_custom' }, content: [{ type: 'tool-result', toolCallId: 'call_custom|ctc_custom', content: [{ type: 'text', text: 'custom ok' }] }] },
-    { role: 'user', source: { kind: 'tool', callId: 'call_json|fc_json' }, content: [{ type: 'tool-result', toolCallId: 'call_json|fc_json', content: [{ type: 'text', text: 'json ok' }] }] },
+    { role: 'tool', toolCallId: 'call_custom|ctc_custom', source: { kind: 'tool', callId: 'call_custom|ctc_custom' }, content: [{ type: 'text', text: 'custom ok' }] },
+    { role: 'tool', toolCallId: 'call_json|fc_json', source: { kind: 'tool', callId: 'call_json|fc_json' }, content: [{ type: 'text', text: 'json ok' }] },
   ]
   const serialized = await serializeDshMessages(history, undefined, {
     model: model('lcx', 'gpt-5.6-sol', { compat: { supportsOpenAIGrammarTools: true, supportsStrictMode: true } }),
@@ -286,12 +286,13 @@ test('sanitized Grok visible history restores exact raw native sequence, but edi
   const prompt = user('search and read')
   const first = await collect(harness.stream(grokOptions([prompt]), () => { throw new Error('Unexpected fallback') }))
   const assistant = {
+    id: 'assistant-pre12-native-replay',
     role: 'assistant',
     source: { kind: 'model', provider: 'xai', model: 'grok-4.6', replayState: first.find(chunk => chunk.type === 'finish').replayState },
     content: first.filter(chunk => chunk.type === 'block-end').map(chunk => structuredClone(chunk.block)),
   }
   assert.equal(assistant.content.find(block => block.type === 'text').text, 'Answer [[1]](https://example.com/cited).')
-  const result = { role: 'user', source: { kind: 'tool', callId: 'call_replay|fc_replay' }, content: [{ type: 'tool-result', toolCallId: 'call_replay|fc_replay', content: [{ type: 'text', text: 'ok' }] }] }
+  const result = { role: 'tool', toolCallId: 'call_replay|fc_replay', source: { kind: 'tool', callId: 'call_replay|fc_replay' }, content: [{ type: 'text', text: 'ok' }] }
   await collect(harness.stream(grokOptions(JSON.parse(JSON.stringify([prompt, assistant, result]))), () => { throw new Error('Unexpected fallback') }))
   const start = requests[1].input.findIndex(item => item.id === reasoning.id)
   assert.deepEqual(requests[1].input.slice(start, start + original.length), original)

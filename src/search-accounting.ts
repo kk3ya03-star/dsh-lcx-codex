@@ -5,6 +5,12 @@ export type SearchUsage = { requestId: string; provider: string; model: string; 
 } };
 export const object = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+export type ProviderContextDetails = { input_tokens: number; output_tokens: number };
+/** Copy only complete, safe counters; provider extensions never enter durable metadata. */
+export function sanitizeContextDetails(value: unknown): ProviderContextDetails | undefined {
+  if (!object(value) || !count(value.input_tokens) || !count(value.output_tokens)) return;
+  return {input_tokens:value.input_tokens,output_tokens:value.output_tokens};
+}
 export const zeroBuckets = (): Buckets => ({uncachedInputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});
 export const isSearchTool = (name: unknown): name is string => name === 'web_search' || name === 'websearch_gpt_advanced';
 export function auxiliaryUsageOf(event: unknown, toolName?: string): SearchUsage[] {
@@ -60,14 +66,23 @@ export function addTurnUsage(base: unknown, records: readonly SearchUsage[]): un
 }
 /** The metadata is presentation/accounting state; it never changes request messages. */
 export function aggregateContextOf(event: unknown): boolean | undefined {
+  const mark = contextMarkerOf(event);
+  if (mark === undefined) return;
+  return mark?.version===1 && mark.inputTokenScope==='aggregate';
+}
+function contextMarkerOf(event: unknown): Record<string, any> | null | undefined {
   if (!object(event) || !['assistant/message','assistant/attempt'].includes(event.type) || !object(event.data)) return;
   const chunks = Array.isArray(event.data.stream) ? event.data.stream.filter((e:any)=>e.type==='chunk').map((e:any)=>e.chunk) : [];
   const sample = event.data.usage ?? chunks.findLast((c:any)=>c?.type==='usage')?.usage;
   if (!object(sample)) return;
   const replay = chunks.findLast((c:any)=>c?.type==='finish')?.replayState;
   const mark = replay?.response?.lcxUsage;
-  if (mark?.version===1 && ['request','aggregate'].includes(mark.inputTokenScope)) return mark.inputTokenScope==='aggregate';
-  // Read the already-installed local candidate without rewriting its logs.
-  if (sample.inputTokenScope==='aggregate' || sample.inputTokenScope==='request') return sample.inputTokenScope==='aggregate';
-  return replay?.grokNative?.kind==='xai-responses-native-search' && replay.grokNative.version===3;
+  if (object(mark) && mark.version===1 && ['request','aggregate'].includes(mark.inputTokenScope)) return mark;
+  // Without a valid durable scope marker, preserve DSH's ordinary usage baseline.
+  return null;
+}
+export function providerContextOf(event: unknown): ProviderContextDetails | undefined {
+  const mark = contextMarkerOf(event);
+  if (mark?.inputTokenScope !== 'aggregate' || mark.contextProvenance !== 'provider-context-details') return;
+  return sanitizeContextDetails(mark.contextDetails);
 }

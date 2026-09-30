@@ -8,6 +8,7 @@ export interface AlphaRefProvenance {
 }
 export interface AlphaRefRecord {
     refId: string;
+    rawRefId?: string;
     url?: string;
     provenance: AlphaRefProvenance;
 }
@@ -23,7 +24,7 @@ interface RefStoreData {
 export declare class AlphaRefStore {
     readonly store: JsonStore<RefStoreData>;
     constructor(file: string);
-    record(sessionId: unknown, routeFingerprint: unknown, refs: unknown): void;
+    record(sessionId: unknown, routeFingerprint: unknown, refs: unknown, allowAliases?: boolean): Record<string, string>;
     assertUsable(sessionId: unknown, routeFingerprint: unknown, refId: unknown): AlphaRefRecord;
 }
 export {};
