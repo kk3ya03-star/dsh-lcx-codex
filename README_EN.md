@@ -125,6 +125,10 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 **Conversation works but search or compaction fails?** Check that the selected GPT / Grok Responses route actually provides the required server-side capability. A gateway product name alone does not guarantee every feature.
 
+**Plugin "failed to import" after upgrading to DSH 0.2?** A profile upgraded from much older versions may still contain stale packages. Stop `dsh web`, move away or delete `node_modules` and `pnpm-lock.yaml` in `profiles/web/` under your DSH home (default `~/.dsh`, or `DSH_HOME`), run `dsh plugin --profile web add dsh-lcx-codex@prelatest` again, then start `dsh web`.
+
+**`@prelatest` installed the previous version right after a release?** The package manager's metadata cache may not have refreshed yet, and DSH rejects the incompatible version. Retry after a few minutes, or pin the exact version, for example `dsh-lcx-codex@0.5.0-pre.1`.
+
 When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), include plugin, DSH, and Node.js versions plus reproduction steps. Do not post API keys, full requests, or unredacted session logs.
 
 ## More information

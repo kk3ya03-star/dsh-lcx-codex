@@ -146,6 +146,12 @@ dsh web
 **安装时出现依赖版本警告，或插件加载失败？**
 通常是 DSH 版本和插件版本不匹配，按[上面的表格](#1-按-dsh-版本选择插件版本)重新选择。
 
+**升级到 DSH 0.2 后插件“导入失败”（failed to import）？**
+从较早版本一路升级上来的配置目录里可能残留旧的依赖包。先停止 `dsh web`，把 DSH 主目录（默认 `~/.dsh`，或 `DSH_HOME` 指定的目录）下 `profiles/web/` 里的 `node_modules` 和 `pnpm-lock.yaml` 移走或删除，再重新运行 `dsh plugin --profile web add dsh-lcx-codex@prelatest`，然后启动 `dsh web`。
+
+**刚发布新版时 `@prelatest` 装到了旧版本？**
+包管理器的缓存可能还没刷新，DSH 会因版本不兼容拒绝安装。稍等几分钟重试，或直接指定版本号，例如 `dsh-lcx-codex@0.5.0-pre.1`。
+
 ## 反馈问题
 
 请在 [Issues](https://github.com/kk3ya03-star/dsh-lcx-codex/issues) 中附上：插件版本、DSH 版本、Node.js 版本、使用的模型/网关类型和复现步骤。
