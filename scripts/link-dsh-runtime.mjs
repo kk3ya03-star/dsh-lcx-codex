@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh02'))
+const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh021'))
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
 
@@ -45,10 +45,6 @@ function compareSemver(left, right) {
   return 0
 }
 
-function sameCore(left, right) {
-  return left.core.every((value, index) => value === right.core[index])
-}
-
 function satisfiesSimpleRange(version, range) {
   assert.ok(!range.includes('||'), 'DSH compatibility range must be one bounded comparator set')
   const parsed = parseSemver(version)
@@ -57,9 +53,10 @@ function satisfiesSimpleRange(version, range) {
     assert.ok(match, `Unsupported DSH range comparator: ${raw}`)
     return { operator: match[1] ?? '=', version: parseSemver(match[2]) }
   })
-  // Match npm semver prerelease intent: a prerelease is admitted only when one
-  // comparator explicitly names a prerelease on the same major/minor/patch.
-  if (parsed.prerelease.length > 0 && !comparators.some(item => item.version.prerelease.length > 0 && sameCore(parsed, item.version))) return false
+  // DSH's plugin manager evaluates peers with semver.satisfies(..., { includePrerelease: true }),
+  // so a prerelease is compared purely by precedence (no npm tuple-gating of prereleases).
+  // Mirror that: a prerelease below the upper bound is installable, e.g. 0.2.2-alpha.1 for
+  // `<0.2.2`, exactly as the host would admit it; anything else outside the bounds still fails.
   return comparators.every(item => {
     const compared = compareSemver(parsed, item.version)
     if (item.operator === '>=') return compared >= 0

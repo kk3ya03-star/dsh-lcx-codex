@@ -70,6 +70,8 @@ type CreateCheckpointOptions = {
     result: NativeCompactionResult;
     input?: unknown[];
     ephemeralPreludeItemCount?: number;
+    /** The request came from an "in-history" route: drop superseded mid-history instruction items. */
+    dropInstructionItems?: boolean;
     imageMap?: ReadonlyMap<string, ImageAttachmentRef>;
     retentionOptions?: RetentionOptions;
 };
@@ -143,7 +145,7 @@ export declare function activeCompactionId(ctx: SessionQueryContext, session: Se
  * @param {CreateCheckpointOptions} options
  * @returns {Promise<NativeCheckpointV5>}
  */
-export declare function createNativeCheckpointBlock({ ctx, session, route, result, input, ephemeralPreludeItemCount, imageMap, retentionOptions, }: CreateCheckpointOptions): Promise<NativeCheckpointV5>;
+export declare function createNativeCheckpointBlock({ ctx, session, route, result, input, ephemeralPreludeItemCount, dropInstructionItems, imageMap, retentionOptions, }: CreateCheckpointOptions): Promise<NativeCheckpointV5>;
 /**
  * @param {NativeCheckpointBlock} block
  * @param {unknown} usage
@@ -204,6 +206,20 @@ export declare function stateRouteCompatible(state: CheckpointRouteRecord | null
  * @returns {Promise<Message[]>}
  */
 export declare function shadowedMessagesForCheckpoint(ctx: SessionQueryContext, session: Session, compactionId: string): Promise<Message[]>;
+/**
+ * A shadowed `system/message` (source `system-prompt`) is a full system prompt snapshot DSH appended
+ * when the prompt changed on an "in-history" route. Portable replay is only used when the checkpoint
+ * cannot be replayed natively (fork, route or model migration), and the request that follows always
+ * carries a head rendered with the current prompt, so every snapshot in the shadowed range is
+ * superseded: replaying it, even as user text, would put stale instructions (for example plan-mode
+ * policy that was switched off) back in front of the model.
+ *
+ * Only messages DSH itself marks as system-prompt snapshots are dropped. The head is never inside a
+ * compaction range, and a Session V3 log (where later system messages were ordinary context) cannot
+ * reach this path: LCX refuses V3 checkpoints before transport. Other system-role messages without that
+ * source keep the previous ordinary-context mapping.
+ */
+export declare function withoutSupersededPromptSnapshots(messages: readonly Message[]): Message[];
 /**
  * @param {Session} session
  * @param {string} compactionId

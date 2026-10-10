@@ -1,0 +1,12 @@
+{
+  "name": "dsh-021-static-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-client-store": "0.2.1-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.1-alpha.2",
+    "@earendil-works/pi-ai": "0.87.1",
+    "react": "18.3.1"
+  }
+}

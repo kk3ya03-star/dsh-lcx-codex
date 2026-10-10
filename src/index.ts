@@ -78,7 +78,7 @@ import {
   DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
   DEFAULT_REQUEST_IMAGE_MAX_BYTES,
   hydrateNativeImageReferences,
-  resolveModelImageSupport,
+  resolveRouteModelFacts,
   responseInputItems,
   serializeDshMessages,
 } from "./dsh-responses.js";
@@ -467,7 +467,7 @@ function selectedAgentRoute(agent: HostAgent): RouteRequest {
 
 type SerializedDshMessages = Awaited<ReturnType<typeof serializeDshMessages>>;
 type ImageAttachmentMap = SerializedDshMessages["imageMap"];
-type ImageSupport = Awaited<ReturnType<typeof resolveModelImageSupport>>;
+type ImageSupport = Awaited<ReturnType<typeof resolveRouteModelFacts>>["imageSupport"];
 
 function requestImageOptions(
   routeConfig: Pick<
@@ -1085,7 +1085,10 @@ async function serializeNativeAware(
   },
 ) {
   const session = sessionFor(ctx, route.sessionId);
-  const imageSupport = await resolveModelImageSupport(
+  // One adapter-owned lookup supplies image support and the route's system-prompt update mode. On an
+  // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
+  // model in place with instruction authority instead of being demoted to user context.
+  const { imageSupport, systemPromptUpdate } = await resolveRouteModelFacts(
     ctx,
     route,
     options.signal,
@@ -1109,6 +1112,7 @@ async function serializeNativeAware(
         route,
         tools: options.tools,
         responsesCompat: routeConfig.responsesCompat,
+        systemPromptUpdate,
         ...extra,
       },
     );
@@ -1186,10 +1190,13 @@ async function serializeNativeAware(
           checkpointId,
           { maxChars: routeConfig.portableReplayMaxChars },
         );
+        // Shadowed history is superseded by the head DSH re-rendered when the compaction began its new
+        // series, so its old system messages stay ordinary context instead of regaining instruction
+        // authority behind the current prompt.
         const serialized = await serializeDshMessages(
           portable,
           ctx,
-          serializeOptions(),
+          serializeOptions(undefined, { systemPromptUpdate: undefined }),
         );
         input.push(...serialized.input);
         mergeMap(imageMap, serialized.imageMap);
@@ -1207,6 +1214,7 @@ async function serializeNativeAware(
   return {
     input,
     ephemeralPreludeItemCount,
+    inHistorySystem: systemPromptUpdate === "in-history",
     imageMap,
     imageSupport,
     tools: nativeTools,
@@ -1286,6 +1294,7 @@ async function* remoteCompactionStream(
       result,
       input: prepared.input,
       ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount,
+      dropInstructionItems: prepared.inHistorySystem,
       imageMap: prepared.imageMap,
       retentionOptions: {
         tokenBudget: routeConfig.nativeRetentionTokenBudget,

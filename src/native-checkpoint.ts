@@ -112,6 +112,8 @@ type CreateCheckpointOptions = {
   result: NativeCompactionResult;
   input?: unknown[];
   ephemeralPreludeItemCount?: number;
+  /** The request came from an "in-history" route: drop superseded mid-history instruction items. */
+  dropInstructionItems?: boolean;
   imageMap?: ReadonlyMap<string, ImageAttachmentRef>;
   retentionOptions?: RetentionOptions;
 };
@@ -503,6 +505,29 @@ export async function activeCompactionId(ctx: SessionQueryContext, session: Sess
 }
 
 /**
+ * On "in-history" routes DSH records every system prompt change as a full later `system` message. A
+ * checkpoint begins a new DSH series whose head is re-rendered with the CURRENT prompt, so any
+ * mid-history instruction snapshot in the retained window is superseded by that head. Retaining it,
+ * as developer/system or even as user text, would keep a stale full prompt (for example plan-mode
+ * policy that has since been switched off) in front of the model after the compaction. Drop these
+ * items; later in-history updates are appended after the checkpoint and arrive normally. The
+ * caller has already removed the ephemeral prelude (head), and ordinary user/assistant history is
+ * untouched, so the retention budget is computed over what is actually kept. Only requests from
+ * in-history routes opt in (`dropInstructionItems`): elsewhere a developer/system item after the
+ * prelude is genuine retained client context (see the token-budget retention contract).
+ */
+function dropHistoryInstructions(items: readonly unknown[]): unknown[] {
+  return items.filter(
+    (item) =>
+      !(
+        isObject(item) &&
+        (item.type === undefined || item.type === "message") &&
+        (item.role === "developer" || item.role === "system")
+      ),
+  );
+}
+
+/**
  * @param {CreateCheckpointOptions} options
  * @returns {Promise<NativeCheckpointV5>}
  */
@@ -513,6 +538,7 @@ export async function createNativeCheckpointBlock({
   result,
   input = [],
   ephemeralPreludeItemCount = 0,
+  dropInstructionItems = false,
   imageMap,
   retentionOptions = {},
 }: CreateCheckpointOptions): Promise<NativeCheckpointV5> {
@@ -535,7 +561,9 @@ export async function createNativeCheckpointBlock({
     );
   }
   const retention = retainedConversationPlan(
-    input.slice(ephemeralPreludeItemCount),
+    dropInstructionItems
+      ? dropHistoryInstructions(input.slice(ephemeralPreludeItemCount))
+      : input.slice(ephemeralPreludeItemCount),
     retentionOptions,
   );
   /** @type {NativeOutputItem[]} */
@@ -951,6 +979,24 @@ function groupMessages(messages: readonly Message[]): Message[][] {
   return groups;
 }
 /**
+ * A shadowed `system/message` (source `system-prompt`) is a full system prompt snapshot DSH appended
+ * when the prompt changed on an "in-history" route. Portable replay is only used when the checkpoint
+ * cannot be replayed natively (fork, route or model migration), and the request that follows always
+ * carries a head rendered with the current prompt, so every snapshot in the shadowed range is
+ * superseded: replaying it, even as user text, would put stale instructions (for example plan-mode
+ * policy that was switched off) back in front of the model.
+ *
+ * Only messages DSH itself marks as system-prompt snapshots are dropped. The head is never inside a
+ * compaction range, and a Session V3 log (where later system messages were ordinary context) cannot
+ * reach this path: LCX refuses V3 checkpoints before transport. Other system-role messages without that
+ * source keep the previous ordinary-context mapping.
+ */
+export function withoutSupersededPromptSnapshots(messages: readonly Message[]): Message[] {
+  return messages.filter(
+    (message) => !(message.role === "system" && message.source?.kind === "system-prompt"),
+  );
+}
+/**
  * @param {Session} session
  * @param {string} compactionId
  * @param {{ maxChars?: number }} [options]
@@ -970,7 +1016,10 @@ export async function portableMessagesForCheckpoint(
       ? configuredMaxChars
       : 80_000;
   const maxTokens = portableTokenCeiling(maxChars) ?? 1;
-  const expanded = await shadowedMessagesForCheckpoint(ctx, session, compactionId);
+  // Superseded prompt snapshots are removed before grouping so they never consume the replay budget.
+  const expanded = withoutSupersededPromptSnapshots(
+    await shadowedMessagesForCheckpoint(ctx, session, compactionId),
+  );
   if (expanded.length === 0) return [];
   const groups = groupMessages(expanded);
   const kept = [];

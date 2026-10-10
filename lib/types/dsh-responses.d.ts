@@ -24,6 +24,13 @@ type SerializeOptions = Partial<ImageOptions> & {
     responsesCompat?: unknown;
     systemPrompt?: unknown;
     includeSystemPrompt?: boolean;
+    /**
+     * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
+     * serialization: a non-leading `system` message is then a real instruction update and is emitted in
+     * its history position with the model's instruction role. Any other value keeps the DSH 0.1.5-style
+     * mapping (later `system` messages are ordinary user context).
+     */
+    systemPromptUpdate?: unknown;
     onReplayDegrade?: unknown;
     tools?: PiTool[];
 };
@@ -39,6 +46,18 @@ type ReplayResponse = WireRecord & {
     stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
 };
 export declare function responseInputItems(value: unknown): ResponseInputItem[];
+/**
+ * Facts DSH resolves for the exact routed model through `llm.resolveModelInfo`, the same
+ * adapter-owned metadata the agent loop uses to choose how a system prompt change is recorded.
+ * Resolution failure degrades to the conservative defaults (unknown image support, legacy system mapping).
+ */
+export declare function resolveRouteModelFacts(ctx: DshContext | undefined, route: {
+    provider?: unknown;
+    model?: unknown;
+}, signal?: AbortSignal): Promise<{
+    imageSupport: ImageSupport;
+    systemPromptUpdate: "in-history" | undefined;
+}>;
 export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
     provider?: unknown;
     model?: unknown;
