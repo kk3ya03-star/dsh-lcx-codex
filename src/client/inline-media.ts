@@ -185,6 +185,9 @@ function videoItems(items: readonly SearchMediaItem[]): PreviewItem[] {
   });
 }
 
+/** DSH 0.2.1 anchor element (`display:contents`) around the Chat flow items. */
+const CHAT_FLOW_SLOT = 'conversation.chat.flow';
+
 const activeDialogByDocument = new WeakMap<Document, () => void>();
 
 /** Resolve only a response in the media node's own Turn and chat column. */
@@ -193,13 +196,17 @@ function inlineMediaAnswer(marker: HTMLElement): HTMLElement | null {
   const ElementClass = marker.ownerDocument.defaultView?.HTMLElement;
   if (!ElementClass || !row || !row.dataset.chatTurn) return null;
   const group = row.closest<HTMLElement>('[data-chat-group-key][data-step-process]');
-  const column = group?.parentElement;
-  if (!group || !(column instanceof ElementClass) || !column.hasAttribute('data-chat-flow') ||
+  // The flow items are the group's own siblings. DSH 0.2.1 renders them inside the display:contents
+  // anchor of its ChatFlow slot, so the real chat column may sit one level above that single, explicitly
+  // named wrapper (DSH 0.2.0 had the items directly in the column). Any other wrapper fails closed.
+  const siblings = group?.parentElement;
+  const column = siblings?.dataset.slot === CHAT_FLOW_SLOT ? siblings.parentElement : siblings;
+  if (!group || !(siblings instanceof ElementClass) || !(column instanceof ElementClass) || !column.hasAttribute('data-chat-flow') ||
       group.dataset.chatTurn !== row.dataset.chatTurn) return null;
   // The group may follow several steps of one Turn. The last preceding response
-  // is the one that emitted this media node; never search outside this column.
+  // is the one that emitted this media node; never search outside this sibling list.
   let answer: HTMLElement | null = null;
-  for (const child of column.children) {
+  for (const child of siblings.children) {
     if (child === group) break;
     if (child instanceof ElementClass && child.dataset.chatFlowKind === 'assistant-step' &&
         child.dataset.chatGroupPart === 'response' && child.dataset.chatTurn === row.dataset.chatTurn) {

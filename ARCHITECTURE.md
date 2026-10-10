@@ -1,6 +1,6 @@
-# LCX architecture — 0.5.0
+# LCX architecture — 0.5.1-pre.1
 
-This release (a zero-functional-change promotion of the verified `0.5.0-pre.1`) targets the DSH 0.2 contract. Its release baseline is **DSH 0.2.0-rc.2, Session V4 and host/plugin Pi 0.87.1**. Public DSH peers use the bounded `>=0.2.0-rc.2 <0.2.1` install/assessment range; later in-range releases require their own compatibility evidence. The stable `0.4.3` line (DSH 0.1.5) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
+This prerelease targets the DSH 0.2.1 contract. Its verified baseline is exactly **DSH 0.2.1-alpha.2, Session V4, host Pi 1.1.0 and plugin Pi 0.87.1**. Public DSH peers use a lower-bound-only `>=0.2.1-alpha.2` install range (no upper bound): newer DSH versions can install it but are unverified and need their own compatibility evidence. The stable `0.5.0` line (DSH 0.2.0-rc.2) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
 
 ## Ownership and package boundary
 
@@ -13,7 +13,7 @@ This release (a zero-functional-change promotion of the verified `0.5.0-pre.1`) 
 
 ## GPT lifecycle and compaction
 
-The compatibility layer projects exact DSH generate options, attachments and Session V4 history into the Pi-assisted Responses path, including DSH `role: 'tool'` messages (multi-step, error and image results) and dynamic tool changes. Ordinary generation, Native V2 compaction, same-route replay and portable route migration share the request builder. Native V2 uses a Responses request with a compaction trigger; it is not an implementation of every upstream compaction API. DSH's current compaction directive is excluded from Native input.
+The compatibility layer projects exact DSH generate options, attachments and Session V4 history into the Pi-assisted Responses path, including DSH `role: 'tool'` messages (multi-step, error and image results) and dynamic tool changes. Routes that declare in-history system-prompt updates receive a changed system prompt as a later model-role message at its original history position; superseded prompt snapshots are dropped from retained checkpoint items (identified by message provenance, not text) and from portable replay. If the route's model facts cannot be read while such a snapshot is in the history, the request fails closed rather than sending the instruction as user text. Tool updates keep using the full-tool-list fallback (DSH incremental addition-only tool updates are not implemented). Ordinary generation, Native V2 compaction, same-route replay and portable route migration share the request builder. Native V2 uses a Responses request with a compaction trigger; it is not an implementation of every upstream compaction API. DSH's current compaction directive is excluded from Native input.
 
 DSH retains engine/range/transaction ownership and its own pressure trigger. LCX coordinates compatible GPT pressure handling against DSH's pressure budget (`window - output reserve - headroom`): remote-first near 90%, emergency pruning allowed at 95%. DSH may compact first when its own trigger fires. Grok remains on DSH compaction.
 
@@ -39,4 +39,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 540/540 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real GPT/Grok, Alpha and browser workflows. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 557/557 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.1-alpha.2, together with bounded real-runtime GPT workflows (system-prompt updates, tool toggles, compaction, restart, fork, lifecycle, web search and inline search media). Grok routes, Alpha search and user image input were not part of that runtime pass. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

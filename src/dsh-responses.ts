@@ -82,6 +82,13 @@ type SerializeOptions = Partial<ImageOptions> & {
   responsesCompat?: unknown;
   systemPrompt?: unknown;
   includeSystemPrompt?: boolean;
+  /**
+   * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
+   * serialization: a non-leading `system` message is then a real instruction update and is emitted in
+   * its history position with the model's instruction role. Any other value keeps the DSH 0.1.5-style
+   * mapping (later `system` messages are ordinary user context).
+   */
+  systemPromptUpdate?: unknown;
   onReplayDegrade?: unknown;
   tools?: PiTool[];
 };
@@ -187,13 +194,18 @@ function imageAccess(
   return attachments.resolveAccess(mapper, ref);
 }
 
-export async function resolveModelImageSupport(
+/**
+ * Facts DSH resolves for the exact routed model through `llm.resolveModelInfo`, the same
+ * adapter-owned metadata the agent loop uses to choose how a system prompt change is recorded.
+ * Resolution failure reports `resolved: false` with conservative defaults (unknown image support, no in-history mode).
+ */
+export async function resolveRouteModelFacts(
   ctx: DshContext | undefined,
   route: { provider?: unknown; model?: unknown },
   signal?: AbortSignal,
-): Promise<ImageSupport> {
+): Promise<{ imageSupport: ImageSupport; systemPromptUpdate: "in-history" | undefined; resolved: boolean }> {
   const llm = ctx?.llm;
-  if (llm === undefined) return "unknown";
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -201,14 +213,28 @@ export async function resolveModelImageSupport(
       signal,
     );
     const modalities = info.inputModalities;
-    return modalities?.includes("image")
-      ? "supported"
-      : modalities !== undefined
-        ? "unsupported"
-        : "unknown";
+    return {
+      imageSupport: modalities?.includes("image")
+        ? "supported"
+        : modalities !== undefined
+          ? "unsupported"
+          : "unknown",
+      systemPromptUpdate: info.systemPromptUpdate === "in-history" ? "in-history" : undefined,
+      resolved: true,
+    };
   } catch {
-    return "unknown";
+    // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
+    // to downgrade history that only an in-history route may legitimately contain.
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
   }
+}
+
+export async function resolveModelImageSupport(
+  ctx: DshContext | undefined,
+  route: { provider?: unknown; model?: unknown },
+  signal?: AbortSignal,
+): Promise<ImageSupport> {
+  return (await resolveRouteModelFacts(ctx, route, signal)).imageSupport;
 }
 
 function attachmentResolver(
@@ -505,6 +531,18 @@ async function prepareRequestImageVersions(
   return new Map(versions);
 }
 
+/** A full system prompt snapshot written by DSH's own system-prompt projection. */
+export function isPromptSnapshotMessage(message: RequestMessage): boolean {
+  return message.role === "system" && message.source?.kind === "system-prompt";
+}
+
+/** Whether history after the leading head holds a non-empty DSH prompt snapshot (an in-history update). */
+export function hasMidHistoryPromptSnapshot(messages: readonly RequestMessage[]): boolean {
+  return messages.slice(1).some((message) =>
+    isPromptSnapshotMessage(message) &&
+    message.content.some((block) => block.type === "text" && block.text.length > 0));
+}
+
 function flattenMessageText(message: RequestMessage): string {
   return message.content.map((block) => {
     if (block.type !== "text") throw unsupportedContent(block.type);
@@ -515,7 +553,7 @@ function flattenMessageText(message: RequestMessage): string {
 async function dshToPiMessages(
   messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
-  options: ImageOptions & { onReplayDegrade?: unknown },
+  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string },
   imageMap: Map<string, ImageAttachmentRef>,
   requestImages: RequestImageVersions,
 ): Promise<PiMessage[]> {
@@ -523,6 +561,20 @@ async function dshToPiMessages(
   const toolNames = new Map<string, string>();
   for (const message of messages) {
     if (message.role === "system") {
+      if (options.inHistorySystem === true) {
+        // In-history routes record a changed system prompt as a full later `system` message that keeps
+        // instruction authority. Pi renders a non-leading system message with the model's instruction
+        // role (developer for reasoning models, system otherwise) at this exact position.
+        const text = flattenMessageText(message);
+        if (text.length > 0) {
+          // A throwaway marker message directly before a DSH prompt snapshot lets the serializer trace the
+          // rendered item back to its source message without inspecting text; it is removed afterwards.
+          if (options.snapshotMarker !== undefined && isPromptSnapshotMessage(message))
+            result.push({ role: "user", content: options.snapshotMarker, timestamp: 0 });
+          result.push({ role: "system", content: text, timestamp: 0 });
+        }
+        continue;
+      }
       result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
       continue;
     }
@@ -590,12 +642,14 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   for (const tool of options.tools ?? [])
     if ("deferLoading" in tool && tool.deferLoading === true)
       throw unsupportedContent("deferLoading tool declaration");
-  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; onReplayDegrade?: unknown; tools: readonly PiTool[] } = {
+  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[] } = {
     imageSupport: options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown",
     signal: options.signal instanceof AbortSignal ? options.signal : undefined,
     route: options.route ?? {}, model: options.model, responsesCompat: options.responsesCompat,
     systemPrompt: typeof options.systemPrompt === "string" ? options.systemPrompt : undefined,
     includeSystemPrompt: options.includeSystemPrompt === true, onReplayDegrade: options.onReplayDegrade,
+    inHistorySystem: options.systemPromptUpdate === "in-history",
+    snapshotMarker: options.systemPromptUpdate === "in-history" ? `\u0000lcx-prompt-snapshot:${globalThis.crypto.randomUUID()}` : undefined,
     maxRequestImageBytes: positiveSafeInteger(options.maxRequestImageBytes, DEFAULT_MAX_REQUEST_IMAGE_BYTES),
     requestImagePixelBudget: positiveSafeInteger(options.requestImagePixelBudget, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
     requestImageMaxBytes: positiveSafeInteger(options.requestImageMaxBytes, DEFAULT_REQUEST_IMAGE_MAX_BYTES),
@@ -646,12 +700,52 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const immediateTools = new Map<string, PiTool>();
   for (const tool of dshContext.tools) if (tool.name) immediateTools.set(tool.name, tool);
   const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };
-  const piContext = normalizeContext(dshContext);
+  const normalizedContext = normalizeContext(dshContext);
+  // Pi treats whichever system message is first in the transcript as the leading prompt: it skips it when
+  // includeSystemPrompt is false and renders it without the update framing. A serialization batch carrying
+  // no caller-owned head (no systemPrompt/tools) must never promote a history update to that slot, so an
+  // empty placeholder holds the leading position and renders nothing.
+  const piContext = normalized.inHistorySystem && normalizedContext.messages[0]?.role === "system" && normalizedContext.messages === dshContext.messages
+    ? { ...normalizedContext, messages: [{ role: "system" as const, content: "", timestamp: 0 }, ...normalizedContext.messages] }
+    : normalizedContext;
   const piModel = model as PiModel<"openai-responses">;
-  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, toolOptions });
-  const input = restorePortableAssistantPhases(convertedInput, dshContext.messages, { provider: model.provider, id: model.id, api: model.api });
+  // Pi collapses every system message into the leading one unless the transport accepts mid-conversation
+  // system messages, which would drop or reorder in-history updates in batched serialization.
+  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem, toolOptions });
+  const supersededInstructionItems: number[] = [];
+  const unmarkedInput: unknown[] = [];
+  let markersFound = 0;
+  for (let position = 0; position < convertedInput.length; position += 1) {
+    const item = convertedInput[position] as unknown;
+    if (normalized.snapshotMarker !== undefined && isMarkerItem(item, normalized.snapshotMarker)) {
+      markersFound += 1;
+      const rendered = convertedInput[position + 1] as unknown;
+      if (!isObject(rendered) || (rendered.role !== "developer" && rendered.role !== "system"))
+        throw error("LCX could not trace a rendered system prompt snapshot", "LCX_RESPONSES_INVALID_INPUT");
+      supersededInstructionItems.push(unmarkedInput.length);
+      continue;
+    }
+    unmarkedInput.push(item);
+  }
+  if (normalized.snapshotMarker !== undefined) {
+    // Markers are inserted only before non-empty snapshots (empty ones render nothing), so each inserted
+    // marker must be found exactly once and none may survive in the output, even if a future Pi merged
+    // adjacent user messages.
+    const inserted = dshContext.messages.filter(
+      (message) => message.role === "user" && message.content === normalized.snapshotMarker,
+    ).length;
+    const nonce = normalized.snapshotMarker.slice(normalized.snapshotMarker.lastIndexOf(":") + 1);
+    if (markersFound !== inserted || JSON.stringify(unmarkedInput).includes(nonce))
+      throw error("LCX could not remove a system prompt snapshot marker", "LCX_RESPONSES_INVALID_INPUT");
+  }
+  const input = restorePortableAssistantPhases(unmarkedInput, dshContext.messages, { provider: model.provider, id: model.id, api: model.api });
   const tools = options.tools === undefined ? undefined : convertResponsesTools([...immediateTools.values()], toolOptions);
-  return { input, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
+  return { input, supersededInstructionItems, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
+}
+
+function isMarkerItem(item: unknown, marker: string): boolean {
+  if (!isObject(item) || item.role !== "user" || !Array.isArray(item.content)) return false;
+  return item.content.length === 1 && isObject(item.content[0]) && item.content[0].text === marker;
 }
 
 export function responsesTools(tools: readonly PiTool[] | undefined) {

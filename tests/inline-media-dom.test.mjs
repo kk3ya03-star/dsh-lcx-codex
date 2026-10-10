@@ -8,15 +8,16 @@ import {extractDirectMediaLinks,extractDirectVideoLinks} from '../src/client/sea
 const photo='https://example.com/photo.jpg', video='https://example.com/video.mp4';
 const labels={image:'Enlarge image',video:'Play video',close:'Close',source:'Open source',failed:'Image failed to load',videoFailed:'Video cannot be played',heading:'Search images',previous:'Previous images',next:'Next images',dialog:'Video preview',imageDialog:'Image preview'};
 const structured=(url,extra={})=>({kind:'image',url,structured:true,...extra});
-function fixture(body,kind='assistant-step') {
- const {window,document}=parseHTML(`<html><body><div data-chat-flow>
+function fixture(body,kind='assistant-step',wrapper) {
+ const open=wrapper===undefined?'':wrapper, close=wrapper===undefined?'':'</div>';
+ const {window,document}=parseHTML(`<html><body><div data-chat-flow>${open}
  <div data-chat-flow-kind="user" data-chat-turn="3"></div>
  <div data-chat-flow-kind="turn-process" data-chat-turn="3"></div>
  <div data-chat-group-key='["process","tool-3",null]' data-chat-turn="3" data-step-process><div data-step-process-content data-chat-flow hidden="until-found"></div></div>
  <div data-chat-flow-kind="${kind}" data-chat-group-part="response" data-turn-process-answer="true" data-chat-turn="3">${body}</div>
  <div data-chat-group-key='["process","media-3",null]' data-chat-turn="3" data-step-process><div data-step-process-content data-chat-flow hidden="until-found"><div data-chat-flow-kind="lcx-search-media" data-chat-turn="3"><span id="marker"></span></div></div></div>
  <div data-chat-flow-kind="turn-tail" data-chat-turn="3"></div>
- </div></body></html>`);
+ ${close}</div></body></html>`);
  const observers=[],frames=new Map(),canceled=[];let nextFrame=0;
  class InstrumentedMutationObserver {
   constructor(callback){this.callback=callback;this.actual=new window.MutationObserver(callback);this.disconnectCount=0;observers.push(this)}
@@ -372,6 +373,54 @@ test('wrong owner, foreign turn and unknown renderers fail closed',()=>{
   f.start([structured('https://images.example.com/a.jpg')]);assert.equal(f.document.querySelector('.lcx-media'),null);
  }finally{f.cleanup()}
  const {document}=parseHTML(`<html><body><div data-chat-flow><div data-chat-flow-kind="assistant-step" data-chat-turn="3"><p>x</p></div><div data-chat-flow-kind="lcx-search-media" data-chat-turn="3"><span id="marker"></span></div></div></body></html>`);
+ assert.equal(supportsInlineMediaDom(document.getElementById('marker')),false);
+});
+
+const SLOT_WRAPPER='<div data-slot="conversation.chat.flow" style="display: contents">';
+test('DSH 0.2.1 ChatFlow slot wrapper: media still lands under its own response (rc.2 layout above stays supported)',()=>{
+ const f=fixture('<p id="answer-3">First</p>','assistant-step',SLOT_WRAPPER);
+ try{
+  const marker=f.document.getElementById('marker');
+  assert.equal(marker.closest('[data-chat-group-key]').parentElement.dataset.slot,'conversation.chat.flow');
+  assert.equal(supportsInlineMediaDom(marker),true);
+  f.start([structured('https://images.example.com/a.jpg')]);
+  const blocks=f.document.querySelectorAll('.lcx-media');
+  assert.equal(blocks.length,1);
+  assert.equal(blocks[0].parentElement,f.answer);
+  assert.equal(f.answer.lastElementChild,blocks[0]);
+  assert.equal(f.document.querySelectorAll('[data-step-process-content] .lcx-media').length,0);
+  f.dispose();
+  assert.equal(f.document.querySelector('.lcx-media'),null);
+ }finally{f.cleanup()}
+});
+
+test('slot wrapper: two turns resolve each response among the wrapper own children',()=>{
+ const f=fixture('<p>First</p>','assistant-step',SLOT_WRAPPER);
+ let stopSecond;
+ try{
+  const wrapper=f.document.querySelector('[data-slot="conversation.chat.flow"]');
+  wrapper.insertAdjacentHTML('beforeend',`
+   <div data-chat-flow-kind="user" data-chat-turn="4"></div>
+   <div data-chat-flow-kind="assistant-step" data-chat-group-part="response" data-chat-turn="4"><p>Second</p></div>
+   <div data-chat-group-key='["process","media-4",null]' data-chat-turn="4" data-step-process><div data-step-process-content data-chat-flow hidden="until-found"><div data-chat-flow-kind="lcx-search-media" data-chat-turn="4"><span id="marker-4"></span></div></div></div>`);
+  f.start([structured('https://images.example.com/first.jpg')]);
+  stopSecond=installInlineMedia(f.document.getElementById('marker-4'),[structured('https://images.example.com/second.jpg')],labels);
+  assert.equal(f.document.querySelector('[data-chat-turn="3"] .lcx-media-tile')?.dataset.url,'https://images.example.com/first.jpg');
+  assert.equal(f.document.querySelector('[data-chat-turn="4"][data-chat-group-part="response"] .lcx-media-tile')?.dataset.url,'https://images.example.com/second.jpg');
+ }finally{stopSecond?.();f.cleanup()}
+});
+
+test('only the named ChatFlow slot may sit between the group and the chat column; other wrappers fail closed',()=>{
+ for(const wrapper of ['<div>','<div data-slot="conversation.chat.node">']){
+  const f=fixture('<p>x</p>','assistant-step',wrapper);
+  try{
+   assert.equal(supportsInlineMediaDom(f.document.getElementById('marker')),false,wrapper);
+   f.start([structured('https://images.example.com/a.jpg')]);
+   assert.equal(f.document.querySelector('.lcx-media'),null,wrapper);
+  }finally{f.cleanup()}
+ }
+ // The named slot alone is not enough: the column behind it must still be the real chat flow.
+ const {document}=parseHTML(`<html><body><section><div data-slot="conversation.chat.flow"><div data-chat-flow-kind="assistant-step" data-chat-group-part="response" data-chat-turn="3"><p>x</p></div><div data-chat-group-key='["process","m",null]' data-chat-turn="3" data-step-process><div data-chat-flow-kind="lcx-search-media" data-chat-turn="3"><span id="marker"></span></div></div></div></section></body></html>`);
  assert.equal(supportsInlineMediaDom(document.getElementById('marker')),false);
 });
 
