@@ -112,8 +112,8 @@ type CreateCheckpointOptions = {
   result: NativeCompactionResult;
   input?: unknown[];
   ephemeralPreludeItemCount?: number;
-  /** The request came from an "in-history" route: drop superseded mid-history instruction items. */
-  dropInstructionItems?: boolean;
+  /** Absolute `input` positions of items rendered from superseded DSH system prompt snapshots. */
+  supersededItemIndices?: readonly number[];
   imageMap?: ReadonlyMap<string, ImageAttachmentRef>;
   retentionOptions?: RetentionOptions;
 };
@@ -505,26 +505,32 @@ export async function activeCompactionId(ctx: SessionQueryContext, session: Sess
 }
 
 /**
- * On "in-history" routes DSH records every system prompt change as a full later `system` message. A
- * checkpoint begins a new DSH series whose head is re-rendered with the CURRENT prompt, so any
- * mid-history instruction snapshot in the retained window is superseded by that head. Retaining it,
- * as developer/system or even as user text, would keep a stale full prompt (for example plan-mode
- * policy that has since been switched off) in front of the model after the compaction. Drop these
- * items; later in-history updates are appended after the checkpoint and arrive normally. The
- * caller has already removed the ephemeral prelude (head), and ordinary user/assistant history is
- * untouched, so the retention budget is computed over what is actually kept. Only requests from
- * in-history routes opt in (`dropInstructionItems`): elsewhere a developer/system item after the
- * prelude is genuine retained client context (see the token-budget retention contract).
+ * On "in-history" routes DSH records every system prompt change as a full later `system` message
+ * (source `system-prompt`). A checkpoint begins a new DSH series whose head is re-rendered with the
+ * CURRENT prompt, so those snapshots in the retained window are superseded by that head. Retaining
+ * one, as developer/system or even as user text, would keep a stale full prompt (for example plan-mode
+ * policy that has since been switched off) in front of the model after the compaction.
+ *
+ * Only items the serializer traced back to such snapshots (`supersededItemIndices`, absolute positions
+ * in `input`) are removed. Any other retained developer/system item is genuine client context and
+ * stays. The ephemeral prelude is removed by the caller's slice, and the retention budget is computed
+ * over what is actually kept.
  */
-function dropHistoryInstructions(items: readonly unknown[]): unknown[] {
-  return items.filter(
-    (item) =>
-      !(
-        isObject(item) &&
-        (item.type === undefined || item.type === "message") &&
-        (item.role === "developer" || item.role === "system")
-      ),
-  );
+function dropSupersededItems(
+  input: readonly unknown[],
+  preludeCount: number,
+  superseded: readonly number[],
+): unknown[] {
+  const drop = new Set<number>();
+  for (const position of superseded) {
+    if (!Number.isSafeInteger(position) || position < preludeCount || position >= input.length)
+      throw Object.assign(
+        new Error("Native compaction superseded-item provenance is invalid"),
+        { code: "LCX_COMPACTION_PRELUDE_PROVENANCE_INVALID" },
+      );
+    drop.add(position);
+  }
+  return input.slice(preludeCount).filter((_, offset) => !drop.has(preludeCount + offset));
 }
 
 /**
@@ -538,7 +544,7 @@ export async function createNativeCheckpointBlock({
   result,
   input = [],
   ephemeralPreludeItemCount = 0,
-  dropInstructionItems = false,
+  supersededItemIndices = [],
   imageMap,
   retentionOptions = {},
 }: CreateCheckpointOptions): Promise<NativeCheckpointV5> {
@@ -561,9 +567,7 @@ export async function createNativeCheckpointBlock({
     );
   }
   const retention = retainedConversationPlan(
-    dropInstructionItems
-      ? dropHistoryInstructions(input.slice(ephemeralPreludeItemCount))
-      : input.slice(ephemeralPreludeItemCount),
+    dropSupersededItems(input, ephemeralPreludeItemCount, supersededItemIndices),
     retentionOptions,
   );
   /** @type {NativeOutputItem[]} */

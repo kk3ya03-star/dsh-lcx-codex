@@ -21,6 +21,7 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { loadHostSource } from './wp2-source.mjs'
+import { queryContext } from './session-query-fixture.mjs'
 
 // Issue #115 (I-09 / I-10). DSH 0.2.1-alpha.2 declares systemPromptUpdate "in-history" and toolUpdate
 // "addition-only" for catalog GPT routes. These tests drive the real DSH agent loop, session, llm and
@@ -74,7 +75,7 @@ async function harness(root, index) {
         const prepared = await index.serializeNativeAware(options.messages, route, routeConfig, ctx, { tools: [...(options.tools ?? [])] })
         const session = ctx.sessions.get(SessionId(String(options.sessionId)))
         const result = { compaction: { type: 'compaction', encrypted_content: 'FAKE-OPAQUE-PLACEHOLDER' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
-        const block = await checkpoint.createNativeCheckpointBlock({ ctx, session, route, result, input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, dropInstructionItems: prepared.inHistorySystem, imageMap: prepared.imageMap, retentionOptions: {} })
+        const block = await checkpoint.createNativeCheckpointBlock({ ctx, session, route, result, input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, supersededItemIndices: prepared.supersededInstructionItems, imageMap: prepared.imageMap, retentionOptions: {} })
         yield* checkpoint.nativeCheckpointChunks(block, result.usage)
       })()
     }
@@ -333,6 +334,146 @@ test('only DSH system-prompt snapshots are dropped; other system-role history ke
   const legacy = { role: 'system', source: { kind: 'user' }, content: [{ type: 'text', text: 'legacy context' }] }
   const user = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }
   assert.deepEqual(checkpoint.withoutSupersededPromptSnapshots([snapshot, user, legacy]), [user, legacy])
+})
+
+const failingModelInfo = ctx => new Proxy(ctx, {
+  get(target, key) {
+    if (key !== 'llm') return Reflect.get(target, key)
+    return new Proxy(target.llm, { get: (llm, name) => name === 'resolveModelInfo' ? async () => { throw new Error('model info backend unavailable') } : Reflect.get(llm, name) })
+  },
+})
+
+test('unreadable model info fails closed when history holds an in-history prompt snapshot, and only then', async () => {
+  await withHarness(async ({ root, index, bodies, ctx, raw, state }) => {
+    const { handle, ask } = await startAgent(ctx, root, 'i115-failclosed', 'openai', 'gpt-5.6-sol')
+    await ask('turn one')
+    const plain = raw.at(-1)
+    state.prompt = 'PROMPT-V2'
+    await ask('turn two')
+    const withSnapshot = raw.at(-1)
+    assert.equal(withSnapshot.messages.filter(message => message.role === 'system').length, 2, 'precondition: a mid-history snapshot exists')
+    const broken = failingModelInfo(ctx)
+
+    // Snapshot present: refused with an identifiable error, nothing reaches the transport.
+    const before = bodies.length
+    const chunks = []
+    for await (const chunk of index.managedResponsesStream({ ...withSnapshot, signal: AbortSignal.timeout(5000) }, routeConfig, broken)) chunks.push(chunk)
+    assert.equal(bodies.length, before, 'no request was sent')
+    const finish = chunks.at(-1)
+    assert.equal(finish.reason.kind, 'error')
+    assert.equal(finish.reason.failure.code, 'NO_ADAPTER')
+    assert.match(finish.reason.failure.message, /model information.*in-history system prompt updates/u)
+    await assert.rejects(
+      index.serializeNativeAware(withSnapshot.messages, { provider: 'openai', model: 'gpt-5.6-sol', baseURL, sessionId: String(withSnapshot.sessionId) }, routeConfig, broken, { tools: [] }),
+      { code: 'LCX_SYSTEM_PROMPT_MODE_UNKNOWN' },
+    )
+
+    // No mid-history snapshot: the conservative default is harmless and the request is sent.
+    const sent = await postedBody(index, bodies, plain, routeConfig, broken)
+    assert.deepEqual(sent.input.map(item => item.role ?? item.type), ['developer', 'user'])
+    await handle.dispose()
+  })
+})
+
+const snapshotMessage = text => ({ role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text }] })
+const otherInstruction = text => ({ role: 'system', source: { kind: 'plugin', plugin: 'fixture' }, content: [{ type: 'text', text }] })
+const ofKind = (input, role, text) => input.findIndex(item => item.role === role && textOf(item) === text)
+const checkpointFixture = id => ({ snapshotEvents: () => [{ seq: 0, type: 'compaction/start', data: { compactionId: id } }] })
+const compactionItem = { type: 'compaction', encrypted_content: 'opaque-fixture' }
+
+test('checkpoint retention drops only items traced to DSH prompt snapshots; other instructions stay', async () => {
+  await withHarness(async ({ index, ctx }) => {
+    const messages = [
+      snapshotMessage('HEAD-PROMPT'), usr('u1'), snapshotMessage('SNAPSHOT-OLD'), usr('u2'),
+      otherInstruction('OTHER-INSTRUCTION'), usr('u3'),
+    ]
+    const route = { provider: 'openai', model: 'gpt-5.6-sol', baseURL, sessionId: 'i115-trace' }
+    const prepared = await index.serializeNativeAware(messages, route, routeConfig, ctx, { tools: [] })
+    const roles = prepared.input.map(item => item.role ?? item.type)
+    assert.deepEqual(roles, ['developer', 'user', 'developer', 'user', 'developer', 'user'], 'both system messages render as instruction items')
+    const snapshotAt = ofKind(prepared.input, 'developer', 'SNAPSHOT-OLD')
+    assert.deepEqual(prepared.supersededInstructionItems, [snapshotAt], 'exactly the snapshot item is traced, by source and not by text')
+    assert.equal(prepared.ephemeralPreludeItemCount, 1)
+
+    const session = checkpointFixture('compact-trace')
+    const traced = await checkpoint.createNativeCheckpointBlock({
+      ctx: queryContext(session), session, route, result: { compaction: compactionItem },
+      input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, supersededItemIndices: prepared.supersededInstructionItems,
+    })
+    const kept = traced.nativeOutput
+    assert.equal(ofKind(kept, 'developer', 'SNAPSHOT-OLD'), -1, 'the superseded snapshot is gone')
+    assert.notEqual(ofKind(kept, 'developer', 'OTHER-INSTRUCTION'), -1, 'a genuine instruction item is retained')
+    assert.equal(ofKind(kept, 'developer', 'HEAD-PROMPT'), -1, 'the ephemeral prelude is never retained')
+    assert.deepEqual(wire(kept).filter(([role]) => role === 'user').map(([, text]) => text), ['u1', 'u2', 'u3'])
+    assert.equal(kept.filter(item => item.type === 'compaction').length, 1)
+
+    // Without provenance nothing is dropped (generic retention contract).
+    const untraced = await checkpoint.createNativeCheckpointBlock({
+      ctx: queryContext(session), session, route, result: { compaction: compactionItem },
+      input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount,
+    })
+    assert.notEqual(ofKind(untraced.nativeOutput, 'developer', 'SNAPSHOT-OLD'), -1)
+
+    // Other legitimate developer/system items that DSH or another plugin may emit survive next to a snapshot.
+    const rawInput = [
+      { role: 'developer', content: 'PRELUDE' },
+      { role: 'developer', content: 'PLUGIN-DEVELOPER-NOTE' },
+      { role: 'system', content: 'PLUGIN-SYSTEM-NOTE' },
+      { role: 'developer', content: 'SNAPSHOT-ITEM' },
+      { role: 'user', content: [{ type: 'input_text', text: 'question' }] },
+    ]
+    const mixed = await checkpoint.createNativeCheckpointBlock({
+      ctx: queryContext(session), session, route, result: { compaction: compactionItem },
+      input: rawInput, ephemeralPreludeItemCount: 1, supersededItemIndices: [3],
+    })
+    assert.deepEqual(mixed.nativeOutput.slice(0, -1).map(item => item.content?.[0]?.text ?? item.content), ['PLUGIN-DEVELOPER-NOTE', 'PLUGIN-SYSTEM-NOTE', 'question'])
+    await assert.rejects(checkpoint.createNativeCheckpointBlock({
+      ctx: queryContext(session), session, route, result: { compaction: compactionItem },
+      input: rawInput, ephemeralPreludeItemCount: 1, supersededItemIndices: [0],
+    }), { code: 'LCX_COMPACTION_PRELUDE_PROVENANCE_INVALID' })
+  })
+})
+
+test('snapshot provenance stays exact across batches after a native checkpoint (second compaction)', async () => {
+  await withHarness(async ({ root, ctx, state }) => {
+    const { handle, ask } = await startAgent(ctx, root, 'i115-two-compactions', 'openai', 'gpt-5.6-sol')
+    await ask('turn one '.repeat(500))
+    state.prompt = 'PROMPT-V2'
+    await ask('turn two '.repeat(500))
+    assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal))
+    state.prompt = 'PROMPT-V3'
+    await ask('turn three '.repeat(500))
+    state.prompt = 'PROMPT-V4'
+    await ask('turn four '.repeat(500))
+    state.prompt = 'PROMPT-V5'
+    const session = await ask('turn five '.repeat(500))
+    assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal))
+    const summaries = session.snapshotEvents().filter(event => event.type === 'compaction/summary')
+    assert.equal(summaries.length, 2)
+    const block = summaries.at(-1).data.rawOutput.find(value => String(value.type).includes('lcx-native-compaction'))
+    assert.ok(block, 'second checkpoint block exists')
+    assert.doesNotMatch(JSON.stringify(block.nativeOutput), /PROMPT-V[1-5]/u, 'no prompt snapshot survives either compaction')
+    assert.ok(wire(block.nativeOutput).some(([role, text]) => role === 'user' && text.startsWith('turn')), 'ordinary history is retained')
+    await handle.dispose()
+  })
+})
+
+test('empty prompt snapshots (blanked DSH nodes) add no marker and no items and never break the request', async () => {
+  await withHarness(async ({ index, ctx }) => {
+    const empties = [
+      { role: 'system', source: { kind: 'system-prompt' }, content: [] },
+      { role: 'system', source: { kind: 'system-prompt' }, content: [{ type: 'text', text: '' }] },
+    ]
+    const messages = [snapshotMessage('HEAD-PROMPT'), usr('u1'), ...empties, usr('u2'), snapshotMessage('LIVE-UPDATE'), usr('u3'), empties[0]]
+    const route = { provider: 'openai', model: 'gpt-5.6-sol', baseURL, sessionId: 'i115-empty' }
+    const prepared = await index.serializeNativeAware(messages, route, routeConfig, ctx, { tools: [] })
+    assert.deepEqual(wire(prepared.input), [['developer', 'HEAD-PROMPT'], ['user', 'u1'], ['user', 'u2'], ['developer', 'LIVE-UPDATE'], ['user', 'u3']], 'no extra items')
+    assert.deepEqual(prepared.supersededInstructionItems, [3], 'only the live snapshot is traced')
+    assert.doesNotMatch(JSON.stringify(prepared.input), /lcx-prompt-snapshot|\\u0000/u, 'no marker reaches the wire')
+    const onlyEmpty = await serializeDshMessages([usr('a'), ...empties, usr('b')], {}, { model: piModel(), systemPromptUpdate: 'in-history' })
+    assert.deepEqual(wire(onlyEmpty.input), [['user', 'a'], ['user', 'b']])
+    assert.deepEqual(onlyEmpty.supersededInstructionItems, [])
+  })
 })
 
 // --- serializer-level boundaries (final Responses input of the low-level serializer) ---

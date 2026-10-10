@@ -70,8 +70,8 @@ type CreateCheckpointOptions = {
     result: NativeCompactionResult;
     input?: unknown[];
     ephemeralPreludeItemCount?: number;
-    /** The request came from an "in-history" route: drop superseded mid-history instruction items. */
-    dropInstructionItems?: boolean;
+    /** Absolute `input` positions of items rendered from superseded DSH system prompt snapshots. */
+    supersededItemIndices?: readonly number[];
     imageMap?: ReadonlyMap<string, ImageAttachmentRef>;
     retentionOptions?: RetentionOptions;
 };
@@ -145,7 +145,7 @@ export declare function activeCompactionId(ctx: SessionQueryContext, session: Se
  * @param {CreateCheckpointOptions} options
  * @returns {Promise<NativeCheckpointV5>}
  */
-export declare function createNativeCheckpointBlock({ ctx, session, route, result, input, ephemeralPreludeItemCount, dropInstructionItems, imageMap, retentionOptions, }: CreateCheckpointOptions): Promise<NativeCheckpointV5>;
+export declare function createNativeCheckpointBlock({ ctx, session, route, result, input, ephemeralPreludeItemCount, supersededItemIndices, imageMap, retentionOptions, }: CreateCheckpointOptions): Promise<NativeCheckpointV5>;
 /**
  * @param {NativeCheckpointBlock} block
  * @param {unknown} usage

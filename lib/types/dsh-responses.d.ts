@@ -49,7 +49,7 @@ export declare function responseInputItems(value: unknown): ResponseInputItem[];
 /**
  * Facts DSH resolves for the exact routed model through `llm.resolveModelInfo`, the same
  * adapter-owned metadata the agent loop uses to choose how a system prompt change is recorded.
- * Resolution failure degrades to the conservative defaults (unknown image support, legacy system mapping).
+ * Resolution failure reports `resolved: false` with conservative defaults (unknown image support, no in-history mode).
  */
 export declare function resolveRouteModelFacts(ctx: DshContext | undefined, route: {
     provider?: unknown;
@@ -57,6 +57,7 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
 }, signal?: AbortSignal): Promise<{
     imageSupport: ImageSupport;
     systemPromptUpdate: "in-history" | undefined;
+    resolved: boolean;
 }>;
 export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
     provider?: unknown;
@@ -66,6 +67,10 @@ export declare function readDshPiReplayState(value: unknown): {
     response: ReplayResponse;
     blocks: ReplayBlock[];
 };
+/** A full system prompt snapshot written by DSH's own system-prompt projection. */
+export declare function isPromptSnapshotMessage(message: RequestMessage): boolean;
+/** Whether history after the leading head holds a non-empty DSH prompt snapshot (an in-history update). */
+export declare function hasMidHistoryPromptSnapshot(messages: readonly RequestMessage[]): boolean;
 export declare function resolvePiResponsesModel(options: {
     imageSupport: unknown;
     route?: unknown;
@@ -88,6 +93,7 @@ export declare function resolvePiResponsesModel(options: {
 };
 export declare function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options?: SerializeOptions): Promise<{
     input: unknown[];
+    supersededInstructionItems: number[];
     imageMap: Map<string, import("@deepseek-ai/dsh-attachment").ImageAttachmentRef>;
     tools: import("openai/resources/responses/responses.js").Tool[] | undefined;
     model: PiModel<"openai-responses">;

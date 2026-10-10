@@ -2,21 +2,21 @@ version: 0.5.1-pre.1
 state: APPROVED_PRERELEASE
 approval:
   product_owner: private-issue-115-po-approved-2026-10-10
-  controller_review: TL_REVIEW_PENDING
+  controller_review: TL_ACCEPTED_CORE_CODE_FIXES_REVERIFIED_RELEASE_READINESS_REVIEW_PENDING
   reference: docs/qa/issue-115/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-115/RELEASE-READINESS.md
-  policy: The Product Owner approved building a prerelease for the latest DSH. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review of the Issue #115 code and runtime QA is still pending and is recorded as such in controller_review.
+  policy: The Product Owner approved building a prerelease for the latest DSH. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead accepted the core code, the two Technical Lead-requested fixes are done and runtime-reverified on build c83b6d0, and the final Technical Lead review of release readiness is still pending.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issue: 115
-  product_commit: 2abf446321f3bf4881d451845f654b3820d319fa
-  runtime_qa_build_commit: a60abea
+  product_commit: c83b6d0b12c5d8f21e3ba06a074d165288d7d932
+  runtime_qa_build_commit: c83b6d0b12c5d8f21e3ba06a074d165288d7d932
   frozen_tag: frozen/v0.5.1-pre.1
   frozen_tag_state: NOT_CREATED_UNTIL_FINAL_CONFIRMATION
-  policy: Product/runtime source is the private engineering commit above (runtime QA ran on a60abea; later commits change only install ranges, governance tools and documentation). Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.5.1-pre.1 tag is created only after the Product Owner's final confirmation.
+  policy: Product/runtime source is the private engineering commit above (final product build, including the Technical Lead-requested fixes; the later branch commits change only governance records and QA documentation). Earlier runtime QA builds a60abea and the pre-review product commit 2abf446 are superseded. Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.5.1-pre.1 tag is created only after the Product Owner final confirmation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
@@ -88,14 +88,14 @@ public_export:
     - .github/**
 verification:
   state: READY_FOR_FINAL_CONFIRMATION
-  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime QA passed for the required scenarios on build a60abea (docs/qa/issue-115/RUNTIME-QA.md). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
+  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime QA passed for the required scenarios on build a60abea and was re-verified on the final build c83b6d0 after the Technical Lead-requested fixes (docs/qa/issue-115/RUNTIME-QA.md). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
 runtime_basis:
   dsh: 0.2.1-alpha.2
   host_pi: 1.1.0
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS with real-runtime QA evidence for the exact baseline plugin 0.5.1-pre.1 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
   install_range: ">=0.2.1-alpha.2 (lower bound only, no ceiling; Product Owner decision 2026-10-10). Newer DSH versions can install but are unverified."
-  remaining: Technical Lead review of Issue #115, Product Owner final irreversible confirmation and post-publication verification remain. Not covered by runtime QA - natural pressure-band Native V2 trigger, Alpha search, Grok routes (tracked separately) and user image input.
+  remaining: Final Technical Lead review of release readiness, Product Owner final irreversible confirmation and post-publication verification remain. Not covered by runtime QA - natural pressure-band Native V2 trigger, Alpha search, Grok routes (tracked separately) and user image input.
 publication:
   state: APPROVED_PENDING_PUBLISH
   policy: Product Owner approval is recorded for building this prerelease, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, merge of the public PR, npm prelatest publication and GitHub prerelease are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves prelatest from 0.5.0-pre.1 to 0.5.1-pre.1 and leaves stable latest on 0.5.0.

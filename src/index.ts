@@ -79,6 +79,7 @@ import {
   DEFAULT_REQUEST_IMAGE_MAX_BYTES,
   hydrateNativeImageReferences,
   resolveRouteModelFacts,
+  hasMidHistoryPromptSnapshot,
   responseInputItems,
   serializeDshMessages,
 } from "./dsh-responses.js";
@@ -1075,6 +1076,30 @@ function mergeMap(
   for (const [key, value] of source ?? []) target.set(key, value);
 }
 
+/**
+ * Follow traced item positions through the Grok replay restoration, which may splice items. When the
+ * item count is unchanged the positions are exact; otherwise each traced item is found again by exact
+ * structural equality in order (restoration never alters instruction items).
+ */
+function locateSupersededItems(
+  original: readonly unknown[],
+  restored: readonly unknown[],
+  positions: readonly number[],
+): number[] {
+  if (positions.length === 0 || original.length === restored.length) return [...positions];
+  const located: number[] = [];
+  let cursor = 0;
+  for (const position of positions) {
+    const wanted = JSON.stringify(original[position]);
+    while (cursor < restored.length && JSON.stringify(restored[cursor]) !== wanted) cursor += 1;
+    if (cursor >= restored.length)
+      throw Object.assign(new Error("LCX lost track of a superseded system prompt item"), { code: "LCX_RESPONSES_INVALID_INPUT" });
+    located.push(cursor);
+    cursor += 1;
+  }
+  return located;
+}
+
 async function serializeNativeAware(
   messages: readonly RequestMessage[],
   route: { provider: string; model: string; baseURL: string; sessionId: string },
@@ -1088,17 +1113,29 @@ async function serializeNativeAware(
   // One adapter-owned lookup supplies image support and the route's system-prompt update mode. On an
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
-  const { imageSupport, systemPromptUpdate } = await resolveRouteModelFacts(
+  const { imageSupport, systemPromptUpdate, resolved } = await resolveRouteModelFacts(
     ctx,
     route,
     options.signal,
   );
+  // An unreadable model mode must not demote instructions: history that holds a DSH prompt snapshot after
+  // the head can only come from an in-history route, and sending it as user text would silently lower its
+  // authority. Without such history the conservative default is harmless, so ordinary requests proceed.
+  if (!resolved && hasMidHistoryPromptSnapshot(messages))
+    throw Object.assign(
+      new Error(
+        "LCX could not read the route's model information, so in-history system prompt updates cannot be sent safely; retry once the route is available",
+      ),
+      { code: "LCX_SYSTEM_PROMPT_MODE_UNKNOWN" },
+    );
   const input: SerializedDshMessages["input"][number][] = [];
   const imageMap: ImageAttachmentMap = new Map();
   let nativeTools: SerializedDshMessages["tools"];
   let nativeModel: SerializedDshMessages["model"];
   let grammarToolInputProperties: SerializedDshMessages["grammarToolInputProperties"];
   let normal: RequestMessage[] = [];
+  /** Absolute `input` positions rendered from DSH prompt snapshots that a checkpoint supersedes. */
+  const supersededInstructionItems: number[] = [];
   const serializeOptions = (
     imageMapOverride: ImageAttachmentMap | undefined = undefined,
     extra: Record<string, unknown> = {},
@@ -1149,11 +1186,18 @@ async function serializeNativeAware(
     nativeModel = serialized.model ?? nativeModel;
     grammarToolInputProperties =
       serialized.grammarToolInputProperties ?? grammarToolInputProperties;
-    input.push(...restoreGrokNativeReplay(
+    const restored = restoreGrokNativeReplay(
       serialized.input,
       batch.filter(isPersistedMessage),
       options.grokNativeReplayRoute,
-    ) as SerializedDshMessages["input"]);
+    ) as SerializedDshMessages["input"];
+    const base = input.length;
+    supersededInstructionItems.push(
+      ...locateSupersededItems(serialized.input, restored, serialized.supersededInstructionItems).map(
+        (position) => base + position,
+      ),
+    );
+    input.push(...restored);
     mergeMap(imageMap, serialized.imageMap);
   };
   for (const message of surfaceMessages ?? []) {
@@ -1214,7 +1258,7 @@ async function serializeNativeAware(
   return {
     input,
     ephemeralPreludeItemCount,
-    inHistorySystem: systemPromptUpdate === "in-history",
+    supersededInstructionItems,
     imageMap,
     imageSupport,
     tools: nativeTools,
@@ -1294,7 +1338,7 @@ async function* remoteCompactionStream(
       result,
       input: prepared.input,
       ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount,
-      dropInstructionItems: prepared.inHistorySystem,
+      supersededItemIndices: prepared.supersededInstructionItems,
       imageMap: prepared.imageMap,
       retentionOptions: {
         tokenBudget: routeConfig.nativeRetentionTokenBudget,
