@@ -37,27 +37,27 @@ Run `dsh --version` first, then pick the plugin line for your DSH version. Node.
 
 | Your DSH version | LCX version | Install tag |
 | --- | --- | --- |
-| `0.2.0` line (`0.2.0-rc.2` and later, below `0.2.1`) | `0.5.0-pre.1` (prerelease) | `@prelatest` |
+| `0.2.0` line (`0.2.0-rc.2` and later, below `0.2.1`) | `0.5.0` (stable) | `@latest` |
 | `0.1.6` line (`0.1.6-alpha.2` and later) | `0.4.4-pre.1` (previous prerelease) | `@0.4.4-pre.1` |
-| `0.1.5` line (`0.1.5-rc.1` and later) | `0.4.3` (stable) | `@latest` |
+| `0.1.5` line (`0.1.5-rc.1` and later) | `0.4.3` (stable) | `@0.4.3` |
 
-The three lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `0.5.0-pre.1` is a prerelease; its validated/accepted release baseline is DSH `0.2.0-rc.2` with host/plugin Pi `0.87.1`.
+The three lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `@latest` now points to `0.5.0`, which supports DSH `0.2` only; DSH `0.1.5` users must pin `@0.4.3`. The `0.5.0` release baseline is DSH `0.2.0-rc.2` with host/plugin Pi `0.87.1`, and its runtime code is identical to the earlier `0.5.0-pre.1`.
 
 DSH `0.2.0` line:
-
-```sh
-dsh plugin --profile web add dsh-lcx-codex@prelatest
-dsh web
-```
-
-DSH `0.1.5` line (stable):
 
 ```sh
 dsh plugin --profile web add dsh-lcx-codex@latest
 dsh web
 ```
 
-DSH `0.1.6` line: `dsh plugin --profile web add dsh-lcx-codex@0.4.4-pre.1`. To update later, run the same `add` command again.
+DSH `0.1.5` line (stable, pin the version; do not use `@latest`):
+
+```sh
+dsh plugin --profile web add dsh-lcx-codex@0.4.3
+dsh web
+```
+
+DSH `0.1.6` line: `dsh plugin --profile web add dsh-lcx-codex@0.4.4-pre.1`. To update later, run the same `add` command again. If you already installed `0.5.0-pre.1`, running the `@latest` command moves you to `0.5.0`; the runtime code is the same.
 
 ## Enable features
 
@@ -111,10 +111,10 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 ## Compatibility and known limits
 
-- Baselines: `0.5.0-pre.1` validated/accepted on DSH `0.2.0-rc.2` (prerelease); `0.4.4-pre.1` verified on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
+- Baselines: `0.5.0` released on DSH `0.2.0-rc.2` (runtime identical to the verified `0.5.0-pre.1`); `0.4.4-pre.1` verified on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
 - When upgrading, starting a new session is recommended; old saved compaction state is not guaranteed to remain compatible. On DSH `0.2`, an old long session carrying a previous LCX checkpoint reports `LCX_CHECKPOINT_UNSUPPORTED` on the LCX path; start a new session. Other routes are unaffected.
 - Grok native search supports API-key / API-gateway routes. xAI OAuth / SuperGrok login is outside the current scope. Native X Search has been verified on `grok-4.6` only.
-- Grok agentic calls report usage that is cumulative across internal requests. When the terminal response carries complete live-context details, `0.5.0-pre.1` uses them for compaction pressure and otherwise falls back to an estimate; billed usage is unchanged.
+- Grok agentic calls report usage that is cumulative across internal requests. When the terminal response carries complete live-context details, `0.5.0` uses them for compaction pressure and otherwise falls back to an estimate; billed usage is unchanged.
 - Alpha remains experimental. Stateful `open / find` browsing works on the tested OAuth-backed upstream; API-key upstream accounts are not covered. A failed target-page fetch is reported as `LCX_ALPHA_PAGE_FETCH_FAILED` so the model can try another result.
 - On DSH `0.1.5` with `0.4.3`, after enabling or disabling the plugin an already-open browser page may need to be refreshed.
 - API gateways vary in capability. A working normal chat does not guarantee that search, long-conversation compaction, Alpha, or Grok native search is also supported.
@@ -125,9 +125,9 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 **Conversation works but search or compaction fails?** Check that the selected GPT / Grok Responses route actually provides the required server-side capability. A gateway product name alone does not guarantee every feature.
 
-**Plugin "failed to import" after upgrading to DSH 0.2?** A profile upgraded from much older versions may still contain stale packages. Stop `dsh web`, move away or delete `node_modules` and `pnpm-lock.yaml` in `profiles/web/` under your DSH home (default `~/.dsh`, or `DSH_HOME`), run `dsh plugin --profile web add dsh-lcx-codex@prelatest` again, then start `dsh web`.
+**Plugin "failed to import" after upgrading to DSH 0.2?** A profile upgraded from much older versions may still contain stale packages. Stop `dsh web`, move away or delete `node_modules` and `pnpm-lock.yaml` in `profiles/web/` under your DSH home (default `~/.dsh`, or `DSH_HOME`), run `dsh plugin --profile web add dsh-lcx-codex@latest` again, then start `dsh web`.
 
-**`@prelatest` installed the previous version right after a release?** The package manager's metadata cache may not have refreshed yet, and DSH rejects the incompatible version. Retry after a few minutes, or pin the exact version, for example `dsh-lcx-codex@0.5.0-pre.1`.
+**`@latest` installed the previous version right after a release?** The package manager's metadata cache may not have refreshed yet, and DSH rejects the incompatible version. Retry after a few minutes, or pin the exact version, for example `dsh-lcx-codex@0.5.0`.
 
 When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), include plugin, DSH, and Node.js versions plus reproduction steps. Do not post API keys, full requests, or unredacted session logs.
 

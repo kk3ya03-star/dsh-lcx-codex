@@ -1,28 +1,34 @@
-version: 0.5.0-pre.1
-state: APPROVED_PRERELEASE
+version: 0.5.0
+state: APPROVED_STABLE
 approval:
-  product_owner: private-issue-109-po-approved-2026-09-30
-  controller_review: ACCEPTED
-  reference: docs/qa/issue-109/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: RECORDED_2026-09-30
-  final_confirmation_reference: docs/qa/issue-109/PO-FINAL-CONFIRMATION.md
-source:
-  repository: kk3ya03-star/dsh-lcx-codex-private
-  commit: 7d610062b9f50b4fe66b57b6c3667ef464dfcf42
-  tree: 59a058e3a91ad6b1b381ee0a7c79146df3d1b9ae
-  private_frozen_commit: 7d610062b9f50b4fe66b57b6c3667ef464dfcf42
-  private_frozen_tree: 59a058e3a91ad6b1b381ee0a7c79146df3d1b9ae
-  frozen_tag: frozen/v0.5.0-pre.1
-  policy: Product/runtime source is frozen at the exact dev commit/tree above. Later release-control commits do not replace the product source.
+  product_owner: private-issue-114-po-approved-2026-10-10
+  controller_review: PENDING_TECHNICAL_LEAD_REVIEW
+  reference: docs/qa/issue-114/PRODUCT-OWNER-APPROVAL.md
+  final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
+readiness:
+  state: READY_FOR_FINAL_CONFIRMATION
+  reference: docs/qa/issue-114/RELEASE-READINESS.md
+  policy: Stable promotion is authorized only for the zero-functional-change promotion of the published and post-release verified 0.5.0-pre.1. The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report.
+promotion_basis:
+  source_version: 0.5.0-pre.1
+  source_tag: v0.5.0-pre.1
+  source_private_frozen_tag: frozen/v0.5.0-pre.1
+  source_commit: 7d610062b9f50b4fe66b57b6c3667ef464dfcf42
+  source_tree: 59a058e3a91ad6b1b381ee0a7c79146df3d1b9ae
+  source_public_commit: 6ed918706b71757fbb44c77c8e2bbb3656277219
+  source_public_tree: 7d01a82dfe48b5db5ecc6650deffb1e549c17e0e
+  source_npm_shasum: e3aad6dbda665915bec4d8e0109d62278eb42afe
+  zero_functional_change_required: true
+  invariant: src/**, lib/**, cordis.patch.yml and every functional test stay byte-identical to the frozen 0.5.0-pre.1 source. Only the package version, the package-contract version assertion, stable-channel documentation, release manifest and release-control metadata change.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.5.0-pre.1
-  qualification: Product Owner approved the exact candidate and gave the final irreversible confirmation after the Release Readiness Report (private Issue #109). This exact candidate is authorized for publication.
-  npm_dist_tag: prelatest
-  stable_latest_must_remain: 0.4.3
+  tag: v0.5.0
+  npm_dist_tag: latest
+  previous_latest_must_be: 0.4.3
+  prerelease_channel_retained: prelatest stays 0.5.0-pre.1; 0.5.0-pre.1 and 0.4.3 are immutable and must not be reused or moved.
 public_export:
-  from_private_frozen_source:
+  from_private_release_source:
     - .gitattributes
     - .gitignore
     - src/**
@@ -34,33 +40,35 @@ public_export:
     - tsconfig.json
     - tsconfig.client.json
     - cordis.patch.yml
-    - CHANGELOG.md
-    - ARCHITECTURE.md
-    - README_EN.md
     - LICENSE
     - THIRD_PARTY_NOTICES.md
-    - assets/**
   from_release_control_overlay:
     - PUBLIC-RELEASE-MANIFEST.yml
-  public_test_support_from_private_frozen_source:
+  public_test_support_from_private_release_source:
     - data/model-scope-086-matrix.json
     - data/pi086-responses-descriptors.json
     - data/pi086-responses-models.json
     - data/step0c-route-086.json
     - qa/issue-62/adapter-off.mjs
-  public_test_support_policy: Deterministic fixtures and one reversible QA helper referenced by the frozen public tests, exported byte-identical from the frozen source. They are never npm payload (package.json files remains the runtime allowlist). The single qa/issue-62/adapter-off.mjs allowlist overrides the general qa/** exclusion for that file only; no other qa/** path is exported.
+  public_test_support_policy: Deterministic fixtures and one reversible QA helper referenced by the public tests, exported byte-identical from the private release source. They are never npm payload (package.json files remains the runtime allowlist). The single qa/issue-62/adapter-off.mjs allowlist overrides the general qa/** exclusion for that file only; no other qa/** path is exported.
   preserve_or_update_on_public_surface:
     - .github/workflows/publish.yml
     - .github/workflows/verify.yml
     - .github/workflows/finalize-stable-release.yml
     - README.md
+    - README_EN.md
+    - CHANGELOG.md
+    - ARCHITECTURE.md
+    - CONTRIBUTING.md
+    - assets/settings-card.png
   distribution_overlays_reviewed:
-    - README_EN.md (refreshed install/compatibility/limits for the DSH 0.2 line; supersedes byte-for-byte frozen copy)
-    - CHANGELOG.md (0.5.0-pre.1 release-candidate section)
-    - ARCHITECTURE.md (refreshed to the 0.5.0-pre.1 / DSH 0.2 architecture and limits)
-    - assets/settings-card.png (recaptured from the exact public candidate install showing v0.5.0-pre.1)
-    - .github/workflows/verify.yml and publish.yml (DSH runtime fixture runtime-dsh016 -> runtime-dsh02)
-  public_readme_policy: Apply the reviewed #104 Chinese README patch to the current public README; do not export the private control-plane README.
+    - README.md (public zh; DSH 0.2 install line moves from 0.5.0-pre.1 / @prelatest to 0.5.0 / @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its existing pinned-prerelease guidance)
+    - README_EN.md (same install-matrix change)
+    - CHANGELOG.md (0.5.0 stable section; no private issue numbers)
+    - ARCHITECTURE.md (stable version wording only, if it names the version)
+    - assets/settings-card.png (settings card badge v0.5.0 when it can be recaptured from the exact public tarball)
+    - .github/workflows (verify/publish/finalize stable-release support)
+  public_readme_policy: Update the reviewed public README and README_EN install matrix for the stable line; do not export the private control-plane README.
   exclude_from_private_export:
     - README.md
     - AGENTS.md
@@ -81,18 +89,22 @@ public_export:
     - tools/**
     - .github/**
 verification:
-  state: READY_FOR_PUBLICATION
-  policy: Engineering, runtime, browser and repository-level acceptance passed on the frozen source. Public export/tree/package/public-CI verification passed for the release candidate, and the final irreversible Product Owner confirmation is recorded. The exact candidate is ready for publication.
+  state: READY_FOR_FINAL_CONFIRMATION
+  policy: Zero-functional-change parity against the frozen 0.5.0-pre.1 source, the full engineering gate set on the exact public tree and the package boundary are recorded in the Release Readiness Report. No public tag, npm publication, dist-tag change or GitHub Release has occurred.
 runtime_basis:
   dsh: 0.2.0-rc.2
   host_pi: 0.87.1
   plugin_pi: 0.87.1
-  qualification: ENGINEERING_PASS / TL_ACCEPTED for the exact DSH 0.2 candidate lineage. Publication does not by itself promote this assessment to VERIFIED.
-  remaining: Only post-publication verification remains. Issue #62 remains an upstream typed-provenance seam and #105 is an upstream CSS-cleanup tracker; neither is a release blocker. Real provider Alpha spill-threshold crossing remains not covered, while deterministic F13 spill/cold-locator coverage passes.
+  qualification: Inherited unchanged from the post-release VERIFIED exact baseline of 0.5.0-pre.1 (plugin x DSH 0.2.0-rc.2 x host Pi 0.87.1 x plugin Pi 0.87.1). Stable publication does not widen the claim to other DSH builds in the install range.
+  remaining: Only the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner release approval and final irreversible confirmation are recorded for this exact candidate. Public tag, npm prelatest publication and GitHub prerelease are authorized for this exact candidate only; stable latest must remain 0.4.3.
+  policy: Release approval is recorded, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, npm latest publication and GitHub Release are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves latest from 0.4.3 to 0.5.0 and leaves prelatest on 0.5.0-pre.1.
 previous_release:
-  version: 0.4.4-pre.1
-  tag: v0.4.4-pre.1
+  version: 0.5.0-pre.1
+  tag: v0.5.0-pre.1
   policy: Existing published artifact, public tag and registry version are immutable and must not be reused.
+previous_stable:
+  version: 0.4.3
+  tag: v0.4.3
+  policy: Existing stable artifact; remains the npm latest until the confirmed 0.5.0 publication.
