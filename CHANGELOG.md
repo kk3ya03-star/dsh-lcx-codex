@@ -6,6 +6,7 @@ Stable release for DSH `>=0.2.0-rc.2 <0.2.1` (release baseline DSH `0.2.0-rc.2`,
 
 - Stable zero-functional-change promotion of the published `0.5.0-pre.1`: `src/**`, `lib/**` and the plugin patch are byte-identical to the prerelease. Only the version, install documentation and release tooling/metadata change.
 - Publish stable `0.5.0` on npm `latest`; `0.5.0-pre.1` stays on `prelatest` as immutable prerelease history.
+- The install range `>=0.2.0-rc.2 <0.2.1` may admit `0.2.1` prereleases (for example `0.2.1-alpha.2`) under DSH's range semantics; those builds are not supported or verified for this release.
 - npm `@latest` now resolves to a release that supports DSH `0.2` only. DSH `0.1.5` installs must use `dsh-lcx-codex@0.4.3`, and DSH `0.1.6` installs `dsh-lcx-codex@0.4.4-pre.1`.
 
 ## 0.5.0-pre.1 - release candidate

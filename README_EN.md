@@ -43,6 +43,8 @@ Run `dsh --version` first, then pick the plugin line for your DSH version. Node.
 
 The three lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `@latest` now points to `0.5.0`, which supports DSH `0.2` only; DSH `0.1.5` users must pin `@0.4.3`. The `0.5.0` release baseline is DSH `0.2.0-rc.2` with host/plugin Pi `0.87.1`, and its runtime code is identical to the earlier `0.5.0-pre.1`.
 
+> Note: the install range is `>=0.2.0-rc.2 <0.2.1`. Under DSH's version-range semantics, `0.2.1` prereleases (for example `0.2.1-alpha.2`) may also be allowed to install, but they are **not** supported or verified for `0.5.0`; do not rely on them.
+
 DSH `0.2.0` line:
 
 ```sh

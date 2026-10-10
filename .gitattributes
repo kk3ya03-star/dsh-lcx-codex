@@ -10,3 +10,6 @@ docs/upstream-dsh-fork-alpha2/fork-inbox-source.patch whitespace=-blank-at-eol
 
 # DSH session logs are zstd frames; keep the archival bytes.
 *.zstd binary
+
+# Compiled output of src/ (and the bundled Pi runtime); exclude from GitHub language stats and collapse in diffs.
+lib/** linguist-generated=true
