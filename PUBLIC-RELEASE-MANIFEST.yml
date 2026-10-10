@@ -66,7 +66,7 @@ public_export:
     - README_EN.md (same install-matrix change)
     - CHANGELOG.md (0.5.0 stable section; no private issue numbers)
     - ARCHITECTURE.md (stable version wording only, if it names the version)
-    - assets/settings-card.png (settings card badge v0.5.0 when it can be recaptured from the exact public tarball)
+    - assets/settings-card.png (recaptured from an isolated install of the exact public 0.5.0 tarball on DSH 0.2.0-rc.2; badge v0.5.0)
     - .github/workflows (verify/publish/finalize stable-release support)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the stable line; do not export the private control-plane README.
   exclude_from_private_export:
