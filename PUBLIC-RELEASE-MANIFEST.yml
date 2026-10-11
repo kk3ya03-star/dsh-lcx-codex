@@ -66,7 +66,7 @@ public_export:
     - README_EN.md (same install-matrix change)
     - CHANGELOG.md (0.6.0-pre.2 release-candidate section on top of 0.6.0-pre.1; no private issue numbers)
     - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count, generated-file count, package file count and runtime-evidence sentence updated for 0.6.0-pre.2)
-    - assets/settings-card.png (unchanged from 0.6.0-pre.1: recapture from an isolated install of the exact 0.6.0-pre.2 tarball on a running DSH 0.2.1-alpha.2 is pending, so the image still shows the badge v0.6.0-pre.1; no other pixel of the settings card changed in this release)
+    - assets/settings-card.png (recaptured from an isolated install of the exact 0.6.0-pre.2 tarball (SHA-256 c5541dbf95464686626733286b1aa6d86eee131ab57204f2f63787e85bfce4f6, lib byte-identical) on DSH 0.2.1-alpha.2; badge v0.6.0-pre.2; 1600x2000, PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00; the image is not part of the npm package)
     - .github/workflows/verify.yml and publish.yml (DSH runtime fixture runtime-dsh02 -> runtime-dsh021)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the prerelease line; do not export the private control-plane README.
