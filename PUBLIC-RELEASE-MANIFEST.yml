@@ -1,33 +1,33 @@
-version: 0.5.0
+version: 0.5.1
 state: APPROVED_STABLE
 approval:
-  product_owner: private-issue-114-po-approved-2026-10-10
-  controller_review: ACCEPTED
-  reference: docs/qa/issue-114/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: RECORDED_2026-10-10
-  final_confirmation_reference: docs/qa/issue-114/PO-FINAL-CONFIRMATION.md
+  product_owner: private-issue-121-po-approved-2026-10-11
+  controller_review: PENDING_TECHNICAL_LEAD_REVIEW
+  reference: docs/qa/issue-121/PRODUCT-OWNER-APPROVAL.md
+  final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
-  state: FINAL_CONFIRMATION_RECORDED
-  reference: docs/qa/issue-114/RELEASE-READINESS.md
-  policy: Stable promotion is authorized only for the zero-functional-change promotion of the published and post-release verified 0.5.0-pre.1. The Product Owner gave the final irreversible confirmation after the Release Readiness Report (private Issue #114); this exact candidate is authorized for publication.
-promotion_basis:
-  source_version: 0.5.0-pre.1
-  source_tag: v0.5.0-pre.1
-  source_private_frozen_tag: frozen/v0.5.0-pre.1
-  source_commit: 7d610062b9f50b4fe66b57b6c3667ef464dfcf42
-  source_tree: 59a058e3a91ad6b1b381ee0a7c79146df3d1b9ae
-  source_public_commit: 6ed918706b71757fbb44c77c8e2bbb3656277219
-  source_public_tree: 7d01a82dfe48b5db5ecc6650deffb1e549c17e0e
-  source_npm_shasum: e3aad6dbda665915bec4d8e0109d62278eb42afe
-  zero_functional_change_required: true
-  invariant: src/**, lib/**, cordis.patch.yml and every functional test stay byte-identical to the frozen 0.5.0-pre.1 source. Only the package version, the package-contract version assertion, stable-channel documentation, release manifest and release-control metadata change.
+  state: READY_FOR_FINAL_CONFIRMATION
+  reference: docs/qa/issue-121/RELEASE-READINESS.md
+  policy: The Product Owner approved shipping a new stable release for DSH 0.2.0-rc.2 that contains all the verified bug fixes. The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead has not yet reviewed the backport.
+source:
+  repository: kk3ya03-star/dsh-lcx-codex-private
+  engineering_issues: [117, 119, 121]
+  product_commit: b489af86c25bdf93fb15559e9804db3ef9f002d4
+  product_tree: 4c8b5979af75fc5c8a7ea85d8bc8902ad72471da
+  runtime_qa_build_commit: b489af86c25bdf93fb15559e9804db3ef9f002d4
+  base_release: 0.5.0
+  base_commit: 9dbc4d31c92389d9c6f3bf50b8d227af6a24a410
+  frozen_tag: frozen/v0.5.1
+  frozen_tag_state: NOT_CREATED_UNTIL_FINAL_CONFIRMATION
+  policy: Product/runtime source is the private engineering commit above (the verified bug fixes of Issues 117 and 119, backported onto the 0.5.0 line for DSH 0.2.0-rc.2). Later commits on the release-control branch change only governance records, evidence documents and the manifest. The frozen/v0.5.1 tag is created only after the Product Owner final confirmation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
-  branch: main
-  tag: v0.5.0
+  branch: stable/0.5.x
+  tag: v0.5.1
+  qualification: Stable line branch. The pre line (0.6.x, DSH 0.2.1 and later) lives on public main; the stable 0.5.x line (DSH 0.2.0) lives on stable/0.5.x, created from the published tag v0.5.0. The tag is created on the merge commit into stable/0.5.x.
   npm_dist_tag: latest
-  previous_latest_must_be: 0.4.3
-  prerelease_channel_retained: prelatest stays 0.5.0-pre.1; 0.5.0-pre.1 and 0.4.3 are immutable and must not be reused or moved.
+  previous_latest_must_be: 0.5.0
+  prerelease_channel_retained: prelatest stays 0.5.1-pre.1; 0.5.0 and 0.5.1-pre.1 are immutable and must not be reused or moved.
 public_export:
   from_private_release_source:
     - .gitattributes
@@ -63,12 +63,13 @@ public_export:
     - CONTRIBUTING.md
     - assets/settings-card.png
   distribution_overlays_reviewed:
-    - README.md (public zh; DSH 0.2 install line moves from 0.5.0-pre.1 / @prelatest to 0.5.0 / @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its existing pinned-prerelease guidance)
+    - README.md (public zh; DSH 0.2.0-rc.2 installs 0.5.1 via @latest, DSH 0.2.1 and later installs the prerelease via @prelatest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its pinned-prerelease guidance)
     - README_EN.md (same install-matrix change)
-    - CHANGELOG.md (0.5.0 stable section; no private issue numbers)
+    - CHANGELOG.md (0.5.1 stable section; no private issue numbers)
     - ARCHITECTURE.md (stable version wording only, if it names the version)
-    - assets/settings-card.png (recaptured from an isolated install of the exact public 0.5.0 tarball on DSH 0.2.0-rc.2; badge v0.5.0)
-    - .github/workflows (verify/publish/finalize stable-release support)
+    - assets/settings-card.png (recaptured from an isolated install of the exact public 0.5.1 tarball on DSH 0.2.0-rc.2; badge v0.5.1)
+    - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
+    - .github/workflows (unchanged from the published v0.5.0 line; runtime fixture runtime-dsh02)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the stable line; do not export the private control-plane README.
   exclude_from_private_export:
     - README.md
@@ -91,21 +92,21 @@ public_export:
     - .github/**
 verification:
   state: READY_FOR_FINAL_CONFIRMATION
-  policy: Zero-functional-change parity against the frozen 0.5.0-pre.1 source, the full engineering gate set on the exact public tree and the package boundary are recorded in the Release Readiness Report. No public tag, npm publication, dist-tag change or GitHub Release has occurred.
+  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real-runtime QA of the fixes on DSH 0.2.0-rc.2 passed on the product commit (Issue 121 worker session record). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
 runtime_basis:
   dsh: 0.2.0-rc.2
   host_pi: 0.87.1
   plugin_pi: 0.87.1
-  qualification: Inherited unchanged from the post-release VERIFIED exact baseline of 0.5.0-pre.1 (plugin x DSH 0.2.0-rc.2 x host Pi 0.87.1 x plugin Pi 0.87.1). Stable publication does not widen the claim to other DSH builds in the install range.
-  remaining: Only post-publication verification remains. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
+  qualification: ENGINEERING_PASS with real-runtime QA evidence for the exact baseline plugin 0.5.1 x DSH 0.2.0-rc.2 x host Pi 0.87.1 x plugin Pi 0.87.1. Not VERIFIED until the stable artifact is published and post-release verified; publication alone does not promote the assessment. Stable publication does not widen the claim to other DSH builds in the install range.
+  remaining: Only the Technical Lead review of the backport, the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner release approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.5.0, npm latest publication (0.4.3 -> 0.5.0) and the stable GitHub Release are authorized for this exact candidate only; prelatest stays 0.5.0-pre.1.
+  policy: Release approval is recorded, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, npm latest publication and GitHub Release are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves latest from 0.5.0 to 0.5.1 and leaves prelatest on 0.5.1-pre.1. This stable release must be published before 0.6.0-pre.1.
 previous_release:
-  version: 0.5.0-pre.1
-  tag: v0.5.0-pre.1
-  policy: Existing published artifact, public tag and registry version are immutable and must not be reused.
-previous_stable:
-  version: 0.4.3
-  tag: v0.4.3
-  policy: Existing stable artifact; remains the npm latest until the confirmed 0.5.0 publication.
+  version: 0.5.0
+  tag: v0.5.0
+  policy: Existing stable artifact, public tag and registry version are immutable and must not be reused; remains the npm latest until the confirmed 0.5.1 publication.
+previous_prerelease:
+  version: 0.5.1-pre.1
+  tag: v0.5.1-pre.1
+  policy: Existing published prerelease on the pre line; immutable and must not be reused or moved. prelatest stays on it.
