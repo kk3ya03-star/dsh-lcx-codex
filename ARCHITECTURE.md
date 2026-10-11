@@ -1,6 +1,6 @@
-# LCX architecture — 0.5.0
+# LCX architecture — 0.5.1
 
-This release (a zero-functional-change promotion of the verified `0.5.0-pre.1`) targets the DSH 0.2 contract. Its release baseline is **DSH 0.2.0-rc.2, Session V4 and host/plugin Pi 0.87.1**. Public DSH peers use the bounded `>=0.2.0-rc.2 <0.2.1` install/assessment range; later in-range releases require their own compatibility evidence. The stable `0.4.3` line (DSH 0.1.5) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
+This release (a stable bug-fix release on the `0.5.0` line) targets the DSH 0.2 contract. Its release baseline is **DSH 0.2.0-rc.2, Session V4 and host/plugin Pi 0.87.1**. Public DSH peers use the bounded `>=0.2.0-rc.2 <0.2.1` install/assessment range; later in-range releases require their own compatibility evidence. The stable `0.4.3` line (DSH 0.1.5) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
 
 ## Ownership and package boundary
 
@@ -39,4 +39,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 540/540 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real GPT/Grok, Alpha and browser workflows. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 634/634 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real-runtime GPT and Grok workflows for the bug fixes in this release (image retention across compaction, restart and route migration; fork replay; tool-result pairing; reasoning controls; Grok native search; projection-cache persistence; in-stream failure retry). Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

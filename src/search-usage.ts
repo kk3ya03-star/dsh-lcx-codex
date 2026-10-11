@@ -22,15 +22,22 @@ const headerKey = (header?:EpochHeader) => header === undefined ? undefined : JS
 export const searchUsageProjection = {
   key:'lcxSearchUsage', stateVersion:3, stateSchema:schema.extend({pending:z.record(z.string(),z.string()),headerKey:z.string().optional(),sampleHeaderKey:z.string().optional()}),
   init:()=>({auxiliary:zeroBuckets(),aggregateContext:false,pending:{}}),
-  apply(state:SearchUsageState,event:Parameters<ProjectionDefinition<'lcxSearchUsage'>['apply']>[1]) {
-    if(event.type==='request/header') return {...state,headerKey:headerKey(event.data.header)};
+  apply(state:SearchUsageState,event:Parameters<ProjectionDefinition<'lcxSearchUsage'>['apply']>[1]):SearchUsageState {
+    // Unit state is checkpointed by the host's projection cache, which refuses any state that is not
+    // lossless plain JSON. An optional field is therefore omitted when absent, never set to `undefined`.
+    if(event.type==='request/header') {
+      const {headerKey:_previous,...rest}=state;const key=headerKey(event.data.header);
+      return key===undefined ? rest : {...rest,headerKey:key};
+    }
     // DSH measure anchors assistant/message only. Attempts must not transplant a
     // newer context sample onto an older successful measurement anchor.
     if(event.type==='assistant/message' || event.type==='assistant/attempt') {
       const contextDetails = event.type==='assistant/message' ? providerContextOf(event) : undefined;
-      return {...state,aggregateContext:aggregateContextOf(event) ?? state.aggregateContext,contextDetails,
-        contextProvenance:contextDetails ? 'provider-context-details' : undefined,
-        sampleHeaderKey:contextDetails ? state.headerKey : undefined};
+      // The newest reply replaces the whole provider-context sample: drop the old keys, then add the new ones.
+      const {contextDetails:_details,contextProvenance:_provenance,sampleHeaderKey:_sample,...rest}=state;
+      return {...rest,aggregateContext:aggregateContextOf(event) ?? state.aggregateContext,
+        ...(contextDetails ? {contextDetails,contextProvenance:'provider-context-details' as const,
+          ...(state.headerKey===undefined ? {} : {sampleHeaderKey:state.headerKey})} : {})};
     }
     if(event.type==='tool/call' && isSearchTool(event.data.name)) return {...state,pending:{...state.pending,[event.data.callId]:event.data.name}};
     const callId=event.type==='tool/result'?event.data.message.source.callId:undefined;

@@ -1,5 +1,6 @@
 import { Session, type SessionStore, type SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import type { ToolExecuteListener } from "./auxiliary-usage.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
 type CompatMethod = (this: object, agent: unknown, trigger: string, signal: AbortSignal) => Promise<unknown>;
@@ -48,6 +49,12 @@ export declare function readAgentRouteState(agent: unknown): {
 /** Selected next-request route, for tool advertisement before header persistence. */
 export declare function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof readAgentRouteState>;
 export declare function scopedToolRuntime(agent: unknown): (Pick<ToolRuntime, "register"> & Partial<Pick<ToolRuntime, "get">>) | undefined;
+/**
+ * Listen on the around-dispatch `tools/execute` seam of one Agent only. The listener rides the Agent's
+ * own scoped context, so it never observes another Agent's calls and no global wrapper is installed.
+ * Returns the disposer, or undefined when the Agent exposes no scoped context.
+ */
+export declare function onScopedToolExecute(agent: unknown, listener: ToolExecuteListener): (() => void) | undefined;
 export declare function tokenMeterTotal(value: unknown, session: Session): number | undefined;
 export declare function sessionsService(ctx: unknown): Pick<SessionStore, "get"> | undefined;
 export declare function sessionFor(ctx: unknown, sessionId: string): Session | undefined;

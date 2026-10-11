@@ -7,6 +7,7 @@ import {
   type SessionEvent,
 } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import type { ToolExecuteListener } from "./auxiliary-usage.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
 
@@ -162,6 +163,25 @@ export function scopedToolRuntime(
       ? { get: (tools.get as ToolRuntime["get"]).bind(tools) }
       : {}),
   };
+}
+
+/**
+ * Listen on the around-dispatch `tools/execute` seam of one Agent only. The listener rides the Agent's
+ * own scoped context, so it never observes another Agent's calls and no global wrapper is installed.
+ * Returns the disposer, or undefined when the Agent exposes no scoped context.
+ */
+export function onScopedToolExecute(
+  agent: unknown,
+  listener: ToolExecuteListener,
+): (() => void) | undefined {
+  const ctx = agentLike(agent)?.ctx;
+  if (!mutableService(ctx) || typeof ctx.on !== "function") return undefined;
+  try {
+    const dispose = Reflect.apply(ctx.on, ctx, ["tools/execute", listener]);
+    return typeof dispose === "function" ? () => void Reflect.apply(dispose, undefined, []) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function tokenMeterTotal(value: unknown, session: Session): number | undefined {

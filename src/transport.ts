@@ -342,10 +342,17 @@ export async function consumeSse(
     }
     onEvent(event);
   };
+  // An abort must interrupt a read that never settles, not only be noticed between reads. Cancelling
+  // the reader settles the pending read as done, so the abort is re-checked right after every read.
+  const onAbort = () => {
+    reader.cancel(options.signal?.reason).catch(() => {});
+  };
+  options.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       abortIfNeeded(options.signal);
       const { done, value } = await reader.read();
+      abortIfNeeded(options.signal);
       if (done) break;
       bytes += value.byteLength;
       if (bytes > maxBytes)
@@ -368,6 +375,7 @@ export async function consumeSse(
       dataLines.push(pending.slice(5).replace(/^ /u, ""));
     dispatch();
   } finally {
+    options.signal?.removeEventListener("abort", onAbort);
     try {
       await reader.cancel();
     } catch {
