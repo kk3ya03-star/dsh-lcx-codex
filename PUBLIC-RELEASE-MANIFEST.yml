@@ -2,13 +2,13 @@ version: 0.6.0-pre.2
 state: APPROVED_PRERELEASE
 approval:
   product_owner: private-issue-127-po-approved-2026-10-11
-  controller_review: TL_REVIEWED_CONDITIONAL_HOLD_AND_REREVIEW_P2_FIXED_BBFED46_TL_REREVIEW_PENDING
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
   reference: docs/qa/issue-127/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-127/RELEASE-READINESS.md
-  policy: The Product Owner decided to fix Issue #123 (P1) and ship it immediately as prerelease 0.6.0-pre.2 on the pre line, in parallel with stable 0.5.2. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead put the first candidate on conditional hold and the findings are fixed in d2f917e; the re-review found one more P2 (stale host-recognition memory after a live profile change), fixed in 8fc7a97 and bbfed46 and verified live on real DSH; a Technical Lead re-review of the re-cut candidate and of this release-readiness record is pending. Order - stable 0.5.2 is published first.
+  policy: The Product Owner decided to fix Issue #123 (P1) and ship it immediately as prerelease 0.6.0-pre.2 on the pre line, in parallel with stable 0.5.2. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead put the first candidate on conditional hold; the findings are fixed in d2f917e, and the re-review P2 (stale host-recognition memory after a live profile change) is fixed in 8fc7a97 and bbfed46 and verified live on real DSH. The Technical Lead re-review passed on 2026-10-11 for Issue #123, the re-cut candidate and this release-readiness record, and lifted the conditional hold; compatibility stays ENGINEERING_PASS, not VERIFIED. Order - stable 0.5.2 is published first.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issue: 123
@@ -98,7 +98,7 @@ runtime_basis:
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS with real-runtime evidence for the exact baseline plugin 0.6.0-pre.2 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
   install_range: ">=0.2.1-alpha.2 (lower bound only, no ceiling; Product Owner decision 2026-10-10). Newer DSH versions can install but are unverified."
-  remaining: Technical Lead re-review of the re-cut Issue #123 candidate and of release readiness, publication of stable 0.5.2 first, Product Owner final irreversible confirmation and post-publication verification remain. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search. A model whose protocol is unknown to DSH, the profile and the bundled catalog fails closed by design.
+  remaining: Publication of stable 0.5.2 first, Product Owner final irreversible confirmation and post-publication verification remain. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search. A model whose protocol is unknown to DSH, the profile and the bundled catalog fails closed by design.
 publication:
   state: APPROVED_PENDING_PUBLISH
   policy: Product Owner approval is recorded for building this prerelease, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, merge of the public PR, npm prelatest publication and GitHub prerelease are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves prelatest from 0.6.0-pre.1 to 0.6.0-pre.2 and leaves stable latest unchanged. Order - stable 0.5.2 (private main / public stable/0.5.x, Issue #126) is published first, so stable_latest_must_remain is 0.5.2; this value is not yet true on the registry (latest is 0.5.1 until 0.5.2 is published) and the publish workflow asserts that npm latest equals it, so publishing this prerelease before 0.5.2 fails closed.
