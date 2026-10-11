@@ -4,11 +4,12 @@ approval:
   product_owner: private-issue-124-po-approved-2026-10-11
   controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
   reference: docs/qa/issue-124/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
+  final_irreversible_confirmation: RECORDED_2026-10-11
+  final_confirmation_reference: docs/qa/issue-124/PO-FINAL-CONFIRMATION.md
 readiness:
-  state: READY_FOR_FINAL_CONFIRMATION
+  state: FINAL_CONFIRMATION_RECORDED
   reference: docs/qa/issue-124/RELEASE-READINESS.md
-  policy: The Product Owner decided that the plugin adopts the DSH 0.2.1 plugin features before a prerelease ships and approved shipping Issues #117, #119, #120 and #122 as prerelease 0.6.0-pre.1 (renamed from the never-published 0.5.1-pre.2). The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead engineering review (controller_review) passed on 2026-10-11 for Issues #117, #119, #120, #122 and this release-readiness record.
+  policy: The Product Owner gave the final irreversible confirmation on 2026-10-11 after the Release Readiness Report and the Technical Lead engineering review (private Issue #124). This exact candidate is authorized for publication.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issue: 124
@@ -98,10 +99,10 @@ runtime_basis:
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS with real-runtime evidence for the exact baseline plugin 0.6.0-pre.1 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
   install_range: ">=0.2.1-alpha.2 (lower bound only, no ceiling; Product Owner decision 2026-10-10). Newer DSH versions can install but are unverified."
-  remaining: Technical Lead review of Issues #120 and #122 and of release readiness, Product Owner final irreversible confirmation and post-publication verification remain. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search.
+  remaining: Only post-publication verification remains. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner approval is recorded for building this prerelease, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, merge of the public PR, npm prelatest publication and GitHub prerelease are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves prelatest from 0.5.1-pre.1 to 0.6.0-pre.1 and leaves stable latest unchanged. Order - stable 0.5.1 (private main / public stable/0.5.x) is published first, so stable_latest_must_remain is 0.5.1; if stable 0.5.1 is not published first this value must be changed back to 0.5.0 before publication (the publish workflow asserts that npm latest equals it).
+  policy: Product Owner approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.6.0-pre.1, npm prelatest publication and the GitHub Release are authorized for this exact candidate only; npm latest must remain 0.5.1, which is published first.
 previous_release:
   version: 0.5.0
   tag: v0.5.0
