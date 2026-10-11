@@ -2,13 +2,13 @@ version: 0.5.1
 state: APPROVED_STABLE
 approval:
   product_owner: private-issue-121-po-approved-2026-10-11
-  controller_review: PENDING_TECHNICAL_LEAD_REVIEW
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
   reference: docs/qa/issue-121/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-121/RELEASE-READINESS.md
-  policy: The Product Owner approved shipping a new stable release for DSH 0.2.0-rc.2 that contains all the verified bug fixes. The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead has not yet reviewed the backport.
+  policy: The Product Owner approved shipping a new stable release for DSH 0.2.0-rc.2 that contains all the verified bug fixes. The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead engineering review of the backport passed on 2026-10-11.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issues: [117, 119, 121]
