@@ -187,6 +187,15 @@ function profileDeclaresModel(profile: ProviderProfile | null | undefined, model
   return Array.isArray(profile?.models) && profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
 }
 
+/**
+ * A nonempty `models` list replaces the served catalog: DSH serves exactly the listed models, and LCX answers
+ * `llm/stream` before DSH's adapter does, so a claim here would send a request DSH itself refuses.
+ */
+function profileExcludesModel(profile: ProviderProfile | null | undefined, modelId: unknown): boolean {
+  return Array.isArray(profile?.models) && profile.models.length > 0 &&
+    !profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
+}
+
 function configuredModelProfile(
   profile: ProviderProfile | null | undefined,
   modelId: unknown,
@@ -284,6 +293,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
   const configured = profile;
+  if (profileExcludesModel(configured, model)) return undefined;
   // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
   const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
   const builtin = catalog.descriptor;
@@ -336,7 +346,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
 }
 
 /** Why a GPT request could not be resolved to an authenticated Responses route. */
-export type ResponsesRouteDiagnosis = "no-profile" | "api-unresolved" | "api-not-responses" | "incomplete";
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
 
 /**
  * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
@@ -346,6 +356,7 @@ export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, opt
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
   const profile = provider.trim() ? configuredProviderProfile(ctx, provider) : undefined;
   if (!isRecord(profile)) return "no-profile";
+  if (profileExcludesModel(profile, model)) return "model-not-configured";
   const api = profile.api ?? resolveCatalogModel(provider, model, profileDeclaresModel(profile, model)).api;
   if (api === undefined) return "api-unresolved";
   return api === "openai-responses" ? "incomplete" : "api-not-responses";
@@ -362,6 +373,7 @@ export function resolveGrokResponsesRouteConfig(
   if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
+  if (profileExcludesModel(configured, model)) return undefined;
   const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
   const selectedBuiltin = catalog.descriptor;
   const api = configured.api ?? catalog.api;

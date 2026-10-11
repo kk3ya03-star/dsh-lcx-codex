@@ -112,7 +112,7 @@ export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | u
     purpose?: string;
 }, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 /** Why a GPT request could not be resolved to an authenticated Responses route. */
-export type ResponsesRouteDiagnosis = "no-profile" | "api-unresolved" | "api-not-responses" | "incomplete";
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
 /**
  * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
  * change: `api-unresolved` means neither the profile nor the model catalog names a protocol for this model.

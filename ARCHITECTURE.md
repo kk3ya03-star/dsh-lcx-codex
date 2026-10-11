@@ -39,4 +39,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 645/645 plugin tests, strict host/client types, 4/4 schemas and 59/59 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real-runtime GPT and Grok workflows for the route-resolution fix in this release (a provider profile without `api` selecting `gpt-6-sol`, `gpt-6-astra` and `grok-4.7`; Hosted and Grok native search; transient-failure retry; custom-route regression). Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 648/648 plugin tests, strict host/client types, 4/4 schemas and 59/59 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real-runtime GPT and Grok workflows for the route-resolution fix in this release (a provider profile without `api` selecting `gpt-6-sol`, `gpt-6-astra` and `grok-4.7`; Hosted and Grok native search; transient-failure retry; custom-route regression). Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

@@ -20,6 +20,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import apply, { Config } from '../lib/index.js'
+import { resolveResponsesRouteConfig, resolveGrokResponsesRouteConfig } from '../lib/route.js'
 
 // Issue #123, real path. A provider profile in the shape of the Product Owner's desktop profile names a catalog
 // vendor (`openai`, `xai`) without `api`: it sets only baseURL, apiKeyEnv and a `models` list whose entries carry
@@ -48,7 +49,7 @@ const desktopProfiles = () => ({
 async function harness(root, profiles, settings = {}) {
   const ctx = new Context()
   ctx.plugin(Llm)
-  ctx.plugin(PiAi, { providers: structuredClone(profiles) })
+  const piFiber = ctx.plugin(PiAi, { providers: structuredClone(profiles) })
   ctx.plugin(Sessions)
   ctx.plugin(Jsonl, { root: resolve(root, 'sessions') })
   ctx.plugin(QuerySqlite, { path: ':memory:', openAt: 'never' })
@@ -67,7 +68,7 @@ async function harness(root, profiles, settings = {}) {
   settingsCtx.provide('loader', { await: () => Promise.resolve() }, true)
   settingsCtx.provide('profileContext', { home: 'unused' }, true)
   const raw = { providers: structuredClone(profiles) }
-  const piEntry = { options: { id: 'llm-pi-ai', config: raw }, fiber: { uid: 1, state: 2, runtime: { Config: PiAi.Config }, config: PiAi.Config(raw), ctx: settingsCtx } }
+  const piEntry = { options: { id: 'llm-pi-ai', config: raw }, fiber: { uid: 1, state: 2, runtime: { Config: PiAi.Config }, config: piFiber.config, ctx: settingsCtx } }
   settingsCtx.provide('configEditor', {
     configuration: () => [{ entry: piEntry, inherited: {}, override: raw }],
     entries: () => [piEntry],
@@ -96,7 +97,12 @@ async function harness(root, profiles, settings = {}) {
     updateVolatile(configInput[key], Config({ [key]: value })[key])
     handlers.get('loader/volatile-update')()
   }
-  return { ctx, setting, warnings, forms }
+  // DSH's live configuration path: the loader updates the plugin's volatile config in place and announces it.
+  const setProviders = next => {
+    updateVolatile(piFiber.config.providers, PiAi.Config({ providers: structuredClone(next) }).providers)
+    ctx.emit('loader/volatile-update')
+  }
+  return { ctx, setting, warnings, forms, setProviders }
 }
 
 async function withHarness(profiles, settings, run) {
@@ -258,7 +264,7 @@ test('gpt-6.1-sol, absent from every Pi catalog of this host, is served when the
   })
 })
 
-test('a model unknown to both DSH and the profile still fails closed, naming what to change', async () => {
+test('a model that a models list leaves out is refused as not configured', async () => {
   await withHarness(desktopProfiles(), {}, async ({ ctx, requests }) => {
     const chunks = await collect(ctx.llm.stream({
       provider: 'openai',
@@ -270,7 +276,75 @@ test('a model unknown to both DSH and the profile still fails closed, naming wha
     assert.equal(finish.type, 'finish')
     assert.equal(finish.reason.kind, 'error')
     assert.equal(finish.reason.failure.code, 'NO_ADAPTER')
+    assert.match(finish.reason.failure.message, /not configured for this provider/u)
+  })
+})
+
+test('a model unknown to the catalog on a profile with no models list still fails closed, naming what to change', async () => {
+  await withHarness({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL } }, {}, async ({ ctx, requests }) => {
+    const chunks = await collect(ctx.llm.stream({
+      provider: 'openai',
+      model: 'gpt-9-unlisted',
+      messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }],
+    }))
+    assert.equal(requests.length, 0, 'nothing was sent')
+    const finish = chunks.at(-1)
+    assert.equal(finish.reason.failure.code, 'NO_ADAPTER')
     assert.match(finish.reason.failure.message, /add api: openai-responses to the provider profile or select a model DSH recognizes/u)
+  })
+})
+
+// A nonempty models list is authoritative: DSH serves only the listed models and LCX answers before DSH's adapter,
+// so claiming a catalog model the list leaves out would send a request DSH itself refuses.
+test('a nonempty models list is authoritative even for a model the bundled catalog and the frozen allowlist know', async () => {
+  const profiles = { openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6-sol')] }, xai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('grok-4.6')] } }
+  await withHarness(profiles, { grokNativeWebSearch: true }, async ({ ctx, forms, requests, turn }) => {
+    await assert.rejects(ctx.llm.resolveModelInfo('openai', 'gpt-6-astra'), /no configured model/u, 'DSH refuses the unlisted model')
+    for (const model of ['gpt-6-astra', 'gpt-5.6-sol']) {
+      const chunks = await collect(ctx.llm.stream({ provider: 'openai', model, messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] }))
+      const failure = chunks.at(-1).reason.failure
+      assert.equal(failure.code, 'NO_ADAPTER', model)
+      assert.match(failure.message, /not configured for this provider/u, model)
+    }
+    assert.equal(requests.length, 0, 'zero network requests')
+    const routeCtx = { llm: ctx.llm, settings: { describe: () => forms.describe() } }
+    assert.equal(resolveResponsesRouteConfig(routeCtx, { provider: 'openai', model: 'gpt-6-astra' }, {}), undefined)
+    assert.ok(resolveResponsesRouteConfig(routeCtx, { provider: 'openai', model: 'gpt-6-sol' }, {}), 'the listed model resolves')
+    assert.equal(resolveGrokResponsesRouteConfig(routeCtx, { provider: 'xai', model: 'grok-4.7' }, {}), undefined)
+    assert.ok(resolveGrokResponsesRouteConfig(routeCtx, { provider: 'xai', model: 'grok-4.6' }, {}))
+    assert.equal((await turn('openai', 'gpt-6-sol')).url, `${baseURL}/responses`, 'the listed model is still served')
+  })
+})
+
+test('a live profile change that drops a model stops LCX serving it too, and an empty models list restores the catalog', async () => {
+  await withHarness(desktopProfiles(), {}, async ({ ctx, turn, requests, forms, setProviders }) => {
+    const described = () => forms.describe().find(row => row.ns === 'llm-pi-ai').value.providers.openai
+    const streamOnce = model => collect(ctx.llm.stream({
+      provider: 'openai',
+      model,
+      messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }],
+    }))
+    // The session is on gpt-6-astra, which the profile lists.
+    assert.equal((await turn('openai', 'gpt-6-astra')).body.model, 'gpt-6-astra')
+    assert.equal(requests.length, 1)
+
+    // Live change: the user removes astra from the profile. DSH stops serving it ...
+    setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6-sol')] } })
+    assert.deepEqual(described().models.map(model => model.id), ['gpt-6-sol'], 'LCX reads the live profile')
+    await assert.rejects(ctx.llm.resolveModelInfo('openai', 'gpt-6-astra'), /no configured model/u)
+    // ... and so does LCX: no request, NO_ADAPTER, though gpt-6-astra is in its bundled catalog.
+    const rejected = await streamOnce('gpt-6-astra')
+    assert.equal(rejected.at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.match(rejected.at(-1).reason.failure.message, /not configured for this provider/u)
+    assert.equal(requests.length, 1, 'no request left LCX for the removed model')
+    assert.equal((await turn('openai', 'gpt-6-sol')).url, `${baseURL}/responses`, 'the listed model keeps working')
+
+    // Back to a profile with no models list: the catalog behavior returns.
+    requests.length = 0
+    setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL } })
+    assert.deepEqual(described().models, [], 'the schema materializes an absent models list as empty')
+    assert.equal((await turn('openai', 'gpt-6-astra')).url, `${baseURL}/responses`)
+    assert.equal(requests.length, 1)
   })
 })
 
