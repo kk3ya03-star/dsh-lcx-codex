@@ -62,7 +62,7 @@ public_export:
     - README_EN.md (same install-matrix change)
     - CHANGELOG.md (0.6.0-pre.2 release-candidate section on top of 0.6.0-pre.1; no private issue numbers)
     - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count, generated-file count, package file count and runtime-evidence sentence updated for 0.6.0-pre.2)
-    - assets/settings-card.png (recaptured for 0.6.0-pre.2 from an isolated DSH 0.2.1-alpha.2 install of the first 0.6.0-pre.2 tarball, PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00, badge v0.6.0-pre.2; a recapture from the final tarball (SHA-256 b3b8d53cf4752f424f7e0a35e6a4953247c2d83a8d148ead2fdff468058cc846, which changes the bundled Pi and the code base but no settings-card UI) is pending with the Controller and, when done, this line is updated together with the PNG; the image is not part of the npm package)
+    - assets/settings-card.png (recaptured for 0.6.0-pre.2 from an isolated DSH 0.2.1-alpha.2 install of the first 0.6.0-pre.2 tarball, PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00, badge v0.6.0-pre.2; a recapture from the final tarball (SHA-256 352889c196fb95c1b70afc985559bb5fd5daadd6b88a7f787c9870b25f0e1f94, which changes the bundled Pi and the code base but no settings-card UI) is pending with the Controller and, when done, this line is updated together with the PNG; the image is not part of the npm package)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the prerelease line; do not export the private control-plane README.
   exclude_from_private_export:
