@@ -9,7 +9,7 @@ This prerelease targets the DSH 0.2.1 contract. Its verified baseline is exactly
 - **Pi 0.87.1 public exports** supply canonical Responses serialization/stream helpers and model data. A reproducible build bundles the needed runtime subset; the plugin does not ship the complete Pi SDK dependency tree into user profiles or replace host Pi.
 - **The browser client** supplies settings, search-media presentation and auxiliary usage presentation. Presentation controls do not change model requests, tools, history, usage or cache semantics.
 
-`src/**` is strict TypeScript source. `lib/**` contains 60 reproducible generated files; the npm allowlist yields a 38-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata, README, the Plugin Manager icon and the two locale files. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+`src/**` is strict TypeScript source. `lib/**` contains 60 reproducible generated files; the npm allowlist yields a 39-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata, README, the Plugin Manager icon and the two locale files. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## GPT lifecycle and compaction
 
