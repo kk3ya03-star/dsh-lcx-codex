@@ -2,13 +2,13 @@ version: 0.6.0-pre.1
 state: APPROVED_PRERELEASE
 approval:
   product_owner: private-issue-124-po-approved-2026-10-11
-  controller_review: TL_REVIEWED_117_119_FIXED_TL_REVIEW_PENDING_120_122_RELEASE_READINESS
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
   reference: docs/qa/issue-124/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-124/RELEASE-READINESS.md
-  policy: The Product Owner decided that the plugin adopts the DSH 0.2.1 plugin features before a prerelease ships and approved shipping Issues #117, #119, #120 and #122 as prerelease 0.6.0-pre.1 (renamed from the never-published 0.5.1-pre.2). The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead reviewed Issues #117 and #119 and the findings were fixed; Issues #120 and #122 and this release-readiness record have not yet been reviewed by the Technical Lead.
+  policy: The Product Owner decided that the plugin adopts the DSH 0.2.1 plugin features before a prerelease ships and approved shipping Issues #117, #119, #120 and #122 as prerelease 0.6.0-pre.1 (renamed from the never-published 0.5.1-pre.2). The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead engineering review (controller_review) passed on 2026-10-11 for Issues #117, #119, #120, #122 and this release-readiness record.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issue: 124
