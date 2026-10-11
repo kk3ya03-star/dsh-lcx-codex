@@ -67,7 +67,7 @@ public_export:
     - README_EN.md (same install-matrix change)
     - CHANGELOG.md (0.5.2 stable section; no private issue numbers)
     - ARCHITECTURE.md (stable version wording only, if it names the version)
-    - assets/settings-card.png (unchanged from the published v0.5.1 line; the card badge reads the installed version at runtime, so a recapture for 0.5.2 is an open item)
+    - assets/settings-card.png (recaptured from an isolated install of the exact public 0.5.2 tarball on DSH 0.2.0-rc.2; badge v0.5.2)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
     - .github/workflows (unchanged from the published v0.5.0 line; runtime fixture runtime-dsh02)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the stable line; do not export the private control-plane README.
