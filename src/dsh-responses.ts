@@ -32,6 +32,7 @@ import {
   normalizeContext,
 } from "./pi-responses-runtime.js";
 import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
+import { withoutDeferLoading } from "./tool-surface.js";
 import type {
   AssistantMessage as PiAssistantMessage,
   Context as PiContextValue,
@@ -91,6 +92,13 @@ type SerializeOptions = Partial<ImageOptions> & {
   systemPromptUpdate?: unknown;
   onReplayDegrade?: unknown;
   tools?: PiTool[];
+  /**
+   * `"addition-only"` marks `tools` as an anchored surface (see `planToolSurface`): tools flagged
+   * `deferLoading` are declared only by the developer tool-addition messages in `messages`, rendered in
+   * history position as Responses `additional_tools` (or `tool_search` output), while the request `tools`
+   * keeps only the immediate declarations. Any other value keeps the strict full-list contract.
+   */
+  toolUpdate?: unknown;
 };
 type NativeItem = WireRecord & { type?: string; role?: string; content?: unknown; output?: unknown };
 type ReplayBlock = WireRecord & { type: "text" | "reasoning" | "tool-call" };
@@ -203,9 +211,17 @@ export async function resolveRouteModelFacts(
   ctx: DshContext | undefined,
   route: { provider?: unknown; model?: unknown },
   signal?: AbortSignal,
-): Promise<{ imageSupport: ImageSupport; systemPromptUpdate: "in-history" | undefined; resolved: boolean }> {
+): Promise<{
+  imageSupport: ImageSupport;
+  systemPromptUpdate: "in-history" | undefined;
+  /** DSH `ModelInfo.toolUpdate` for the exact routed model (0.2.1+); absent on routes that declare none. */
+  toolUpdate: "in-history" | "addition-only" | undefined;
+  /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
+  reasoning: { efforts: string[] } | undefined;
+  resolved: boolean;
+}> {
   const llm = ctx?.llm;
-  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -220,12 +236,16 @@ export async function resolveRouteModelFacts(
           ? "unsupported"
           : "unknown",
       systemPromptUpdate: info.systemPromptUpdate === "in-history" ? "in-history" : undefined,
+      toolUpdate: info.toolUpdate === "addition-only" || info.toolUpdate === "in-history" ? info.toolUpdate : undefined,
+      reasoning: info.reasoning === undefined
+        ? undefined
+        : { efforts: info.reasoning.efforts.map((effort) => String(effort.id)) },
       resolved: true,
     };
   } catch {
     // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
     // to downgrade history that only an in-history route may legitimately contain.
-    return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
   }
 }
 
@@ -553,7 +573,7 @@ function flattenMessageText(message: RequestMessage): string {
 async function dshToPiMessages(
   messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
-  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string },
+  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string; anchoredTools?: readonly PiTool[] },
   imageMap: Map<string, ImageAttachmentRef>,
   requestImages: RequestImageVersions,
 ): Promise<PiMessage[]> {
@@ -578,7 +598,21 @@ async function dshToPiMessages(
       result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
       continue;
     }
-    if (message.role === "developer") throw unsupportedContent("developer message");
+    if (message.role === "developer") {
+      // Mirrors the host adapter's `appendDeveloper`: one tool-registry event becomes one system update that
+      // carries the added declarations; Pi renders it as `additional_tools` at this exact position.
+      if (options.anchoredTools === undefined) throw unsupportedContent("developer message");
+      const toolsAdded: PiTool[] = [];
+      for (const block of message.content) {
+        if (block.type !== "tool-addition") throw unsupportedContent(block.type);
+        const tool = options.anchoredTools.find((candidate) => candidate.name === block.toolName);
+        if (tool === undefined)
+          throw error(`LCX tool update references undeclared tool "${block.toolName}"`, "LCX_RESPONSES_INVALID_INPUT");
+        toolsAdded.push(tool);
+      }
+      if (toolsAdded.length > 0) result.push({ role: "system", content: [], toolsAdded, timestamp: 0 } as unknown as PiMessage);
+      continue;
+    }
     if (message.role === "assistant") {
       const assistant = toPiAssistant(message, options.onReplayDegrade);
       for (const block of assistant.content)
@@ -633,16 +667,26 @@ export function resolvePiResponsesModel(options: { imageSupport: unknown; route?
 }
 
 export async function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options: SerializeOptions = {}) {
+  const anchored = options.toolUpdate === "addition-only";
+  if (anchored && options.systemPromptUpdate !== "in-history")
+    throw error("LCX addition-only tool updates require an in-history route", "LCX_RESPONSES_INVALID_INPUT");
   for (const message of messages) {
-    if (message.role === "developer") throw unsupportedContent("developer message");
+    if (message.role === "developer" && !anchored) throw unsupportedContent("developer message");
     for (const block of message.content)
-      if (block.type === "tool-addition" || block.type === "tool-removal")
-        throw unsupportedContent(block.type);
+      if (block.type === "tool-addition" || block.type === "tool-removal") {
+        // Removals never reach a serializer: the host projection drops them on an addition-only route.
+        if (!anchored || message.role !== "developer" || block.type === "tool-removal") throw unsupportedContent(block.type);
+      }
   }
   for (const tool of options.tools ?? [])
-    if ("deferLoading" in tool && tool.deferLoading === true)
+    if (!anchored && "deferLoading" in tool && tool.deferLoading === true)
       throw unsupportedContent("deferLoading tool declaration");
-  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[] } = {
+  // Declared = every tool the history may reference; immediate = the subset that stays in the request `tools`.
+  const declaredTools: PiTool[] = (Array.isArray(options.tools) ? options.tools : []).map((tool) => withoutDeferLoading(tool as never) as PiTool);
+  const immediateDeclared: PiTool[] = (Array.isArray(options.tools) ? options.tools : [])
+    .filter((tool) => !("deferLoading" in tool && tool.deferLoading === true))
+    .map((tool) => withoutDeferLoading(tool as never) as PiTool);
+  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[]; anchoredTools?: readonly PiTool[] } = {
     imageSupport: options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown",
     signal: options.signal instanceof AbortSignal ? options.signal : undefined,
     route: options.route ?? {}, model: options.model, responsesCompat: options.responsesCompat,
@@ -653,7 +697,8 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     maxRequestImageBytes: positiveSafeInteger(options.maxRequestImageBytes, DEFAULT_MAX_REQUEST_IMAGE_BYTES),
     requestImagePixelBudget: positiveSafeInteger(options.requestImagePixelBudget, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
     requestImageMaxBytes: positiveSafeInteger(options.requestImageMaxBytes, DEFAULT_REQUEST_IMAGE_MAX_BYTES),
-    tools: Array.isArray(options.tools) ? options.tools : [],
+    tools: immediateDeclared,
+    ...(anchored ? { anchoredTools: declaredTools } : {}),
   };
   const imageMap = new Map<string, ImageAttachmentRef>();
   const fileProjected = projectFiles(messages, ctx);
@@ -695,8 +740,8 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const supportsAdditionalTools = compat.supportsAdditionalTools === true;
   const supportsToolSearch = compat.supportsToolSearch === true;
   const deferredToolsMode = supportsAdditionalTools ? "additional-tools" : supportsToolSearch ? "tool-search" : undefined;
-  const grammarToolInputProperties = createGrammarToolInputProperties(dshContext.tools, supportsOpenAIGrammarTools);
-  // These routes consume no tool updates; projectToolUpdates supplies the current immediate declarations.
+  const grammarToolInputProperties = createGrammarToolInputProperties([...(normalized.anchoredTools ?? dshContext.tools)], supportsOpenAIGrammarTools);
+  // Immediate declarations only: on an anchored surface deferred tools are declared by their history additions.
   const immediateTools = new Map<string, PiTool>();
   for (const tool of dshContext.tools) if (tool.name) immediateTools.set(tool.name, tool);
   const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };
@@ -791,6 +836,61 @@ async function hydratePart(part: unknown, ctx: DshContext | undefined, options: 
   if (!hasImageAttachment(attachment)) throw error("native compact returned an invalid image attachment", "LCX_COMPACT_INVALID_RESPONSE");
   if (options.imageSupport === "unsupported") return { type: "input_text", text: "[image omitted because the target model does not support image input]" };
   return imagePart({ attachment }, ctx, options, options.imageMap);
+}
+
+/** Base64 payload length of every `input_image` data URL in Responses input items, in order. */
+export function inputImageBase64Lengths(input: unknown): number[] {
+  const lengths: number[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (!isObject(value)) return;
+    if (value.type === "input_image" && typeof value.image_url === "string") {
+      const url = value.image_url;
+      const comma = url.indexOf(",");
+      lengths.push(url.startsWith("data:") && comma >= 0 ? url.length - comma - 1 : 0);
+      return;
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(input);
+  return lengths;
+}
+
+/**
+ * Enforce the request image bound over the whole assembled request. Each serialization batch is
+ * checked on its own, but images a native checkpoint hydrates (and portable replay re-renders) are
+ * not DSH surface images and arrive in other batches, so only the sum shows the real request size.
+ * DSH can offload only surface images, oldest first: when offloading enough of them fits the request
+ * the route asks for exactly that many; when even all of them cannot, no retry can help and the
+ * checkpoint's own images are the reason.
+ * @param options.fixedBytes base64 length of images DSH cannot offload (checkpoint / replay)
+ * @param options.surfaceBytes base64 length of each offloadable image, oldest first
+ */
+export function assertAggregateImageBudget(options: { maxBytes: number; fixedBytes: number; surfaceBytes: readonly number[] }): void {
+  const total = options.surfaceBytes.reduce((sum, bytes) => sum + bytes, options.fixedBytes);
+  if (total <= options.maxBytes) return;
+  const excess = total - options.maxBytes;
+  let removed = 0;
+  let count = 0;
+  for (const bytes of options.surfaceBytes) {
+    if (removed >= excess) break;
+    removed += bytes;
+    count += 1;
+  }
+  if (removed >= excess) {
+    throw new LlmError(
+      `LCX request images exceed the configured base64 bound once checkpoint images are counted; ${count} more oldest occurrence(s) must be offloaded.`,
+      IMAGE_OFFLOAD_REQUIRED_CODE,
+      { offloadImages: count },
+    );
+  }
+  throw error(
+    `Images retained in the compaction checkpoint (${options.fixedBytes} base64 bytes) leave no room within the ${options.maxBytes}-byte request image bound, and offloading new images cannot recover it; start a new session or raise maxRequestImageBytes`,
+    "LCX_CHECKPOINT_IMAGE_BUDGET",
+  );
 }
 
 export async function hydrateNativeImageReferences(output: unknown, ctx: DshContext | undefined, options: Partial<ImageOptions> & { imageMap?: unknown } = {}) {

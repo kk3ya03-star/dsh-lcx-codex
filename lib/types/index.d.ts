@@ -34,6 +34,8 @@ type LiveSettingsConfig = {
     grokNativeWebSearch: Volatile<boolean>;
     grokNativeXSearch: Volatile<boolean>;
     searchMediaPreview: Volatile<boolean>;
+    /** Defaults to true: addition-only tool updates on routes that support them. */
+    incrementalToolUpdates: Volatile<boolean>;
 };
 type HostContext = Context;
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
@@ -44,6 +46,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     grokNativeWebSearch: z<boolean, boolean, "volatile-defined">;
     grokNativeXSearch: z<boolean, boolean, "volatile-defined">;
     searchMediaPreview: z<boolean, boolean, "volatile-defined">;
+    incrementalToolUpdates: z<boolean, boolean, "volatile-defined">;
     supportsLongCacheRetention: z<boolean, boolean, "defined">;
     supportsExplicitPromptCacheMode: z<boolean, boolean, "defined">;
     alphaCapabilityPath: z<string, string, "defined">;
@@ -71,6 +74,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     grokNativeWebSearch: z<boolean, boolean, "volatile-defined">;
     grokNativeXSearch: z<boolean, boolean, "volatile-defined">;
     searchMediaPreview: z<boolean, boolean, "volatile-defined">;
+    incrementalToolUpdates: z<boolean, boolean, "volatile-defined">;
     supportsLongCacheRetention: z<boolean, boolean, "defined">;
     supportsExplicitPromptCacheMode: z<boolean, boolean, "defined">;
     alphaCapabilityPath: z<string, string, "defined">;

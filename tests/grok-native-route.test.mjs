@@ -53,7 +53,9 @@ test('arbitrary provider and mixed-case custom Grok model resolve from selected 
   assert.equal(resolved.modelDefaults, undefined, 'unknown model needs no Pi catalog entry')
   assert.equal(resolved.modelControls.includeEncryptedReasoning, true)
   assert.equal(resolved.modelControls.thinkingLevelMap.high, 'relay-high')
-  assert.equal(Object.hasOwn(resolved.modelControls.thinkingLevelMap, 'off'), false)
+  // Issue 119: a declared `off: null` is an explicit omission, kept selectable by the flag (a bare null would mean unsupported).
+  assert.equal(resolved.modelControls.thinkingLevelMap.off, null)
+  assert.equal(resolved.modelControls.offOmitsReasoning, true)
   assert.equal(resolved.modelControls.thinkingLevelMap.medium, null)
 })
 

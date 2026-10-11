@@ -13,12 +13,25 @@ export function sanitizeContextDetails(value: unknown): ProviderContextDetails |
 }
 export const zeroBuckets = (): Buckets => ({uncachedInputTokens:0,outputTokens:0,cacheReadTokens:0,cacheWriteTokens:0});
 export const isSearchTool = (name: unknown): name is string => name === 'web_search' || name === 'websearch_gpt_advanced';
+/** DSH 0.2.1 settles a tool called from inside programmatic tool calling (`run_code`) with this event, not `tool/result`. */
+export const NESTED_SETTLE_EVENT = 'tool/ptc-dispatch';
+/**
+ * A search call's settlement and its tool-owned presentation `meta`, from either event that carries one: a
+ * model-direct call settles as `tool/result` (its name comes from the earlier `tool/call`); a nested call settles
+ * as `tool/ptc-dispatch`, whose `name`, `subCallId` and `meta` are its own fields.
+ */
+export function searchSettlementOf(event: unknown, pendingName?: string): { name: string; meta: Record<string, any> } | undefined {
+  if (!object(event) || !object(event.data) || !object(event.data.meta)) return;
+  // Official ToolMessageSource carries only callId; a direct result resolves its name from tool/call.
+  // A nested settlement states the tool it dispatched, so it needs no pending entry.
+  const name = event.type === NESTED_SETTLE_EVENT ? event.data.name : event.type === 'tool/result' ? pendingName : undefined;
+  // Only our owned search results may contribute auxiliary billing or media.
+  return isSearchTool(name) ? { name, meta: event.data.meta } : undefined;
+}
 export function auxiliaryUsageOf(event: unknown, toolName?: string): SearchUsage[] {
-  if (!object(event) || event.type !== 'tool/result' || !object(event.data?.meta)) return [];
-  // Only our owned search results may contribute auxiliary billing.
-  // Official ToolMessageSource carries only callId; resolve its name from tool/call.
-  if (!isSearchTool(toolName)) return [];
-  const raw = event.data.meta.auxiliaryUsage;
+  const settled = searchSettlementOf(event, toolName);
+  if (!settled) return [];
+  const raw = settled.meta.auxiliaryUsage;
   if (!Array.isArray(raw)) return [];
   const ids = new Set<string>(), result: SearchUsage[] = [];
   for (const item of raw) {
