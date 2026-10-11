@@ -20,6 +20,8 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import apply, { Config } from '../lib/index.js'
+import { resolveRouteModelFacts, routeModelOverride, serializeDshMessages } from '../lib/dsh-responses.js'
+import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
 
 // Issue #123, real path. A provider profile in the shape of the Product Owner's desktop profile names a catalog
 // vendor (`openai`, `xai`) without `api`: it sets only baseURL, apiKeyEnv and a `models` list whose entries carry
@@ -269,7 +271,7 @@ test('gpt-6.1-sol, newer than the bundled Pi 0.87.1, is owned and follows the to
   })
 })
 
-test('a model unknown to both DSH and the profile still fails closed, naming what to change', async () => {
+test('a model unknown to both DSH and the profile still fails closed, naming what to change (profile lists other models)', async () => {
   await withHarness(desktopProfiles(), {}, async ({ ctx, requests }) => {
     const chunks = await collect(ctx.llm.stream({
       provider: 'openai',
@@ -281,7 +283,44 @@ test('a model unknown to both DSH and the profile still fails closed, naming wha
     assert.equal(finish.type, 'finish')
     assert.equal(finish.reason.kind, 'error')
     assert.equal(finish.reason.failure.code, 'NO_ADAPTER')
-    assert.match(finish.reason.failure.message, /add api: openai-responses to the provider profile or select a model DSH recognizes/u)
+    assert.match(finish.reason.failure.message, /add api: openai-responses to the provider profile or select another model/u)
+  })
+})
+
+// The Technical Lead repro: no `models` list at all. Host Pi 1.1.0 (this DSH) has gpt-6.1-sol in its own
+// catalog and serves it; LCX's bundled Pi 0.87.1 does not know it, and nothing in the profile names it.
+const bareProfiles = () => ({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL } })
+
+test('a model only the newer DSH catalog describes is owned on a profile with no models list and no api', async () => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, turn, requests, open }) => {
+    const info = await ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol')
+    assert.equal(info.toolUpdate, 'addition-only', 'DSH recognizes the model')
+    const request = await turn('openai', 'gpt-6.1-sol')
+    assert.equal(requests.length, 1)
+    assert.equal(request.url, `${baseURL}/responses`)
+    assert.equal(request.body.model, 'gpt-6.1-sol')
+    // The recognition is remembered: the next turn resolves without asking DSH again for the route.
+    const session = await open('openai', 'gpt-6.1-sol')
+    try { assert.equal((await session.ask('again')).url, `${baseURL}/responses`) } finally { await session.dispose() }
+  })
+})
+
+test('DSH is asked at most once for a failing request, and a model DSH also rejects stays NO_ADAPTER', async () => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, requests }) => {
+    const original = ctx.llm.resolveModelInfo.bind(ctx.llm)
+    let lookups = 0
+    ctx.llm.resolveModelInfo = async (...args) => { lookups += 1; return original(...args) }
+    const chunks = await collect(ctx.llm.stream({
+      provider: 'openai',
+      model: 'gpt-9-unlisted',
+      messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }],
+    }))
+    assert.equal(requests.length, 0)
+    assert.equal(lookups, 1, 'one lookup for the failing request')
+    const failure = chunks.at(-1).reason.failure
+    assert.equal(failure.code, 'NO_ADAPTER')
+    assert.match(failure.message, /add api: openai-responses to the provider profile or select another model/u)
+    assert.doesNotMatch(failure.message, /unknown to the catalog|does not recognize/u)
   })
 })
 
@@ -297,5 +336,32 @@ test('the xai route resolves grok-4.7 without api and LCX owns its native-search
     assert.equal(requests[0].url, 'https://fixture.invalid/xai/responses')
     assert.equal(requests[0].body.model, 'grok-4.7')
     assert.ok(requests[0].body.tools.some(tool => tool.type === 'web_search'), 'the Grok native web_search tool is LCX-owned')
+  })
+})
+
+test('the DSH-reported context window overrides the catalog descriptor on the Grok route as it does on GPT', async () => {
+  const profiles = desktopProfiles()
+  profiles.xai.models = [entry('grok-4.7', { contextWindow: 340000, maxTokens: 64000 })]
+  profiles.openai.models = [entry('gpt-6-sol', { contextWindow: 200000 })]
+  await withHarness(profiles, {}, async ({ ctx, forms }) => {
+    const routeCtx = { llm: ctx.llm, settings: { describe: () => forms.describe() } }
+    const model = async (provider, name, grok) => {
+      const route = { provider, model: name, baseURL }
+      const config = grok
+        ? resolveGrokResponsesRouteConfig(routeCtx, route, {})
+        : resolveResponsesRouteConfig(routeCtx, route, {})
+      assert.ok(config, `${provider}/${name} resolves`)
+      const facts = await resolveRouteModelFacts(ctx, route)
+      assert.equal(facts.contextWindow, grok ? 340000 : 200000, 'DSH reports the window the profile declares')
+      const serialize = override => serializeDshMessages([], ctx, { imageSupport: 'supported', route, ...(override === undefined ? {} : { model: override }) })
+      const withoutOverride = (await serialize(undefined)).model.contextWindow
+      const withOverride = (await serialize(routeModelOverride(config, facts, grok))).model.contextWindow
+      return { withoutOverride, withOverride }
+    }
+    // Without the override the Pi descriptor's window stands (grok-4.7: 500000; gpt-6-sol: 272000).
+    assert.deepEqual(await model('xai', 'grok-4.7', true), { withoutOverride: 500000, withOverride: 340000 })
+    assert.deepEqual(await model('openai', 'gpt-6-sol', false), { withoutOverride: 272000, withOverride: 200000 })
+    // When DSH cannot resolve the model nothing is overridden.
+    assert.equal(routeModelOverride({}, { resolved: false, reasoning: undefined, contextWindow: undefined }, true), undefined)
   })
 })

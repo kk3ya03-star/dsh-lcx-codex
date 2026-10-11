@@ -251,6 +251,25 @@ export async function resolveRouteModelFacts(
   }
 }
 
+/**
+ * The model facts a route serializes and sends with, laid over the bundled catalog descriptor. What DSH
+ * reported for the exact routed model (context window; on a GPT route also the reasoning capability) wins
+ * over the catalog entry, and on a GPT route a profile's declared `reasoningEfforts` (wire mapping, or `false`
+ * for a non-reasoning model) wins over both. A GPT model with no catalog entry follows what DSH itself
+ * resolved for it instead of being assumed to reason. A Grok route carries its reasoning projection
+ * separately (`modelDefaults` / `modelControls`), so only the context window is applied there.
+ */
+export function routeModelOverride(
+  routeConfig: { modelControls?: object },
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">,
+  grok: boolean,
+): Record<string, unknown> | undefined {
+  const contextWindow = facts.resolved && facts.contextWindow !== undefined ? { contextWindow: facts.contextWindow } : {};
+  if (grok) return Object.keys(contextWindow).length > 0 ? contextWindow : undefined;
+  if (!facts.resolved) return routeConfig.modelControls === undefined ? undefined : { ...routeConfig.modelControls };
+  return { reasoning: facts.reasoning !== undefined, ...contextWindow, ...routeConfig.modelControls };
+}
+
 export async function resolveModelImageSupport(
   ctx: DshContext | undefined,
   route: { provider?: unknown; model?: unknown },

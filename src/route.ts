@@ -182,9 +182,39 @@ function modelDescriptorDefaults(
   };
 }
 
-/** The profile lists this model in `models`: the one way DSH serves a model its catalog does not describe. */
-function profileDeclaresModel(profile: ProviderProfile | null | undefined, modelId: unknown): boolean {
-  return Array.isArray(profile?.models) && profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
+/**
+ * Models DSH itself resolved (`llm.resolveModelInfo` succeeded), remembered per plugin context. The route
+ * resolvers are synchronous, so the stream handler asks DSH once for a route it cannot resolve and records the
+ * answer here; every later resolution of the same model then needs no further lookup.
+ */
+const hostRecognizedModels = new WeakMap<object, Set<string>>();
+
+function recognitionKey(provider: unknown, modelId: unknown): string {
+  return `${String(provider)} ${String(modelId)}`;
+}
+
+/** Record that DSH resolves this exact provider/model (a model its catalog lacks but a profile or host catalog serves). */
+export function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): void {
+  const owner: unknown = ctx;
+  if (owner === null || typeof owner !== "object") return;
+  let known = hostRecognizedModels.get(owner);
+  if (known === undefined) hostRecognizedModels.set(owner, known = new Set());
+  if (known.size >= 256) known.clear();
+  known.add(recognitionKey(provider, modelId));
+}
+
+function hostRecognizesModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): boolean {
+  const owner: unknown = ctx;
+  return owner !== null && typeof owner === "object" && (hostRecognizedModels.get(owner)?.has(recognitionKey(provider, modelId)) ?? false);
+}
+
+/**
+ * DSH serves a model its catalog does not describe only when the profile lists it in `models` or when its own
+ * (newer) catalog describes it; the second case is visible to a plugin only as a successful `resolveModelInfo`.
+ */
+function dshServesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown): boolean {
+  return (Array.isArray(profile?.models) && profile.models.some((entry) => String(entry?.id ?? "") === String(modelId))) ||
+    hostRecognizesModel(ctx, provider, modelId);
 }
 
 function configuredModelProfile(
@@ -285,7 +315,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   if (!isRecord(profile)) return undefined;
   const configured = profile;
   // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
-  const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
+  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
   const builtin = catalog.descriptor;
   const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
@@ -324,7 +354,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     supportsLongCacheRetention,
     responsesCompat,
     // Only a declared `reasoningEfforts` is projected here; an undeclared model follows the catalog
-    // and what DSH resolved for it (see `gptModelOverride`).
+    // and what DSH resolved for it (see `routeModelOverride`).
     ...(declaredControls === undefined ? {} : { modelControls: declaredControls }),
     // These are explicitly LCX-owned transport and request-capability policies.
     timeoutMs: isPositiveInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
@@ -346,7 +376,7 @@ export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, opt
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
   const profile = provider.trim() ? configuredProviderProfile(ctx, provider) : undefined;
   if (!isRecord(profile)) return "no-profile";
-  const api = profile.api ?? resolveCatalogModel(provider, model, profileDeclaresModel(profile, model)).api;
+  const api = profile.api ?? resolveCatalogModel(provider, model, dshServesModel(ctx, profile, provider, model)).api;
   if (api === undefined) return "api-unresolved";
   return api === "openai-responses" ? "incomplete" : "api-not-responses";
 }
@@ -362,7 +392,7 @@ export function resolveGrokResponsesRouteConfig(
   if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
-  const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
+  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
   const selectedBuiltin = catalog.descriptor;
   const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;

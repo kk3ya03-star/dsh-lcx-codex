@@ -10,8 +10,8 @@ import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
  * in the same order, and anything DSH does declare (see `resolveRouteModelFacts`) is applied over it:
  *
  *   1. `catalog-model`            the provider's own catalog entry for this exact model id (any protocol);
- *   2. `catalog-provider-default` a model the catalog has not caught up with, which the profile declares in
- *                                 its `models` list (DSH serves no other unlisted model), takes the one
+ *   2. `catalog-provider-default` a model the catalog has not caught up with, which DSH serves anyway
+ *                                 (the profile lists it in `models`, or DSH's own newer catalog resolves it), takes the one
  *                                 protocol (and endpoint) every model the provider ships agrees on, exactly
  *                                 as `dsh-llm-pi-ai` does for a newer model of an installed catalog route;
  *   3. `frozen-pi086`             last fallback only: the frozen Pi 0.86 allowlist says the pair was a
@@ -57,10 +57,11 @@ function providerDefaults(provider: string): ProviderDefaults {
 
 /**
  * Resolve a route model's protocol, endpoint and catalog descriptor from the bundled Pi catalog.
- * @param declaredByProfile the provider profile lists this model in `models`; only then does DSH serve a model
- *   its catalog does not describe, so only then may the provider-wide default apply.
+ * @param dshServes DSH serves this model although the bundled catalog does not describe it: the provider profile
+ *   lists it in `models`, or DSH's own catalog resolves it (`resolveModelInfo` succeeds). Only then may the
+ *   provider-wide default apply.
  */
-export function resolveCatalogModel(provider: unknown, modelId: unknown, declaredByProfile = false): CatalogModelFacts {
+export function resolveCatalogModel(provider: unknown, modelId: unknown, dshServes = false): CatalogModelFacts {
   const providerName = String(provider ?? "");
   const id = String(modelId ?? "");
   const exact = getCatalogModels(providerName).find((model) => model.id === id);
@@ -72,7 +73,7 @@ export function resolveCatalogModel(provider: unknown, modelId: unknown, declare
       descriptor: exact.api === "openai-responses" ? (exact as Model<"openai-responses">) : undefined,
     };
   const defaults = providerDefaults(providerName);
-  if (declaredByProfile && defaults.api !== undefined)
+  if (dshServes && defaults.api !== undefined)
     return {
       source: "catalog-provider-default",
       api: defaults.api,

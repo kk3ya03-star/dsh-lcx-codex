@@ -107,6 +107,8 @@ export declare function promptCacheKey(route: Partial<RouteIdentity> | null | un
 export declare function grokPromptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>): string | undefined;
 /** @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention' | 'supportsLongCacheRetention' | 'responsesCompat'>>} [config] */
 export declare function promptCacheRetention(config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">>): "24h" | undefined;
+/** Record that DSH resolves this exact provider/model (a model its catalog lacks but a profile or host catalog serves). */
+export declare function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): void;
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & {
     purpose?: string;

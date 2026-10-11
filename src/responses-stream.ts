@@ -424,7 +424,7 @@ export function managedFailure(
     NO_ADAPTER: sourceCodes.has("LCX_SYSTEM_PROMPT_MODE_UNKNOWN")
       ? "LCX could not read the route's model information, so in-history system prompt updates cannot be sent safely; retry once the route is available"
       : sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
-        ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and the model is unknown to the catalog); add api: openai-responses to the provider profile or select a model DSH recognizes"
+        ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and LCX could not infer one for this model); add api: openai-responses to the provider profile or select another model"
         : "LCX could not resolve the selected Responses route",
     RATE_LIMIT: "Responses provider rate limit was reached",
     SERVER: "Responses provider returned a server failure",

@@ -74,6 +74,7 @@ import {
   promptCacheSessionId,
   resolveGrokResponsesRouteConfig,
   diagnoseResponsesRoute,
+  markHostRecognizedModel,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
@@ -86,6 +87,7 @@ import {
   hydrateNativeImageReferences,
   inputImageBase64Lengths,
   resolveRouteModelFacts,
+  routeModelOverride,
   hasMidHistoryPromptSnapshot,
   responseInputItems,
   serializeDshMessages,
@@ -1120,24 +1122,6 @@ function locateSupersededItems(
   return located;
 }
 
-/**
- * The model facts a GPT route serializes and sends with. What DSH reported for the exact routed model
- * (reasoning capability, context window) wins over the bundled catalog entry, and a profile's declared
- * `reasoningEfforts` (wire mapping, or `false` for a non-reasoning model) wins over both. A model with no
- * catalog entry follows what DSH itself resolved for it instead of being assumed to reason.
- */
-function gptModelOverride(
-  routeConfig: Pick<ResponsesRouteConfig, "modelControls">,
-  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">,
-): Record<string, unknown> | undefined {
-  if (!facts.resolved) return routeConfig.modelControls === undefined ? undefined : { ...routeConfig.modelControls };
-  return {
-    reasoning: facts.reasoning !== undefined,
-    ...(facts.contextWindow === undefined ? {} : { contextWindow: facts.contextWindow }),
-    ...routeConfig.modelControls,
-  };
-}
-
 /** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
 function assertSupportedReasoningEffort(
   effort: unknown,
@@ -1213,9 +1197,7 @@ async function serializeNativeAware(
   const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
   if (options.grokNativeReplayRoute === undefined) reportCatalogGap(ctx, route);
   const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
-  const modelOverride = options.grokNativeReplayRoute === undefined
-    ? gptModelOverride(routeConfig, modelFacts)
-    : undefined;
+  const modelOverride = routeModelOverride(routeConfig, modelFacts, options.grokNativeReplayRoute !== undefined);
   let messages: readonly RequestMessage[] = rawMessages;
   let tools = options.tools;
   let anchoredTools = false;
@@ -2042,13 +2024,37 @@ async function* unavailableManagedRouteStream(
     Object.assign(
       new Error(
         apiUnresolved
-          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and the model is unknown to the catalog. Add api: openai-responses to the provider profile, or select a model DSH recognizes"
+          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
           : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
       ),
       { code: apiUnresolved ? "LCX_RESPONSES_API_UNRESOLVED" : "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
     ),
     options.signal,
   );
+}
+
+/**
+ * Re-resolve a route whose protocol LCX could not infer after asking DSH whether it resolves the exact model.
+ * DSH resolving it counts as the profile declaring it: the provider-wide protocol then applies, as in DSH.
+ */
+async function* hostRecognizedRouteStream(
+  options: GenerateOptions,
+  ctx: HostContext,
+  policy: () => NormalizedConfig,
+  next: () => AsyncIterable<StreamChunk>,
+): AsyncGenerator<StreamChunk> {
+  const facts = await resolveRouteModelFacts(ctx, options, options.signal);
+  if (facts.resolved) markHostRecognizedModel(ctx, options.provider, options.model);
+  const routeConfig = facts.resolved
+    ? resolveResponsesRouteConfig(ctx, options, policy())
+    : undefined;
+  if (!routeConfig) {
+    yield* unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
+    return;
+  }
+  yield* options.purpose === "compaction"
+    ? remoteCompactionStream(options, routeWithPolicies(routeConfig, policy()), ctx, next)
+    : managedResponsesStream(options, routeWithPolicies(routeConfig, policy()), ctx);
 }
 
 function installInjected(
@@ -2248,6 +2254,10 @@ function installInjected(
         options,
         runtimeConfig,
       );
+      // The profile names no api and LCX's catalog does not describe the model: DSH's own catalog may still
+      // resolve it, which only a lookup tells (once per failing request; resolving routes never pay it).
+      if (!routeConfig && diagnoseResponsesRoute(ctx, options) === "api-unresolved")
+        return hostRecognizedRouteStream(options, ctx, () => runtimeConfig, next);
       if (options.purpose === "compaction") {
         if (!routeConfig) return unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
         return remoteCompactionStream(

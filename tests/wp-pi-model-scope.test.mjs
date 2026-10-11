@@ -90,7 +90,8 @@ test('frozen Pi 0.86 probe anchors agree with the provider-keyed baseline', () =
 
 // Issue #123: ownership of a credential-only profile follows what DSH resolves, which is its installed Pi
 // catalog and no longer Pi 0.86. The frozen 0.86 baseline stays the reference; the only cells that may differ
-// are the pairs Pi 0.87.1 ships as Responses models and 0.86 lacked (also listed in the catalog-shape test).
+// are the pairs Pi 0.87.1 ships as Responses models and 0.86 lacked. The bundled catalog adds NINE such pairs
+// (see the full-set test below); these six are the ones whose providers are part of this 5-provider matrix.
 const newSincePi086 = {
   'openai gpt-6-sol': 'gpt', 'openai gpt-6-luna': 'gpt',
   'github-copilot gpt-6-sol': 'gpt', 'github-copilot gpt-6-luna': 'gpt',
@@ -247,6 +248,33 @@ test('the catalog fills the endpoint of a model it ships; a model it does not sh
   assert.equal(route.resolveGrokResponsesRouteConfig(context, { provider: 'xai', model: 'grok-9-unlisted' }, policy), undefined)
   // A custom-named route has no catalog to fill from.
   assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'declared', model: 'gpt-6-sol' }, policy), undefined)
+})
+
+// The complete set, computed from the bundled catalog instead of listed by hand: every GPT / Grok Responses pair
+// of the six bundled providers that the frozen 0.86 allowlist lacks must be owned by a credential-only profile.
+const NEW_SINCE_PI086 = [
+  'github-copilot/gpt-6-luna', 'github-copilot/gpt-6-sol', 'github-copilot/grok-4.7',
+  'openai/gpt-6-luna', 'openai/gpt-6-sol',
+  'opencode/gpt-6-luna', 'opencode/gpt-6-sol',
+  'opencode-go/grok-4.7',
+  'xai/grok-4.7',
+]
+
+test('Decision 8 full set: exactly nine Responses pairs are new since Pi 0.86, and a credential-only profile owns each', () => {
+  const bundled = Object.keys(pi086).flatMap(provider => getBuiltinModels(provider)
+    .filter(model => model.api === 'openai-responses' && /^(?:gpt-|grok)/iu.test(model.id) && !pi086[provider].includes(model.id))
+    .map(model => `${provider}/${model.id}`)).sort()
+  assert.deepEqual(bundled, [...NEW_SINCE_PI086].sort())
+  assert.equal(bundled.length, 9)
+  const context = fixture('omitted', Object.fromEntries(Object.keys(pi086).map(provider => [provider, { apiKeyEnv: 'SYNTHETIC_KEY' }])))
+  for (const pair of bundled) {
+    const [provider, model] = [pair.slice(0, pair.indexOf('/')), pair.slice(pair.indexOf('/') + 1)]
+    const resolved = model.startsWith('gpt-')
+      ? route.resolveResponsesRouteConfig(context, { provider, model }, policy)
+      : route.resolveGrokResponsesRouteConfig(context, { provider, model }, policy)
+    assert.ok(resolved, pair)
+    assert.equal(resolved.api, 'openai-responses', pair)
+  }
 })
 
 test('Pi 0.87.1 catalog shape: the pairs new since Pi 0.86 are owned on credential-only profiles', () => {
