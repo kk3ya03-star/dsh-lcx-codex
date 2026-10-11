@@ -366,6 +366,7 @@ export function managedFailure(
   else if (
     sourceCodes.has("LCX_RESPONSES_ROUTE_UNAVAILABLE") ||
     sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED") ||
+    sourceCodes.has("LCX_RESPONSES_MODEL_NOT_CONFIGURED") ||
     sourceCodes.has("LCX_RESPONSES_MODEL_UNAVAILABLE") ||
     sourceCodes.has("LCX_SYSTEM_PROMPT_MODE_UNKNOWN")
   )
@@ -423,9 +424,11 @@ export function managedFailure(
     UNSUPPORTED_OPTION: "LCX Responses does not support this request option",
     NO_ADAPTER: sourceCodes.has("LCX_SYSTEM_PROMPT_MODE_UNKNOWN")
       ? "LCX could not read the route's model information, so in-history system prompt updates cannot be sent safely; retry once the route is available"
-      : sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
-        ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and LCX could not infer one for this model); add api: openai-responses to the provider profile or select another model"
-        : "LCX could not resolve the selected Responses route",
+      : sourceCodes.has("LCX_RESPONSES_MODEL_NOT_CONFIGURED")
+        ? "LCX is enabled but the selected model is not configured for this provider (the provider profile lists other models); add it to the profile's models list or select a listed model"
+        : sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
+          ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and LCX could not infer one for this model); add api: openai-responses to the provider profile or select another model"
+          : "LCX could not resolve the selected Responses route",
     RATE_LIMIT: "Responses provider rate limit was reached",
     SERVER: "Responses provider returned a server failure",
     INVALID_REQUEST: sourceCodes.has("LCX_CHECKPOINT_UNSUPPORTED")

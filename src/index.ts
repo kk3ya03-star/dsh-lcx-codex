@@ -2018,16 +2018,25 @@ async function* unavailableManagedRouteStream(
   options: GenerateOptions,
   diagnosis: ResponsesRouteDiagnosis = "incomplete",
 ): AsyncGenerator<StreamChunk> {
-  // DSH names no protocol for a model its catalog lacks and the profile sets no `api`: say what to change.
+  // Say what to change: the profile's models list leaves the model out, or no protocol can be inferred for it.
+  const notConfigured = diagnosis === "model-not-configured";
   const apiUnresolved = diagnosis === "api-unresolved";
   yield managedFailureChunk(
     Object.assign(
       new Error(
-        apiUnresolved
-          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
-          : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
+        notConfigured
+          ? "LCX is enabled but the selected model is not configured for this provider: the provider profile lists other models. Add the model to the profile's models list or select a listed model"
+          : apiUnresolved
+            ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
+            : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
       ),
-      { code: apiUnresolved ? "LCX_RESPONSES_API_UNRESOLVED" : "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
+      {
+        code: notConfigured
+          ? "LCX_RESPONSES_MODEL_NOT_CONFIGURED"
+          : apiUnresolved
+            ? "LCX_RESPONSES_API_UNRESOLVED"
+            : "LCX_RESPONSES_ROUTE_UNAVAILABLE",
+      },
     ),
     options.signal,
   );

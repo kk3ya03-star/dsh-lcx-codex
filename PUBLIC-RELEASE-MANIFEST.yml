@@ -2,22 +2,22 @@ version: 0.6.0-pre.2
 state: APPROVED_PRERELEASE
 approval:
   product_owner: private-issue-127-po-approved-2026-10-11
-  controller_review: TL_REVIEWED_CONDITIONAL_HOLD_FINDINGS_FIXED_D2F917E_TL_REREVIEW_PENDING
+  controller_review: TL_REVIEWED_CONDITIONAL_HOLD_AND_REREVIEW_P2_FIXED_BBFED46_TL_REREVIEW_PENDING
   reference: docs/qa/issue-127/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-127/RELEASE-READINESS.md
-  policy: The Product Owner decided to fix Issue #123 (P1) and ship it immediately as prerelease 0.6.0-pre.2 on the pre line, in parallel with stable 0.5.2. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead put the first candidate on conditional hold; the findings are fixed in d2f917e and verified on real DSH, and a Technical Lead re-review of the re-cut candidate and of this release-readiness record is pending. Order - stable 0.5.2 is published first.
+  policy: The Product Owner decided to fix Issue #123 (P1) and ship it immediately as prerelease 0.6.0-pre.2 on the pre line, in parallel with stable 0.5.2. The public tag, merge of the public PR, npm prelatest publication and GitHub prerelease stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. Technical Lead review status (controller_review) - the Technical Lead put the first candidate on conditional hold and the findings are fixed in d2f917e; the re-review found one more P2 (stale host-recognition memory after a live profile change), fixed in 8fc7a97 and bbfed46 and verified live on real DSH; a Technical Lead re-review of the re-cut candidate and of this release-readiness record is pending. Order - stable 0.5.2 is published first.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issue: 123
   engineering_issues: [123]
-  product_commit: d2f917ebe3c92e68b5259afd2e1bce2e8888336a
-  runtime_qa_build_commit: d2f917ebe3c92e68b5259afd2e1bce2e8888336a
+  product_commit: bbfed46b136ed049c7f965811235233854862539
+  runtime_qa_build_commit: bbfed46b136ed049c7f965811235233854862539
   frozen_tag: frozen/v0.6.0-pre.2
   frozen_tag_state: NOT_CREATED_UNTIL_FINAL_CONFIRMATION
-  policy: Product/runtime source is the private engineering commit above, which carries the version bump and the Technical Lead review follow-ups and is itself the build the real DSH 0.2.1-alpha.2 runtime evidence ran on (lib byte-identical install; an earlier build 4cf1d5f of the same fix was also exercised, and the follow-up changes after it are covered by the second evidence set). The later branch commits change only governance records and QA documentation. Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.6.0-pre.2 tag is created only after the Product Owner final confirmation.
+  policy: Product/runtime source is the private engineering commit above, which carries the version bump and the Technical Lead review and re-review follow-ups and is itself the build the real DSH 0.2.1-alpha.2 runtime evidence ran on (lib byte-identical install; earlier builds 4cf1d5f and d2f917e of the same fix were also exercised, and the changes after them are covered by the later evidence sets). The later branch commits change only governance records and QA documentation. Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.6.0-pre.2 tag is created only after the Product Owner final confirmation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
@@ -66,7 +66,7 @@ public_export:
     - README_EN.md (same install-matrix change)
     - CHANGELOG.md (0.6.0-pre.2 release-candidate section on top of 0.6.0-pre.1; no private issue numbers)
     - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count, generated-file count, package file count and runtime-evidence sentence updated for 0.6.0-pre.2)
-    - assets/settings-card.png (recaptured for 0.6.0-pre.2 from an isolated DSH 0.2.1-alpha.2 install of the first 0.6.0-pre.2 tarball (SHA-256 c5541dbf95464686626733286b1aa6d86eee131ab57204f2f63787e85bfce4f6), PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00, badge v0.6.0-pre.2; the re-cut tarball (SHA-256 5517806f1dcb5f0d1b69c9d1134131595bf53b394bd9794b0d9048f1bfafb05c) changes only src/lib behavior for model resolution, not the settings card UI or the version badge, so the image stays valid and was not recaptured; the image is not part of the npm package)
+    - assets/settings-card.png (recaptured for 0.6.0-pre.2 from an isolated DSH 0.2.1-alpha.2 install of the first 0.6.0-pre.2 tarball (SHA-256 c5541dbf95464686626733286b1aa6d86eee131ab57204f2f63787e85bfce4f6), PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00, badge v0.6.0-pre.2; the re-cut tarball (SHA-256 d334f416c5696e655cc6c09b5861eee7c9a6cd898ccc601d0a426af3fe38a884) changes only src/lib behavior for model resolution, not the settings card UI or the version badge, so the image stays valid and was not recaptured; the image is not part of the npm package)
     - .github/workflows/verify.yml and publish.yml (DSH runtime fixture runtime-dsh02 -> runtime-dsh021)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the prerelease line; do not export the private control-plane README.
@@ -91,7 +91,7 @@ public_export:
     - .github/**
 verification:
   state: READY_FOR_FINAL_CONFIRMATION
-  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the tarball identity are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime evidence for the Issue #123 fix and the Technical Lead review follow-ups is recorded in the Issue #123 Worker-session comments (6109224424 on build 4cf1d5f, 6110048211 on the product commit d2f917e) and docs/qa/issue-127/RUNTIME-QA.md (isolated home, lib byte-identical installs); the DSH 0.2.1-alpha.2 retarget itself was runtime-QA'd for 0.5.1-pre.1 (docs/qa/issue-115/RUNTIME-QA.md) and the 0.6.0-pre.1 features on the same baseline. No public tag, npm publication, dist-tag change or GitHub Release has occurred for 0.6.0-pre.2.
+  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the tarball identity are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime evidence for the Issue #123 fix and the Technical Lead review follow-ups is recorded in the Issue #123 Worker-session comments (6109224424 on build 4cf1d5f, 6110048211 on d2f917e, 6110372654 on the product commit bbfed46) and docs/qa/issue-127/RUNTIME-QA.md (isolated home, lib byte-identical installs); the DSH 0.2.1-alpha.2 retarget itself was runtime-QA'd for 0.5.1-pre.1 (docs/qa/issue-115/RUNTIME-QA.md) and the 0.6.0-pre.1 features on the same baseline. No public tag, npm publication, dist-tag change or GitHub Release has occurred for 0.6.0-pre.2.
 runtime_basis:
   dsh: 0.2.1-alpha.2
   host_pi: 1.1.0
