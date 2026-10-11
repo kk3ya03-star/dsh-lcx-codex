@@ -46,6 +46,18 @@ type ManagedFailure = {
   requestId?: string;
   providerRetryAfterMs?: number;
 };
+/** Redacted facts about one failed provider request, for the host log. No provider message, payload or credential. */
+export type StreamFailureInfo = {
+  code: string;
+  status?: number;
+  requestId?: string;
+  providerCode?: string;
+  providerType?: string;
+  incompleteReason?: string;
+  event?: string;
+  /** True when model output (text, reasoning or tool-call deltas) had already been yielded to DSH. */
+  contentEmitted: boolean;
+};
 type LcxError = Error & {
   code?: string;
   status?: number;
@@ -69,7 +81,24 @@ type StreamOptions = {
   signal?: AbortSignal;
   maxResponseBytes?: number;
 };
+/**
+ * Machine-safe facts of a failure the provider reported inside an otherwise healthy SSE stream
+ * (`response.failed`, `error`, `response.incomplete`, or a terminal response whose status is failed).
+ * The provider message body is deliberately not part of it.
+ */
+export type UpstreamFailureFacts = {
+  event: string;
+  /** `error.code`, when present and machine-safe. */
+  code?: string;
+  /** `error.type`, when present and machine-safe. */
+  type?: string;
+  /** `incomplete_details.reason`, when present and machine-safe. */
+  incompleteReason?: string;
+  /** Whether the provider attached an error object (or flat error fields) at all. */
+  hasError: boolean;
+};
 type ResponseWireMeta = {
+  upstreamFailure?: UpstreamFailureFacts;
   responseModel?: string;
   nativeOutput?: unknown[];
   nativeServerSearchEchoCallIds?: string[];
@@ -107,6 +136,8 @@ type StreamRequestOptions = {
   declaredToolNames?: ReadonlySet<string>;
   nativeReplayRoute?: GrokNativeReplayRoute;
   onServerToolUsage?: (usage: ServerToolUsage) => void;
+  /** Called at most once, when the request ends in a non-abort failure. */
+  onFailure?: (info: StreamFailureInfo) => void;
 };
 type PiOutput = import("@earendil-works/pi-ai").AssistantMessage & {
   responseModel?: string;
@@ -184,6 +215,100 @@ function errorFacts(error: unknown) {
   };
 }
 
+/** @param {unknown} value */
+function safeMachineField(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 96)
+    return undefined;
+  return /^[A-Za-z0-9_.:\[\]-]+$/u.test(value) ? value : undefined;
+}
+
+/**
+ * Record the structured facts of a failure the provider reports in-stream. Pi collapses every such
+ * event into one `Error("<code>: <message>")` and `response.completed` with status `failed` into a
+ * bare "stream ended in failure", so the machine fields are captured here, before that happens.
+ */
+function observeUpstreamFailure(event: UnknownRecord, meta: ResponseWireMeta): void {
+  const type = String(event.type ?? "");
+  let source: UnknownRecord | undefined;
+  let details: unknown;
+  let hasError = false;
+  if (type === "error") {
+    // OpenAI sends flat `{code, message}`; some gateways nest `{error: {code, type}}`. `type` is only
+    // ever the error type when nested, because the flat `type` is the event name itself.
+    const nested = isObject(event.error) ? event.error : undefined;
+    source = { code: nested?.code ?? event.code, type: nested?.type };
+    hasError = true;
+  } else if (isObject(event.response)) {
+    const response = event.response;
+    const status = response.status;
+    const failedTerminal =
+      type === "response.failed" ||
+      (type === "response.completed" && status === "failed");
+    const incompleteTerminal =
+      type === "response.incomplete" ||
+      (type === "response.completed" && status === "incomplete");
+    if (!failedTerminal && !incompleteTerminal) return;
+    details = isObject(response.incomplete_details)
+      ? response.incomplete_details.reason
+      : undefined;
+    // max_output_tokens is a length stop that Pi maps to a normal finish, not a failure.
+    if (incompleteTerminal && details === "max_output_tokens") return;
+    source = isObject(response.error) ? response.error : undefined;
+    hasError = source !== undefined;
+  } else return;
+  const code = safeMachineField(source?.code);
+  const errorType = safeMachineField(source?.type);
+  const incompleteReason = safeMachineField(details);
+  meta.upstreamFailure = {
+    event: type,
+    ...(code === undefined ? {} : { code }),
+    ...(errorType === undefined ? {} : { type: errorType }),
+    ...(incompleteReason === undefined ? {} : { incompleteReason }),
+    hasError,
+  };
+}
+
+/** Closed mapping from provider machine identifiers to the DSH failure taxonomy; unknown identifiers return undefined. */
+function classifyProviderIdentifier(value: string | undefined): FailureCode | undefined {
+  if (value === undefined) return undefined;
+  const id = value.toLowerCase();
+  if (id === "insufficient_quota" || id === "insufficient_user_quota")
+    return "INSUFFICIENT_QUOTA";
+  if (/^(?:invalid_api_key|authentication_error|permission_error)$/u.test(id))
+    return "AUTH";
+  if (/^rate_limit|^too_many_requests$/u.test(id)) return "RATE_LIMIT";
+  if (id === "context_length_exceeded") return "CONTEXT_WINDOW_EXCEEDED";
+  if (
+    id === "content_filter" ||
+    id === "content_policy_violation" ||
+    id.startsWith("invalid_")
+  )
+    return "INVALID_REQUEST";
+  if (
+    /^(?:server_error|internal_error|internal_server_error|api_error|service_unavailable|bad_response_status_code)$/u.test(id) ||
+    id.includes("overloaded")
+  )
+    return "SERVER";
+  return undefined;
+}
+
+/**
+ * Failure class for an in-stream provider failure, from its structured fields only. A failed
+ * response with no error object at all is a server-side failure. Unknown identifiers return
+ * undefined so the existing text/status heuristics still apply.
+ */
+function classifyUpstreamFailure(upstream: UpstreamFailureFacts | undefined): FailureCode | undefined {
+  if (upstream === undefined) return undefined;
+  const fromError =
+    classifyProviderIdentifier(upstream.code) ??
+    classifyProviderIdentifier(upstream.type);
+  if (fromError !== undefined) return fromError;
+  if (upstream.incompleteReason !== undefined)
+    return classifyProviderIdentifier(upstream.incompleteReason);
+  if (!upstream.hasError && upstream.event !== "response.incomplete") return "SERVER";
+  return undefined;
+}
+
 /**
  * Provider bodies/messages are deliberately not surfaced. Only a stable class and safe facts leave the wire boundary.
  * @param {unknown} error
@@ -192,6 +317,7 @@ function errorFacts(error: unknown) {
 export function managedFailure(
   error: unknown,
   signal: AbortLike | undefined,
+  upstream?: UpstreamFailureFacts,
 ): ManagedFailure {
   const facts = errorFacts(error);
   const sourceCodes = new Set(facts.codes);
@@ -204,8 +330,10 @@ export function managedFailure(
     (signalReason?.name === "TimeoutError" ||
       signalReason?.code === "TimeoutError" ||
       /time(?:d)?\s*out|timeout/iu.test(String(signalReason?.message ?? "")));
+  const upstreamClass = signal?.aborted ? undefined : classifyUpstreamFailure(upstream);
   let code: FailureCode = "RESPONSES_ERROR";
-  if (
+  if (upstreamClass !== undefined) code = upstreamClass;
+  else if (
     signalTimedOut ||
     facts.status === 408 ||
     sourceCodes.has("TimeoutError") ||
@@ -257,6 +385,7 @@ export function managedFailure(
     facts.status === 422 ||
     sourceCodes.has("LCX_RESPONSES_INVALID_INPUT") ||
     sourceCodes.has("LCX_CHECKPOINT_UNSUPPORTED") ||
+    sourceCodes.has("LCX_CHECKPOINT_IMAGE_BUDGET") ||
     /invalid.?request|payload too large|length limit exceeded/iu.test(text)
   )
     code = "INVALID_REQUEST";
@@ -285,7 +414,9 @@ export function managedFailure(
     SERVER: "Responses provider returned a server failure",
     INVALID_REQUEST: sourceCodes.has("LCX_CHECKPOINT_UNSUPPORTED")
       ? "Unsupported or invalid LCX checkpoint; start a new session"
-      : "Responses provider rejected the request",
+      : sourceCodes.has("LCX_CHECKPOINT_IMAGE_BUDGET")
+        ? "Images kept in the compaction checkpoint exceed the request image bound; start a new session or raise maxRequestImageBytes"
+        : "Responses provider rejected the request",
     CONTEXT_WINDOW_EXCEEDED:
       "Responses request exceeded the model context window",
     UNSUPPORTED_CONTENT: "LCX cannot serialize a DSH content block for this Responses route",
@@ -952,6 +1083,7 @@ async function* normalizedResponseEvents(
   for await (const raw of source) {
     if (!isObject(raw)) continue;
     const event = /** @type {UnknownRecord} */ raw;
+    observeUpstreamFailure(event, meta);
     if (options.serverToolTypes && ['response.completed','response.failed','response.incomplete'].includes(String(event.type))) {
       meta.contextDetails = sanitizeContextDetails(isObject(event.response) && isObject(event.response.usage)
         ? event.response.usage.context_details : undefined);
@@ -1659,7 +1791,35 @@ export async function* streamResponsesRequest({
   declaredToolNames,
   nativeReplayRoute,
   onServerToolUsage,
+  onFailure,
 }: StreamRequestOptions) {
+  let contentEmitted = false;
+  let failureReported = false;
+  /** One redacted report per request; user aborts are not failures. */
+  const reportFailure = (
+    chunk: StreamChunk,
+    managed: ManagedFailure | undefined,
+    upstream: UpstreamFailureFacts | undefined,
+  ) => {
+    if (failureReported || onFailure === undefined) return;
+    if (chunk.type !== "finish" || chunk.reason.kind !== "error") return;
+    failureReported = true;
+    const failure = chunk.reason.failure;
+    try {
+      onFailure({
+        code: String(failure.code),
+        ...(typeof failure.status === "number" ? { status: failure.status } : {}),
+        ...(managed?.requestId === undefined ? {} : { requestId: managed.requestId }),
+        ...(upstream?.code === undefined ? {} : { providerCode: upstream.code }),
+        ...(upstream?.type === undefined ? {} : { providerType: upstream.type }),
+        ...(upstream?.incompleteReason === undefined ? {} : { incompleteReason: upstream.incompleteReason }),
+        ...(upstream === undefined ? {} : { event: upstream.event }),
+        contentEmitted,
+      });
+    } catch {
+      // Diagnostics must never change the stream outcome.
+    }
+  };
   const effectiveTimeoutMs = timeoutMs ?? (applyDefaultTimeout ? 300_000 : undefined);
   const deadline = requestDeadline(signal, effectiveTimeoutMs);
   const watchdog = streamIdleWatchdog(deadline.signal, streamIdleTimeoutMs);
@@ -1729,7 +1889,7 @@ export async function* streamResponsesRequest({
         output.stopReason = signal?.aborted ? "aborted" : "error";
         output.errorMessage =
           error instanceof Error ? error.message : "Responses stream failed";
-        output.__lcxFailure = managedFailure(error, signal);
+        output.__lcxFailure = managedFailure(error, signal, wireMeta.upstreamFailure);
         piEvents.push({
           type: "error",
           reason: /** @type {'aborted' | 'error'} */ output.stopReason,
@@ -1755,7 +1915,15 @@ export async function* streamResponsesRequest({
           break;
         }
         watchdog.disarm();
-        yield result.value;
+        const value = result.value;
+        if (
+          value.type === "text-delta" ||
+          value.type === "reasoning-delta" ||
+          value.type === "tool-call-delta"
+        )
+          contentEmitted = true;
+        reportFailure(value, output.__lcxFailure, wireMeta.upstreamFailure);
+        yield value;
         watchdog.arm();
       }
     } finally {
@@ -1764,7 +1932,9 @@ export async function* streamResponsesRequest({
     }
     await parser;
   } catch (error) {
-    yield managedFailureChunk(error, signal);
+    const chunk = managedFailureChunk(error, signal);
+    reportFailure(chunk, managedFailure(error, signal), undefined);
+    yield chunk;
   } finally {
     watchdog.dispose();
     deadline.dispose();

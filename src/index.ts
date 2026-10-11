@@ -1,5 +1,5 @@
 import z from "@deepseek-ai/schemastery";
-import { recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
+import { failedAuxiliaryUsageListener, recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
 import { installSearchUsage } from "./search-usage.js";
 import type { Context, Volatile } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/cordis-plugin-loader";
@@ -54,6 +54,7 @@ import {
   sessionFromAgent,
   sessionsService,
   scopedToolRuntime,
+  onScopedToolExecute,
   tokenMeterTotal,
   toolResultPrunerState,
 } from "./dsh-compat.js";
@@ -77,7 +78,9 @@ import {
   DEFAULT_MAX_REQUEST_IMAGE_BYTES,
   DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
   DEFAULT_REQUEST_IMAGE_MAX_BYTES,
+  assertAggregateImageBudget,
   hydrateNativeImageReferences,
+  inputImageBase64Lengths,
   resolveRouteModelFacts,
   hasMidHistoryPromptSnapshot,
   responseInputItems,
@@ -88,6 +91,7 @@ import { buildResponsesBody } from "./responses-request.js";
 import {
   managedFailureChunk,
   streamResponsesRequest,
+  type StreamFailureInfo,
 } from "./responses-stream.js";
 import {
   assertSupportedCheckpointMessage,
@@ -765,6 +769,10 @@ function syncGptToolsForAgent(
       disposers.push(
         scopedTools.register(createAdvancedHostedTool(ctx, state, getConfig)),
       );
+    // A search that was billed and then failed keeps its usage: only the Agent-scoped around-dispatch
+    // seam may attach `meta` to a failed tool result.
+    const disposeBilling = onScopedToolExecute(agent, failedAuxiliaryUsageListener);
+    if (disposeBilling) disposers.push(disposeBilling);
     registrations.set(agent, {
       fingerprint,
       dispose() {
@@ -1100,6 +1108,35 @@ function locateSupersededItems(
   return located;
 }
 
+/**
+ * The reasoning projection a GPT route serializes and sends with. A profile's declared
+ * `reasoningEfforts` wins (wire mapping, or `false` for a non-reasoning model); otherwise the catalog
+ * entry stands, and a model with no catalog entry follows what DSH itself resolved for it instead of
+ * being assumed to reason.
+ */
+function gptModelOverride(
+  routeConfig: Pick<ResponsesRouteConfig, "modelControls">,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+): Record<string, unknown> | undefined {
+  if (routeConfig.modelControls !== undefined) return { ...routeConfig.modelControls };
+  if (!facts.resolved) return undefined;
+  return { reasoning: facts.reasoning !== undefined };
+}
+
+/** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
+function assertSupportedReasoningEffort(
+  effort: unknown,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+): void {
+  if (effort === undefined || !facts.resolved) return;
+  const supported = facts.reasoning === undefined ? ["off"] : facts.reasoning.efforts;
+  if (supported.includes(String(effort))) return;
+  throw Object.assign(
+    new Error(`Responses route does not support reasoning effort "${String(effort)}"`),
+    { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+  );
+}
+
 async function serializeNativeAware(
   messages: readonly RequestMessage[],
   route: { provider: string; model: string; baseURL: string; sessionId: string },
@@ -1113,11 +1150,11 @@ async function serializeNativeAware(
   // One adapter-owned lookup supplies image support and the route's system-prompt update mode. On an
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
-  const { imageSupport, systemPromptUpdate, resolved } = await resolveRouteModelFacts(
-    ctx,
-    route,
-    options.signal,
-  );
+  const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
+  const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
+  const modelOverride = options.grokNativeReplayRoute === undefined
+    ? gptModelOverride(routeConfig, modelFacts)
+    : undefined;
   // An unreadable model mode must not demote instructions: history that holds a DSH prompt snapshot after
   // the head can only come from an in-history route, and sending it as user text would silently lower its
   // authority. Without such history the conservative default is harmless, so ordinary requests proceed.
@@ -1150,6 +1187,7 @@ async function serializeNativeAware(
         tools: options.tools,
         responsesCompat: routeConfig.responsesCompat,
         systemPromptUpdate,
+        ...(modelOverride === undefined ? {} : { model: modelOverride }),
         ...extra,
       },
     );
@@ -1173,6 +1211,10 @@ async function serializeNativeAware(
   nativeTools = prelude.tools;
   nativeModel = prelude.model;
   grammarToolInputProperties = prelude.grammarToolInputProperties;
+  /** Base64 length of images DSH cannot offload (hydrated checkpoint, portable replay). */
+  let fixedImageBytes = 0;
+  /** Base64 length of each offloadable surface image, oldest first, across all batches. */
+  const surfaceImageBytes: number[] = [];
   const flush = async () => {
     if (!normal.length) return;
     const batch = normal;
@@ -1182,6 +1224,7 @@ async function serializeNativeAware(
       ctx,
       serializeOptions(),
     );
+    surfaceImageBytes.push(...inputImageBase64Lengths(serialized.input));
     nativeTools = serialized.tools ?? nativeTools;
     nativeModel = serialized.model ?? nativeModel;
     grammarToolInputProperties =
@@ -1225,7 +1268,9 @@ async function serializeNativeAware(
             hydratedMap,
           ),
         );
-        input.push(...responseInputItems(hydrated));
+        const hydratedItems = responseInputItems(hydrated);
+        for (const bytes of inputImageBase64Lengths(hydratedItems)) fixedImageBytes += bytes;
+        input.push(...hydratedItems);
         mergeMap(imageMap, hydratedMap);
       } else {
         const portable = await portableMessagesForCheckpoint(
@@ -1242,6 +1287,7 @@ async function serializeNativeAware(
           ctx,
           serializeOptions(undefined, { systemPromptUpdate: undefined }),
         );
+        for (const bytes of inputImageBase64Lengths(serialized.input)) fixedImageBytes += bytes;
         input.push(...serialized.input);
         mergeMap(imageMap, serialized.imageMap);
       }
@@ -1250,6 +1296,13 @@ async function serializeNativeAware(
     normal.push(message);
   }
   await flush();
+  assertAggregateImageBudget({
+    maxBytes: Number.isSafeInteger(routeConfig.maxRequestImageBytes) && Number(routeConfig.maxRequestImageBytes) > 0
+      ? Number(routeConfig.maxRequestImageBytes)
+      : DEFAULT_MAX_REQUEST_IMAGE_BYTES,
+    fixedBytes: fixedImageBytes,
+    surfaceBytes: surfaceImageBytes,
+  });
   if (!nativeModel)
     throw Object.assign(
       new Error("LCX could not resolve the Pi Responses model descriptor"),
@@ -1264,6 +1317,7 @@ async function serializeNativeAware(
     tools: nativeTools,
     model: nativeModel,
     grammarToolInputProperties,
+    modelFacts,
   };
 }
 
@@ -1680,6 +1734,33 @@ function inputHasNativeState(input: readonly unknown[]) {
   return input.some((item) => isRecord(item) && item.type === "compaction");
 }
 
+/**
+ * One redacted line per failed provider request. Only the LCX class and machine-safe provider
+ * identifiers are logged: never the provider message, a payload, a header or a credential.
+ * `warn` matches the compaction failure line; DSH 0.2.1-alpha.2 ships no persistent logger exporter
+ * (see ERRORS.md), so the line is visible wherever the host attaches one.
+ */
+function logStreamFailure(
+  ctx: HostContext,
+  route: "gpt" | "grok-native",
+  info: StreamFailureInfo,
+): void {
+  const parts = [
+    `route=${route}`,
+    `code=${info.code}`,
+    info.status === undefined ? "" : `status=${info.status}`,
+    info.requestId === undefined ? "" : `requestId=${info.requestId}`,
+    info.event === undefined ? "" : `event=${info.event}`,
+    info.providerCode === undefined ? "" : `providerCode=${info.providerCode}`,
+    info.providerType === undefined ? "" : `providerType=${info.providerType}`,
+    info.incompleteReason === undefined
+      ? ""
+      : `incompleteReason=${info.incompleteReason}`,
+    `emitted=${info.contentEmitted}`,
+  ].filter(Boolean);
+  ctx.logger?.warn?.(`[lcx-codex] responses stream failed: ${parts.join(" ")}`);
+}
+
 async function* managedResponsesStream(
   options: GenerateOptions,
   routeConfig: ResponsesRouteConfig,
@@ -1700,6 +1781,7 @@ async function* managedResponsesStream(
       ctx,
       { signal: options.signal, tools: projected.tools && [...projected.tools] },
     );
+    assertSupportedReasoningEffort(options.reasoningEffort, prepared.modelFacts);
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
       ctx,
@@ -1736,6 +1818,7 @@ async function* managedResponsesStream(
       timeoutMs: routeConfig.timeoutMs,
       maxAttempts: 1,
       maxResponseBytes: routeConfig.maxResponseBytes,
+      onFailure: (info) => logStreamFailure(ctx, "gpt", info),
     });
   } catch (error) {
     yield managedFailureChunk(error, options.signal);
@@ -1830,6 +1913,7 @@ async function* managedGrokNativeSearchStream(
       isServerToolItem: (item) => isGrokNativeServerToolItem(item, nativeSearch, declaredToolNames),
       declaredToolNames,
       nativeReplayRoute,
+      onFailure: (info) => logStreamFailure(ctx, "grok-native", info),
       onServerToolUsage(usage) {
         ctx.logger?.info?.(
           `[lcx-codex] Grok native search used ${usage.total} server-side tool call(s) (web=${usage.webSearchCalls}, x=${usage.xSearchCalls})`,

@@ -1,4 +1,4 @@
-# LCX architecture — 0.5.1-pre.1
+# LCX architecture — 0.5.1-pre.2
 
 This prerelease targets the DSH 0.2.1 contract. Its verified baseline is exactly **DSH 0.2.1-alpha.2, Session V4, host Pi 1.1.0 and plugin Pi 0.87.1**. Public DSH peers use a lower-bound-only `>=0.2.1-alpha.2` install range (no upper bound): newer DSH versions can install it but are unverified and need their own compatibility evidence. The stable `0.5.0` line (DSH 0.2.0-rc.2) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
 
@@ -39,4 +39,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 557/557 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.1-alpha.2, together with bounded real-runtime GPT workflows (system-prompt updates, tool toggles, compaction, restart, fork, lifecycle, web search and inline search media). Grok routes, Alpha search and user image input were not part of that runtime pass. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 628/628 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.1-alpha.2, together with bounded real-runtime GPT workflows (system-prompt updates, tool toggles, compaction, restart, fork, lifecycle, web search and inline search media). Grok native search and user image input received only a limited regression check, and Alpha search and the naturally triggered compaction pressure band were not part of that runtime pass. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

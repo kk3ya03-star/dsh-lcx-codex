@@ -116,7 +116,7 @@ function eraseInlineImages(
 
 function collectInlineLinkDestinations(
   text: string,
-  onDestination: (value: string) => void,
+  onDestination: (value: string, position: number) => void,
 ): string {
   const chars = text.split("");
   for (let index = 0; index < text.length - 1; index += 1) {
@@ -139,7 +139,7 @@ function collectInlineLinkDestinations(
     }
     if (depth !== 0) continue;
     const value = destination(text.slice(open + 1, close - 1));
-    if (value !== null) onDestination(value);
+    if (value !== null) onDestination(value, index);
     for (let offset = index; offset < close; offset += 1) chars[offset] = " ";
     index = close - 1;
   }
@@ -352,21 +352,26 @@ export function extractDirectMediaLinks(text: string): readonly SearchMediaItem[
     return " ".repeat(_match.length);
   });
 
-  const candidates: string[] = [];
+  // Every stage above and below blanks text in place, so a position is an offset into the same
+  // string for all three kinds of link and sorting by it restores the order of the answer.
+  const found: { value: string; position: number }[] = [];
   visible = collectInlineLinkDestinations(
     visible,
-    (value) => candidates.push(value),
+    (value, position) => found.push({ value, position }),
   );
   visible.replace(
     REFERENCE_LINK,
-    (_match, _prefix: string, label: string, explicit: string) => {
+    (_match, prefix: string, label: string, explicit: string, offset: number) => {
       const value = definitions.get(referenceLabel(explicit === "" ? label : explicit));
-      if (value !== undefined) candidates.push(value);
+      if (value !== undefined) found.push({ value, position: offset + prefix.length });
       return _match;
     },
   );
-  visible = visible.replace(REFERENCE_DEFINITION, " ");
-  for (const match of visible.matchAll(URL_TOKEN)) candidates.push(match[0]);
+  visible = visible.replace(REFERENCE_DEFINITION, (definition) => " ".repeat(definition.length));
+  for (const match of visible.matchAll(URL_TOKEN))
+    found.push({ value: match[0], position: match.index ?? 0 });
+  // Array#sort is stable, so equal positions keep their discovery order.
+  const candidates = found.sort((a, b) => a.position - b.position).map((entry) => entry.value);
 
   const result: SearchMediaItem[] = [];
   const seen = new Set<string>();

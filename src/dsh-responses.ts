@@ -203,9 +203,15 @@ export async function resolveRouteModelFacts(
   ctx: DshContext | undefined,
   route: { provider?: unknown; model?: unknown },
   signal?: AbortSignal,
-): Promise<{ imageSupport: ImageSupport; systemPromptUpdate: "in-history" | undefined; resolved: boolean }> {
+): Promise<{
+  imageSupport: ImageSupport;
+  systemPromptUpdate: "in-history" | undefined;
+  /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
+  reasoning: { efforts: string[] } | undefined;
+  resolved: boolean;
+}> {
   const llm = ctx?.llm;
-  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, reasoning: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -220,12 +226,15 @@ export async function resolveRouteModelFacts(
           ? "unsupported"
           : "unknown",
       systemPromptUpdate: info.systemPromptUpdate === "in-history" ? "in-history" : undefined,
+      reasoning: info.reasoning === undefined
+        ? undefined
+        : { efforts: info.reasoning.efforts.map((effort) => String(effort.id)) },
       resolved: true,
     };
   } catch {
     // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
     // to downgrade history that only an in-history route may legitimately contain.
-    return { imageSupport: "unknown", systemPromptUpdate: undefined, resolved: false };
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, reasoning: undefined, resolved: false };
   }
 }
 
@@ -791,6 +800,61 @@ async function hydratePart(part: unknown, ctx: DshContext | undefined, options: 
   if (!hasImageAttachment(attachment)) throw error("native compact returned an invalid image attachment", "LCX_COMPACT_INVALID_RESPONSE");
   if (options.imageSupport === "unsupported") return { type: "input_text", text: "[image omitted because the target model does not support image input]" };
   return imagePart({ attachment }, ctx, options, options.imageMap);
+}
+
+/** Base64 payload length of every `input_image` data URL in Responses input items, in order. */
+export function inputImageBase64Lengths(input: unknown): number[] {
+  const lengths: number[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (!isObject(value)) return;
+    if (value.type === "input_image" && typeof value.image_url === "string") {
+      const url = value.image_url;
+      const comma = url.indexOf(",");
+      lengths.push(url.startsWith("data:") && comma >= 0 ? url.length - comma - 1 : 0);
+      return;
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(input);
+  return lengths;
+}
+
+/**
+ * Enforce the request image bound over the whole assembled request. Each serialization batch is
+ * checked on its own, but images a native checkpoint hydrates (and portable replay re-renders) are
+ * not DSH surface images and arrive in other batches, so only the sum shows the real request size.
+ * DSH can offload only surface images, oldest first: when offloading enough of them fits the request
+ * the route asks for exactly that many; when even all of them cannot, no retry can help and the
+ * checkpoint's own images are the reason.
+ * @param options.fixedBytes base64 length of images DSH cannot offload (checkpoint / replay)
+ * @param options.surfaceBytes base64 length of each offloadable image, oldest first
+ */
+export function assertAggregateImageBudget(options: { maxBytes: number; fixedBytes: number; surfaceBytes: readonly number[] }): void {
+  const total = options.surfaceBytes.reduce((sum, bytes) => sum + bytes, options.fixedBytes);
+  if (total <= options.maxBytes) return;
+  const excess = total - options.maxBytes;
+  let removed = 0;
+  let count = 0;
+  for (const bytes of options.surfaceBytes) {
+    if (removed >= excess) break;
+    removed += bytes;
+    count += 1;
+  }
+  if (removed >= excess) {
+    throw new LlmError(
+      `LCX request images exceed the configured base64 bound once checkpoint images are counted; ${count} more oldest occurrence(s) must be offloaded.`,
+      IMAGE_OFFLOAD_REQUIRED_CODE,
+      { offloadImages: count },
+    );
+  }
+  throw error(
+    `Images retained in the compaction checkpoint (${options.fixedBytes} base64 bytes) leave no room within the ${options.maxBytes}-byte request image bound, and offloading new images cannot recover it; start a new session or raise maxRequestImageBytes`,
+    "LCX_CHECKPOINT_IMAGE_BUDGET",
+  );
 }
 
 export async function hydrateNativeImageReferences(output: unknown, ctx: DshContext | undefined, options: Partial<ImageOptions> & { imageMap?: unknown } = {}) {

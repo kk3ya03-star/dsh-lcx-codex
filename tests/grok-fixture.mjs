@@ -47,12 +47,13 @@ export function grokHarness({
 } = {}) {
   const handlers = new Map()
   const logs = []
+  const warnLogs = []
   const imageOptions = []
   const modelInfoRequests = []
   const config = pluginConfig({ enabled, grokNativeWebSearch: nativeWeb, grokNativeXSearch: nativeX, maxAttempts: 1 })
   const provider = providerContext(profiles)
   const ctx = {
-    logger: { info(message) { logs.push(message) }, warn() {} },
+    logger: { info(message) { logs.push(message) }, warn(message) { warnLogs.push(message) } },
     sessions: { get: () => undefined },
     credentials: { resolve: async () => ({ value: 'synthetic-test-key' }) },
     llm: {
@@ -84,7 +85,7 @@ export function grokHarness({
   }
   apply(ctx, config)
   return {
-    ctx, handlers, logs, imageOptions, modelInfoRequests,
+    ctx, handlers, logs, warnLogs, imageOptions, modelInfoRequests,
     stream: handlers.get('llm/stream'),
     setMediaPreview(value) {
       updateVolatile(config.searchMediaPreview, pluginConfig({ searchMediaPreview: Boolean(value) }).searchMediaPreview)

@@ -229,20 +229,17 @@ function profileReasoning(value: unknown): ModelThinkingLevel | undefined {
   return MODEL_THINKING_LEVELS.find((level) => level === value);
 }
 
-function configuredModelControls(
+/**
+ * The reasoning projection of a model whose profile entry declares `reasoningEfforts` (the mapping
+ * from DSH levels to wire spellings, or `false` for a non-reasoning model); undefined when the
+ * profile says nothing, so the caller falls back to the catalog or to what DSH resolved.
+ */
+function declaredReasoningControls(
   profile: ProviderProfile,
   modelId: string,
-  base: PiResponsesModel | undefined,
-): ModelControlProjection {
-  const configured = configuredModelProfile(profile, modelId);
-  const efforts = configured?.reasoningEfforts;
-  if (efforts === undefined)
-    return {
-      reasoning: base?.reasoning ?? false,
-      ...(base?.thinkingLevelMap === undefined
-        ? {}
-        : { thinkingLevelMap: base.thinkingLevelMap }),
-    };
+): ModelControlProjection | undefined {
+  const efforts = configuredModelProfile(profile, modelId)?.reasoningEfforts;
+  if (efforts === undefined) return undefined;
   if (efforts === false) return { reasoning: false };
   if (!isRecord(efforts)) return { reasoning: false };
   const thinkingLevelMap: Partial<
@@ -257,6 +254,21 @@ function configuredModelControls(
     } else if (typeof value === "string") thinkingLevelMap[level] = value;
   }
   return { reasoning: true, thinkingLevelMap };
+}
+
+function configuredModelControls(
+  profile: ProviderProfile,
+  modelId: string,
+  base: PiResponsesModel | undefined,
+): ModelControlProjection {
+  return (
+    declaredReasoningControls(profile, modelId) ?? {
+      reasoning: base?.reasoning ?? false,
+      ...(base?.thinkingLevelMap === undefined
+        ? {}
+        : { thinkingLevelMap: base.thinkingLevelMap }),
+    }
+  );
 }
 
 function isLcxCapabilityRoute(
@@ -301,6 +313,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   const fallbackRetention = lcxCapabilityRoute ? policy.cacheRetention : undefined;
   const requestedRetention: CacheRetention | undefined = configuredRetention === "none" || configuredRetention === "short" || configuredRetention === "long" ? configuredRetention : fallbackRetention === "none" || fallbackRetention === "short" || fallbackRetention === "long" ? fallbackRetention : undefined;
   const cacheRetention: CacheRetention = requestedRetention === "long" && !supportsLongCacheRetention ? "short" : requestedRetention ?? (supportsLongCacheRetention ? "long" : "short");
+  const declaredControls = declaredReasoningControls(configured, model);
   return {
     provider,
     model,
@@ -311,6 +324,9 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     cacheRetention,
     supportsLongCacheRetention,
     responsesCompat,
+    // Only a declared `reasoningEfforts` is projected here; an undeclared model follows the catalog
+    // and what DSH resolved for it (see `gptModelOverride`).
+    ...(declaredControls === undefined ? {} : { modelControls: declaredControls }),
     // These are explicitly LCX-owned transport and request-capability policies.
     timeoutMs: isPositiveInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),

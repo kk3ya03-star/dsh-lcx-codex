@@ -195,8 +195,12 @@ test('routes without in-history keep DSH head replacement and legacy mapping (re
       const request = raw.at(-1)
       assert.equal(request.messages.filter(m => m.role === 'system').length, 1, 'DSH rewrote the single head instead of appending')
       const body = await postedBody(index, bodies, request, routeConfig, ctx)
-      assert.deepEqual(body.input.map(item => item.role ?? item.type), ['developer', 'user', 'assistant', 'user'])
-      assert.match(instructionTexts(body.input, 'developer')[0], /PROMPT-V2$/u)
+      // Issue 119: the instruction role follows the model's reasoning capability as DSH resolves it. The catalog
+      // reasoning model renders developer; the custom-named route declares no reasoningEfforts, so DSH resolves it
+      // as non-reasoning and its single head keeps the plain system role.
+      const instructionRole = provider === 'openai' ? 'developer' : 'system'
+      assert.deepEqual(body.input.map(item => item.role ?? item.type), [instructionRole, 'user', 'assistant', 'user'])
+      assert.match(instructionTexts(body.input, instructionRole)[0], /PROMPT-V2$/u)
       await handle.dispose()
     }
   })

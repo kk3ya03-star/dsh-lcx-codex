@@ -96,7 +96,10 @@ export function responsesGenerationEnvelope({
       result.include = ["reasoning.encrypted_content"];
     if (reasoningEffort !== undefined && reasoningEffort !== "off") {
       const requested = String(reasoningEffort);
-      const wire = descriptor.thinkingLevelMap?.[requested] ?? requested;
+      // Unmapped means "send the level as is"; an explicit null means the model declares the level
+      // unsupported, so nothing is sent for it (the DSH adapter refuses such a level before dispatch).
+      const mapped = descriptor.thinkingLevelMap?.[requested];
+      const wire = mapped === undefined ? requested : mapped;
       if (wire !== null) {
         result.reasoning = { effort: wire, summary: "auto" };
         result.include = ["reasoning.encrypted_content"];
