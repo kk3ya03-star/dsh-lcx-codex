@@ -2,13 +2,13 @@ version: 0.5.2
 state: APPROVED_STABLE
 approval:
   product_owner: private-issue-126-po-approved-2026-10-11
-  controller_review: PENDING_TECHNICAL_LEAD_REVIEW
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
   reference: docs/qa/issue-126/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-126/RELEASE-READINESS.md
-  policy: The Product Owner approved shipping a stable bug-fix release for DSH 0.2.0-rc.2 that fixes the NO_ADAPTER failure on provider profiles without api (private Issue #123). The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead has not yet reviewed this release.
+  policy: The Product Owner approved shipping a stable bug-fix release for DSH 0.2.0-rc.2 that fixes the NO_ADAPTER failure on provider profiles without api (private Issue #123). The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead engineering review of this release passed on 2026-10-11.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issues: [123, 126]
@@ -98,7 +98,7 @@ runtime_basis:
   host_pi: 0.87.1
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS with real-runtime QA evidence for the exact baseline plugin 0.5.2 x DSH 0.2.0-rc.2 x host Pi 0.87.1 x plugin Pi 0.87.1. Not VERIFIED until the stable artifact is published and post-release verified; publication alone does not promote the assessment. Stable publication does not widen the claim to other DSH builds in the install range.
-  remaining: Only the Technical Lead review, the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
+  remaining: Only the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
 publication:
   state: APPROVED_PENDING_PUBLISH
   policy: Release approval is recorded, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, npm latest publication and GitHub Release are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves latest from 0.5.1 to 0.5.2 and leaves prelatest on 0.6.0-pre.1. This stable release must be published before 0.6.0-pre.2.
