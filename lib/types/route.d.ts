@@ -54,6 +54,12 @@ type ModelControlProjection = {
     reasoning?: boolean;
     thinkingLevelMap?: Partial<Record<ModelThinkingLevel, string | null>>;
     includeEncryptedReasoning?: boolean;
+    /**
+     * The profile declared `off: null`: selecting off is supported and sends no reasoning option. The map
+     * then carries an explicit `off: null` so the request builder omits the parameter, and this flag keeps
+     * the level selectable (a null map entry alone would mark it unsupported).
+     */
+    offOmitsReasoning?: boolean;
 };
 type ModelDescriptorDefaults = Partial<Pick<PiResponsesModel, "reasoning" | "thinkingLevelMap">>;
 type UnresolvedRouteConfig = RoutePolicy & {

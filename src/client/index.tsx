@@ -15,6 +15,8 @@ import {
 } from "./search-media.js";
 import { installInlineMedia, inlineMediaCss, nativeMarkdownImageCss, type InlineMediaHost, type MediaLabels } from "./inline-media.js";
 import { installUsageSlots, searchUsageDefinition } from "./search-usage-ui.js";
+import { createCallTurns } from "./nested-calls.js";
+import { NESTED_SETTLE_EVENT } from "../search-accounting.js";
 
 const SEARCH_MEDIA_KIND = "lcx-search-media";
 
@@ -37,7 +39,8 @@ type Field =
   | "alphaSearch"
   | "grokNativeWebSearch"
   | "grokNativeXSearch"
-  | "searchMediaPreview";
+  | "searchMediaPreview"
+  | "incrementalToolUpdates";
 
 type Values = Record<Field, boolean>;
 
@@ -164,9 +167,11 @@ window.__ModuleLoader__.load({
       "grokNativeWebSearch",
       "grokNativeXSearch",
       "searchMediaPreview",
+      "incrementalToolUpdates",
     ];
+    // Incremental tool updates are on unless the user turns them off; every other switch starts off.
     const DEFAULTS: Values = Object.fromEntries(
-      FIELDS.map((field) => [field, false]),
+      FIELDS.map((field) => [field, field === "incrementalToolUpdates"]),
     ) as Values;
     const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-search-usage{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}` + inlineMediaCss + nativeMarkdownImageCss;
     function mountCss(): () => void {
@@ -196,6 +201,9 @@ window.__ModuleLoader__.load({
         alpha: "启用 Alpha command（websearch_alpha）",
         alphaHelp:
           "仅 capability probe 对当前 route/schema 验证通过后才真正注册。",
+        tools: "增量工具更新（addition-only）",
+        toolsHelp:
+          "会话中途新增工具时保持请求前缀不变以保护 prompt 缓存，新增工具作为历史项声明。仅对支持的 GPT Responses 模型生效；关闭后每次请求发送完整工具列表（回退或对照用）。删除或修改工具仍会重置一次缓存。",
         mediaPreview: "搜索媒体预览",
         mediaPreviewHelp:
           "在回答下方显示搜索返回的图片、回答里的图片直链，以及可直接播放的视频直链；点击放大或播放。回答正文里的 Markdown 图片由 DSH 原生渲染，普通网页链接保持为链接。此设置只改变界面显示。",
@@ -237,6 +245,9 @@ window.__ModuleLoader__.load({
           "Only for native Hosted controls such as domains, location, context size and image search; off by default for stable tool schemas.",
         alpha: "Enable Alpha command (websearch_alpha)",
         alphaHelp: "Registered only after a matching capability probe.",
+        tools: "Incremental tool updates (addition-only)",
+        toolsHelp:
+          "When a tool is added mid-session, keep the request prefix unchanged to protect the prompt cache; the new tool is declared in history. Applies only to supporting GPT Responses models. Off sends the complete tool list on every request (rollback or comparison). Removing or redefining a tool still resets the cache once.",
         mediaPreview: "Search media previews",
         mediaPreviewHelp:
           "Show images returned by search, direct image links in the answer and directly playable video links below the answer; click to enlarge or play. Markdown images in the answer are rendered natively by DSH, and ordinary page links stay links. This setting changes presentation only.",
@@ -269,7 +280,10 @@ window.__ModuleLoader__.load({
       return {
         ...DEFAULTS,
         ...(Object.fromEntries(
-          FIELDS.map((field) => [field, Boolean(value[field])]),
+          FIELDS.map((field) => [
+            field,
+            value[field] === undefined ? DEFAULTS[field] : Boolean(value[field]),
+          ]),
         ) as Values),
       };
     }
@@ -283,14 +297,23 @@ window.__ModuleLoader__.load({
     const hostedMediaTool = (value: unknown): value is StructuredMediaTool =>
       value === "web_search" || value === "websearch_gpt_advanced";
 
+    // A search a `run_code` program called settles as `tool/ptc-dispatch`, which names only its root call and
+    // carries no turn; the turn is remembered from that root's `tool/call` (see nested-calls.ts).
+    const callTurns = createCallTurns();
     const searchMediaDefinition: ConversationNodeDefinition<SearchMediaState> = {
       kind: SEARCH_MEDIA_KIND,
       target: "chat",
       match(event) {
         if (event.type === "turn/start")
           return { id: String(event.data.turn), role: "start" };
+        if (event.type === "tool/call")
+          callTurns.remember(event.data.callId, event.data.turn);
         if (event.type === "tool/result" || event.type === "tool/call")
           return { id: String(event.data.turn), role: "update" };
+        if (event.type === NESTED_SETTLE_EVENT) {
+          const turn = callTurns.turnOf(event.data.rootCallId);
+          return turn === undefined ? null : { id: String(turn), role: "update" };
+        }
         if (
           event.type !== "assistant/message" ||
           event.surfaceOp !== "append" ||
@@ -325,6 +348,18 @@ window.__ModuleLoader__.load({
               ...context.state.pending,
               [match.event.data.callId]: match.event.data.name,
             },
+          };
+        }
+        if (match.event.type === NESTED_SETTLE_EVENT) {
+          // The nested settlement names the tool it dispatched; it never has a pending entry.
+          const { name, meta } = match.event.data;
+          if (!hostedMediaTool(name)) return context.state;
+          return {
+            ...context.state,
+            structuredItems: mergeSearchMedia(
+              context.state.structuredItems,
+              structuredSearchMedia(meta, name),
+            ),
           };
         }
         if (match.event.type === "tool/result") {
@@ -617,6 +652,15 @@ window.__ModuleLoader__.load({
                 checked: s.alphaSearch.value,
                 disabled: disabled || !s.enabled.value,
                 onChange: (value: boolean) => props.edit("alphaSearch", value),
+              }),
+              React.createElement(Row, {
+                id: "lcx-tools",
+                label: t("tools"),
+                help: t("toolsHelp"),
+                checked: s.incrementalToolUpdates.value,
+                disabled,
+                onChange: (value: boolean) =>
+                  props.edit("incrementalToolUpdates", value),
               }),
               React.createElement(
                 "section",

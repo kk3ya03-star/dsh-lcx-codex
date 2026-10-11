@@ -1,30 +1,31 @@
-version: 0.5.1-pre.1
+version: 0.6.0-pre.1
 state: APPROVED_PRERELEASE
 approval:
-  product_owner: private-issue-115-po-approved-2026-10-10
-  controller_review: TL_ACCEPTED_FOR_RELEASE_CLOSE_OUT
-  reference: docs/qa/issue-115/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: RECORDED_2026-10-10
-  final_confirmation_reference: docs/qa/issue-115/PO-FINAL-CONFIRMATION.md
+  product_owner: private-issue-124-po-approved-2026-10-11
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
+  reference: docs/qa/issue-124/PRODUCT-OWNER-APPROVAL.md
+  final_irreversible_confirmation: RECORDED_2026-10-11
+  final_confirmation_reference: docs/qa/issue-124/PO-FINAL-CONFIRMATION.md
 readiness:
   state: FINAL_CONFIRMATION_RECORDED
-  reference: docs/qa/issue-115/RELEASE-READINESS.md
-  policy: The Product Owner approved building a prerelease for the latest DSH and gave the final irreversible confirmation after the Release Readiness Report (private Issue #115). This exact candidate is authorized for publication to prelatest; stable latest must remain 0.5.0. Technical Lead accepted the core code and the requested fixes (re-verified on c83b6d0) and accepted the private release head for close-out.
+  reference: docs/qa/issue-124/RELEASE-READINESS.md
+  policy: The Product Owner gave the final irreversible confirmation on 2026-10-11 after the Release Readiness Report and the Technical Lead engineering review (private Issue #124). This exact candidate is authorized for publication.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
-  engineering_issue: 115
-  product_commit: c83b6d0b12c5d8f21e3ba06a074d165288d7d932
-  runtime_qa_build_commit: c83b6d0b12c5d8f21e3ba06a074d165288d7d932
-  frozen_tag: frozen/v0.5.1-pre.1
+  engineering_issue: 124
+  engineering_issues: [117, 119, 120, 122]
+  product_commit: fbe6145e89f18cb96430f84ed8e7081bf37af4c3
+  runtime_qa_build_commit: 6b0e61fe4cb74ddb79aeaaf754922b0d678c6d10
+  frozen_tag: frozen/v0.6.0-pre.1
   frozen_tag_state: NOT_CREATED_UNTIL_FINAL_CONFIRMATION
-  policy: Product/runtime source is the private engineering commit above (final product build, including the Technical Lead-requested fixes; the later branch commits change only governance records and QA documentation). Earlier runtime QA builds a60abea and the pre-review product commit 2abf446 are superseded. Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.5.1-pre.1 tag is created only after the Product Owner final confirmation.
+  policy: Product/runtime source is the private engineering commit above (the version bump on top of the integration build 6b0e61f that carried the #120 live A/B; src, lib and cordis.patch.yml are byte-identical between the two, only the package version, its lock entry, the package-contract version assertion and the changelog differ; the later branch commits change only governance records and QA documentation). Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.6.0-pre.1 tag is created only after the Product Owner final confirmation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.5.1-pre.1
-  qualification: Product Owner approved the prerelease and gave the final irreversible confirmation recorded in private Issue #115. This exact candidate is authorized for publication.
+  tag: v0.6.0-pre.1
+  qualification: Product Owner approved shipping Issues #117, #119, #120 and #122 as a prerelease. Public tag creation remains operationally blocked until the final irreversible confirmation recorded in private Issue #124.
   npm_dist_tag: prelatest
-  stable_latest_must_remain: 0.5.0
+  stable_latest_must_remain: 0.5.1
 public_export:
   from_private_release_source:
     - .gitattributes
@@ -38,6 +39,8 @@ public_export:
     - tsconfig.json
     - tsconfig.client.json
     - cordis.patch.yml
+    - icon.svg
+    - locale/**
     - LICENSE
     - THIRD_PARTY_NOTICES.md
   from_release_control_overlay:
@@ -60,11 +63,11 @@ public_export:
     - CONTRIBUTING.md
     - assets/settings-card.png
   distribution_overlays_reviewed:
-    - README.md (public zh; DSH 0.2.1-alpha.2 and later install 0.5.1-pre.1 via @prelatest with the lower-bound-only range and verification scope stated, DSH 0.2.0-rc.2 installs 0.5.0 via @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its pinned-prerelease guidance)
+    - README.md (public zh; DSH 0.2.1-alpha.2 and later install 0.6.0-pre.1 via @prelatest with the lower-bound-only range and verification scope stated, DSH 0.2.0-rc.2 installs stable 0.5.1 via @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its pinned-prerelease guidance)
     - README_EN.md (same install-matrix change)
-    - CHANGELOG.md (0.5.1-pre.1 release-candidate section; no private issue numbers)
-    - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording)
-    - assets/settings-card.png (recaptured from an isolated install of the exact public tarball on DSH 0.2.1-alpha.2; badge v0.5.1-pre.1)
+    - CHANGELOG.md (0.6.0-pre.1 release-candidate section on top of 0.5.1-pre.1, folding the never-published 0.5.1-pre.2; no private issue numbers)
+    - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count and runtime-evidence sentence updated for 0.6.0-pre.1)
+    - assets/settings-card.png (recaptured from an isolated install of the exact public tarball on DSH 0.2.1-alpha.2; badge v0.6.0-pre.1)
     - .github/workflows/verify.yml and publish.yml (DSH runtime fixture runtime-dsh02 -> runtime-dsh021)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the prerelease line; do not export the private control-plane README.
@@ -89,22 +92,22 @@ public_export:
     - .github/**
 verification:
   state: READY_FOR_FINAL_CONFIRMATION
-  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime QA passed for the required scenarios on build a60abea and was re-verified on the final build c83b6d0 after the Technical Lead-requested fixes (docs/qa/issue-115/RUNTIME-QA.md). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
+  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime evidence is recorded in the Worker-session comments of Issues #117, #119, #120 and #122 (isolated home; the #120 live A/B ran on build 6b0e61f, the #122 PTC and Plugin Manager card checks on 8fb3615, the #117/#119 sessions on earlier builds of the same line); the DSH 0.2.1-alpha.2 retarget itself was runtime-QA'd for 0.5.1-pre.1 (docs/qa/issue-115/RUNTIME-QA.md). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
 runtime_basis:
   dsh: 0.2.1-alpha.2
   host_pi: 1.1.0
   plugin_pi: 0.87.1
-  qualification: ENGINEERING_PASS with real-runtime QA evidence for the exact baseline plugin 0.5.1-pre.1 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
+  qualification: ENGINEERING_PASS with real-runtime evidence for the exact baseline plugin 0.6.0-pre.1 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
   install_range: ">=0.2.1-alpha.2 (lower bound only, no ceiling; Product Owner decision 2026-10-10). Newer DSH versions can install but are unverified."
-  remaining: Only post-publication verification remains. Not covered by runtime QA - natural pressure-band Native V2 trigger, Alpha search, Grok routes (tracked separately) and user image input.
+  remaining: Only post-publication verification remains. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.5.1-pre.1, npm prelatest publication (0.5.0-pre.1 -> 0.5.1-pre.1) and the GitHub prerelease are authorized for this exact candidate only; npm latest must remain 0.5.0.
+  policy: Product Owner approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.6.0-pre.1, npm prelatest publication and the GitHub Release are authorized for this exact candidate only; npm latest must remain 0.5.1, which is published first.
 previous_release:
   version: 0.5.0
   tag: v0.5.0
-  policy: Existing stable artifact, public tag and registry version are immutable and must not be reused; remains npm latest.
+  policy: Existing stable artifact, public tag and registry version are immutable and must not be reused. Stable 0.5.1 (stable/0.5.x line, Issue #121) is published before this prerelease and then is the npm latest that must not move (stable_latest_must_remain); it is not part of this tree.
 previous_prerelease:
-  version: 0.5.0-pre.1
-  tag: v0.5.0-pre.1
-  policy: Existing published artifact, public tag and registry version are immutable; superseded on prelatest only after the confirmed 0.5.1-pre.1 publication.
+  version: 0.5.1-pre.1
+  tag: v0.5.1-pre.1
+  policy: Existing published artifact, public tag and registry version are immutable and must not be reused; superseded on prelatest only after the confirmed 0.6.0-pre.1 publication. The never-published 0.5.1-pre.2 is superseded by 0.6.0-pre.1 and its tag and version are not used.

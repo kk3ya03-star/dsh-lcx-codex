@@ -1,16 +1,24 @@
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client';
-import { auxiliaryUsageOf, isSearchTool, object, type SearchUsage } from '../search-accounting.js';
+import { auxiliaryUsageOf, isSearchTool, NESTED_SETTLE_EVENT, object, type SearchUsage } from '../search-accounting.js';
+import { createCallTurns } from './nested-calls.js';
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap { 'lcx-search-usage': readonly SearchUsage[] }
 }
+// A nested settlement carries no turn: resolve it through the root call it names (see nested-calls.ts).
+const callTurns = createCallTurns();
 /** A turn-local data contribution; it adds no transcript rows and keeps built-in actions. */
 export const searchUsageDefinition: ConversationNodeDefinition<{turn:number;records:SearchUsage[];pending:Record<string,string>;complete:boolean}> = {
   kind:'lcx-search-usage',
   match(event) {
     if (event.type==='turn/start') return {id:String(event.data.turn),role:'start'};
+    if (event.type==='tool/call') callTurns.remember(event.data.callId,event.data.turn);
     if (event.type==='turn/end' || event.type==='tool/result' || event.type==='tool/call') return {id:String(event.data.turn),role:'update'};
+    if (event.type===NESTED_SETTLE_EVENT) {
+      const turn=callTurns.turnOf(event.data.rootCallId);
+      return turn===undefined ? null : {id:String(turn),role:'update'};
+    }
     return null;
   },
   start(_context,match) {
@@ -21,6 +29,7 @@ export const searchUsageDefinition: ConversationNodeDefinition<{turn:number;reco
     const event=match.event,state=context.state,pending={...state.pending};
     if(event.type==='tool/call' && isSearchTool(event.data.name)) pending[event.data.callId]=event.data.name;
     const callId=event.type==='tool/result'?event.data.message.source.callId:undefined;
+    // A nested settlement names its own tool, so it never has (or needs) a pending entry.
     const extra=auxiliaryUsageOf(event,callId?pending[callId]:undefined);
     if(callId)delete pending[callId];
     return {...state,pending,records:[...state.records,...extra],complete:event.type==='turn/end'};

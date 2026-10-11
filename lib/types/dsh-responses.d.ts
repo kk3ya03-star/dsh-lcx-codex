@@ -33,6 +33,13 @@ type SerializeOptions = Partial<ImageOptions> & {
     systemPromptUpdate?: unknown;
     onReplayDegrade?: unknown;
     tools?: PiTool[];
+    /**
+     * `"addition-only"` marks `tools` as an anchored surface (see `planToolSurface`): tools flagged
+     * `deferLoading` are declared only by the developer tool-addition messages in `messages`, rendered in
+     * history position as Responses `additional_tools` (or `tool_search` output), while the request `tools`
+     * keeps only the immediate declarations. Any other value keeps the strict full-list contract.
+     */
+    toolUpdate?: unknown;
 };
 type ReplayBlock = WireRecord & {
     type: "text" | "reasoning" | "tool-call";
@@ -57,6 +64,12 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
 }, signal?: AbortSignal): Promise<{
     imageSupport: ImageSupport;
     systemPromptUpdate: "in-history" | undefined;
+    /** DSH `ModelInfo.toolUpdate` for the exact routed model (0.2.1+); absent on routes that declare none. */
+    toolUpdate: "in-history" | "addition-only" | undefined;
+    /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
+    reasoning: {
+        efforts: string[];
+    } | undefined;
     resolved: boolean;
 }>;
 export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
@@ -102,6 +115,23 @@ export declare function serializeDshMessages(messages: readonly RequestMessage[]
 }>;
 export declare function responsesTools(tools: readonly PiTool[] | undefined): any[] | undefined;
 export declare function persistNativeImageReferences(output: readonly unknown[], imageMap: ReadonlyMap<string, ImageAttachmentRef>): unknown[];
+/** Base64 payload length of every `input_image` data URL in Responses input items, in order. */
+export declare function inputImageBase64Lengths(input: unknown): number[];
+/**
+ * Enforce the request image bound over the whole assembled request. Each serialization batch is
+ * checked on its own, but images a native checkpoint hydrates (and portable replay re-renders) are
+ * not DSH surface images and arrive in other batches, so only the sum shows the real request size.
+ * DSH can offload only surface images, oldest first: when offloading enough of them fits the request
+ * the route asks for exactly that many; when even all of them cannot, no retry can help and the
+ * checkpoint's own images are the reason.
+ * @param options.fixedBytes base64 length of images DSH cannot offload (checkpoint / replay)
+ * @param options.surfaceBytes base64 length of each offloadable image, oldest first
+ */
+export declare function assertAggregateImageBudget(options: {
+    maxBytes: number;
+    fixedBytes: number;
+    surfaceBytes: readonly number[];
+}): void;
 export declare function hydrateNativeImageReferences(output: unknown, ctx: DshContext | undefined, options?: Partial<ImageOptions> & {
     imageMap?: unknown;
 }): Promise<unknown[]>;

@@ -37,3 +37,6 @@ Thumbs.db
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Test scratch roots created by issue regression tests
+.i1[0-9][0-9]-*

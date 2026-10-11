@@ -15,6 +15,7 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     grokNativeWebSearch: false,
     grokNativeXSearch: false,
     searchMediaPreview: false,
+    incrementalToolUpdates: true,
   }
   const writes = []
   const scope = {
@@ -244,4 +245,23 @@ test('client blocks unavailable and read-only saves', async () => {
   await f.save()
   assert.equal(f.writes.length, 0)
   assert.equal(f.state().dirty, true)
+})
+
+test('incremental tool updates default on, render with help text in both languages, and save an explicit off', async () => {
+  const f = fixture()
+  assert.equal(f.state().incrementalToolUpdates.value, true)
+  assert.match(JSON.stringify(f.render()), /Incremental tool updates \(addition-only\)/)
+  f.setLocale('zh')
+  assert.match(JSON.stringify(f.render()), /增量工具更新/)
+  f.setLocale('en')
+  f.injection.edit('incrementalToolUpdates', false)
+  assert.equal(f.state().incrementalToolUpdates.value, false)
+  await f.save()
+  assert.deepEqual(f.writes, [[{ op: 'set', path: ['incrementalToolUpdates'], value: false }]])
+  assert.equal(f.values.incrementalToolUpdates, false)
+  // A settings document that predates the key still shows the default (on), not off.
+  const older = fixture()
+  delete older.values.incrementalToolUpdates
+  older.refresh()
+  assert.equal(older.state().incrementalToolUpdates.value, true)
 })

@@ -1,10 +1,11 @@
 import z from "@deepseek-ai/schemastery";
-import { recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
+import { failedAuxiliaryUsageListener, recordHostedUsage, withAuxiliaryUsage } from "./auxiliary-usage.js";
 import { installSearchUsage } from "./search-usage.js";
 import type { Context, Volatile } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/cordis-plugin-loader";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { projectToolUpdates, type RequestMessage } from "@deepseek-ai/dsh-llm";
+import type { ToolHistory } from "@deepseek-ai/dsh-llm";
 import type {
   ContentBlock,
   GenerateOptions,
@@ -32,6 +33,7 @@ import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getSupportedThinkingLevels } from "./pi-responses-runtime.js";
 import { fetchJsonWithRetry } from "./transport.js";
+import { DEFAULT_TOOL_UPDATES, planToolSurface, withoutDeferLoading, type ToolUpdatesMode } from "./tool-surface.js";
 import {
   agentSessionId,
   agentUsesSession,
@@ -54,6 +56,7 @@ import {
   sessionFromAgent,
   sessionsService,
   scopedToolRuntime,
+  onScopedToolExecute,
   tokenMeterTotal,
   toolResultPrunerState,
 } from "./dsh-compat.js";
@@ -77,7 +80,9 @@ import {
   DEFAULT_MAX_REQUEST_IMAGE_BYTES,
   DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
   DEFAULT_REQUEST_IMAGE_MAX_BYTES,
+  assertAggregateImageBudget,
   hydrateNativeImageReferences,
+  inputImageBase64Lengths,
   resolveRouteModelFacts,
   hasMidHistoryPromptSnapshot,
   responseInputItems,
@@ -88,6 +93,7 @@ import { buildResponsesBody } from "./responses-request.js";
 import {
   managedFailureChunk,
   streamResponsesRequest,
+  type StreamFailureInfo,
 } from "./responses-stream.js";
 import {
   assertSupportedCheckpointMessage,
@@ -182,6 +188,8 @@ type LiveSettingsConfig = {
   grokNativeWebSearch: Volatile<boolean>;
   grokNativeXSearch: Volatile<boolean>;
   searchMediaPreview: Volatile<boolean>;
+  /** Defaults to true: addition-only tool updates on routes that support them. */
+  incrementalToolUpdates: Volatile<boolean>;
 };
 
 type NormalizedConfig = {
@@ -204,6 +212,8 @@ type NormalizedConfig = {
   nativeRetentionTokenBudget: number;
   assistantRetentionTokenReserve: number;
   assistantRetentionPerMessageTokenCap: number;
+  /** Route policy: `addition-only` anchors the request tools; `full` sends the complete list every request. */
+  toolUpdates: ToolUpdatesMode;
 };
 
 type ResponsesRouteConfig = ResolvedResponsesRoute &
@@ -220,6 +230,7 @@ type ResponsesRouteConfig = ResolvedResponsesRoute &
     | "portableReplayMaxChars"
     | "requestImageMaxBytes"
     | "requestImagePixelBudget"
+    | "toolUpdates"
     | "webMaxResults"
   >;
 
@@ -257,6 +268,7 @@ function routeWithPolicies(
     portableReplayMaxChars: config.portableReplayMaxChars,
     requestImageMaxBytes: route.requestImageMaxBytes ?? config.requestImageMaxBytes,
     requestImagePixelBudget: route.requestImagePixelBudget ?? config.requestImagePixelBudget,
+    toolUpdates: config.toolUpdates,
     webMaxResults: config.webMaxResults,
   };
 }
@@ -348,6 +360,7 @@ export const Config = z.object({
   grokNativeWebSearch: z.boolean().default(false).volatile(),
   grokNativeXSearch: z.boolean().default(false).volatile(),
   searchMediaPreview: z.boolean().default(false).volatile(),
+  incrementalToolUpdates: z.boolean().default(true).volatile(),
   supportsLongCacheRetention: z.boolean().default(false),
   supportsExplicitPromptCacheMode: z.boolean().default(false),
   alphaCapabilityPath: z.string().default(""),
@@ -416,6 +429,7 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
       input.assistantRetentionPerMessageTokenCap,
       3_000,
     ),
+    toolUpdates: DEFAULT_TOOL_UPDATES,
   };
 }
 
@@ -765,6 +779,10 @@ function syncGptToolsForAgent(
       disposers.push(
         scopedTools.register(createAdvancedHostedTool(ctx, state, getConfig)),
       );
+    // A search that was billed and then failed keeps its usage: only the Agent-scoped around-dispatch
+    // seam may attach `meta` to a failed tool result.
+    const disposeBilling = onScopedToolExecute(agent, failedAuxiliaryUsageListener);
+    if (disposeBilling) disposers.push(disposeBilling);
     registrations.set(agent, {
       fingerprint,
       dispose() {
@@ -1100,24 +1118,99 @@ function locateSupersededItems(
   return located;
 }
 
+/**
+ * The reasoning projection a GPT route serializes and sends with. A profile's declared
+ * `reasoningEfforts` wins (wire mapping, or `false` for a non-reasoning model); otherwise the catalog
+ * entry stands, and a model with no catalog entry follows what DSH itself resolved for it instead of
+ * being assumed to reason.
+ */
+function gptModelOverride(
+  routeConfig: Pick<ResponsesRouteConfig, "modelControls">,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+): Record<string, unknown> | undefined {
+  if (routeConfig.modelControls !== undefined) return { ...routeConfig.modelControls };
+  if (!facts.resolved) return undefined;
+  return { reasoning: facts.reasoning !== undefined };
+}
+
+/** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
+function assertSupportedReasoningEffort(
+  effort: unknown,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+): void {
+  if (effort === undefined || !facts.resolved) return;
+  const supported = facts.reasoning === undefined ? ["off"] : facts.reasoning.efforts;
+  if (supported.includes(String(effort))) return;
+  throw Object.assign(
+    new Error(`Responses route does not support reasoning effort "${String(effort)}"`),
+    { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+  );
+}
+
+const reportedToolSurfaceFallbacks = new Set<string>();
+
+/**
+ * Say why a request carries the complete tool list although the policy asked for addition-only updates.
+ * One line per session and reason: a warning when the host declared addition-only (LCX should have been able to
+ * follow), a debug line otherwise. The reasons are fixed phrases; no request content, key or header is logged.
+ */
+function reportToolSurfaceFallback(
+  ctx: HostContext,
+  route: { provider: string; model: string; sessionId: string },
+  surface: { fallbackReason?: string; fallbackUnexpected?: boolean },
+) {
+  const reason = surface.fallbackReason ?? "unknown";
+  const key = `${route.sessionId} ${reason}`;
+  if (reportedToolSurfaceFallbacks.has(key)) return;
+  if (reportedToolSurfaceFallbacks.size >= 256) reportedToolSurfaceFallbacks.clear();
+  reportedToolSurfaceFallbacks.add(key);
+  const message = `[lcx-codex] tool updates: sending the complete tool list on ${route.provider}/${route.model} (${reason})`;
+  if (surface.fallbackUnexpected === true) ctx.logger?.warn?.(message);
+  else ctx.logger?.debug?.(message);
+}
+
 async function serializeNativeAware(
-  messages: readonly RequestMessage[],
+  rawMessages: readonly RequestMessage[],
   route: { provider: string; model: string; baseURL: string; sessionId: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
   options: Pick<GenerateOptions, "signal" | "tools"> & {
     grokNativeReplayRoute?: GrokNativeReplayRoute;
+    /**
+     * Present on GPT routes: `rawMessages`/`tools` are DSH's unprojected request and this function chooses
+     * the tool surface (addition-only or full list). Absent (Grok): the caller already projected them.
+     */
+    toolSurface?: { history: ToolHistory | undefined };
   },
 ) {
   const session = sessionFor(ctx, route.sessionId);
   // One adapter-owned lookup supplies image support and the route's system-prompt update mode. On an
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
-  const { imageSupport, systemPromptUpdate, resolved } = await resolveRouteModelFacts(
-    ctx,
-    route,
-    options.signal,
-  );
+  const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
+  const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
+  const modelOverride = options.grokNativeReplayRoute === undefined
+    ? gptModelOverride(routeConfig, modelFacts)
+    : undefined;
+  let messages: readonly RequestMessage[] = rawMessages;
+  let tools = options.tools;
+  let anchoredTools = false;
+  let toolSurfaceCompat: Record<string, boolean> | undefined;
+  if (options.toolSurface !== undefined) {
+    const surface = planToolSurface({
+      mode: routeConfig.toolUpdates ?? DEFAULT_TOOL_UPDATES,
+      messages: rawMessages,
+      tools: options.tools as never,
+      toolHistory: options.toolSurface.history,
+      facts: modelFacts,
+      compat: routeConfig.responsesCompat,
+    });
+    messages = surface.messages;
+    tools = surface.tools as typeof tools;
+    anchoredTools = surface.anchored;
+    toolSurfaceCompat = surface.compat;
+    if (surface.fallbackReason !== undefined) reportToolSurfaceFallback(ctx, route, surface);
+  }
   // An unreadable model mode must not demote instructions: history that holds a DSH prompt snapshot after
   // the head can only come from an in-history route, and sending it as user text would silently lower its
   // authority. Without such history the conservative default is harmless, so ordinary requests proceed.
@@ -1147,9 +1240,13 @@ async function serializeNativeAware(
       imageMapOverride,
       {
         route,
-        tools: options.tools,
-        responsesCompat: routeConfig.responsesCompat,
+        tools,
+        responsesCompat: toolSurfaceCompat === undefined
+          ? routeConfig.responsesCompat
+          : { ...routeConfig.responsesCompat, ...toolSurfaceCompat },
         systemPromptUpdate,
+        ...(anchoredTools ? { toolUpdate: "addition-only" } : {}),
+        ...(modelOverride === undefined ? {} : { model: modelOverride }),
         ...extra,
       },
     );
@@ -1173,6 +1270,10 @@ async function serializeNativeAware(
   nativeTools = prelude.tools;
   nativeModel = prelude.model;
   grammarToolInputProperties = prelude.grammarToolInputProperties;
+  /** Base64 length of images DSH cannot offload (hydrated checkpoint, portable replay). */
+  let fixedImageBytes = 0;
+  /** Base64 length of each offloadable surface image, oldest first, across all batches. */
+  const surfaceImageBytes: number[] = [];
   const flush = async () => {
     if (!normal.length) return;
     const batch = normal;
@@ -1182,6 +1283,14 @@ async function serializeNativeAware(
       ctx,
       serializeOptions(),
     );
+    surfaceImageBytes.push(...inputImageBase64Lengths(serialized.input));
+    // Every batch derives its request tools from the same immediate declarations; a difference would
+    // change the cached prefix between batches of one request.
+    if (anchoredTools && JSON.stringify(serialized.tools) !== JSON.stringify(nativeTools))
+      throw Object.assign(
+        new Error("LCX anchored tool declarations diverged between serialization batches"),
+        { code: "LCX_RESPONSES_INVALID_INPUT" },
+      );
     nativeTools = serialized.tools ?? nativeTools;
     nativeModel = serialized.model ?? nativeModel;
     grammarToolInputProperties =
@@ -1225,7 +1334,9 @@ async function serializeNativeAware(
             hydratedMap,
           ),
         );
-        input.push(...responseInputItems(hydrated));
+        const hydratedItems = responseInputItems(hydrated);
+        for (const bytes of inputImageBase64Lengths(hydratedItems)) fixedImageBytes += bytes;
+        input.push(...hydratedItems);
         mergeMap(imageMap, hydratedMap);
       } else {
         const portable = await portableMessagesForCheckpoint(
@@ -1240,8 +1351,15 @@ async function serializeNativeAware(
         const serialized = await serializeDshMessages(
           portable,
           ctx,
-          serializeOptions(undefined, { systemPromptUpdate: undefined }),
+          // Portable history is plain context: it carries no developer updates, and deferred declarations are
+          // only meaningful to the anchored surface itself.
+          serializeOptions(undefined, {
+            systemPromptUpdate: undefined,
+            toolUpdate: undefined,
+            tools: tools?.map((tool) => withoutDeferLoading(tool as never)),
+          }),
         );
+        for (const bytes of inputImageBase64Lengths(serialized.input)) fixedImageBytes += bytes;
         input.push(...serialized.input);
         mergeMap(imageMap, serialized.imageMap);
       }
@@ -1250,6 +1368,13 @@ async function serializeNativeAware(
     normal.push(message);
   }
   await flush();
+  assertAggregateImageBudget({
+    maxBytes: Number.isSafeInteger(routeConfig.maxRequestImageBytes) && Number(routeConfig.maxRequestImageBytes) > 0
+      ? Number(routeConfig.maxRequestImageBytes)
+      : DEFAULT_MAX_REQUEST_IMAGE_BYTES,
+    fixedBytes: fixedImageBytes,
+    surfaceBytes: surfaceImageBytes,
+  });
   if (!nativeModel)
     throw Object.assign(
       new Error("LCX could not resolve the Pi Responses model descriptor"),
@@ -1264,6 +1389,7 @@ async function serializeNativeAware(
     tools: nativeTools,
     model: nativeModel,
     grammarToolInputProperties,
+    modelFacts,
   };
 }
 
@@ -1284,8 +1410,7 @@ async function* remoteCompactionStream(
   ctx: HostContext,
   next: () => AsyncIterable<StreamChunk>,
 ): AsyncGenerator<StreamChunk> {
-  const projected = projectToolUpdates(options.messages, options.tools, undefined, options.toolHistory);
-  const history = stripCompactionDirective(projected.messages);
+  const history = stripCompactionDirective(options.messages);
   const route = currentRoute(options, routeConfig);
   try {
     const prepared = await serializeNativeAware(
@@ -1293,7 +1418,11 @@ async function* remoteCompactionStream(
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, tools: projected.tools && [...projected.tools] },
+      {
+        signal: options.signal,
+        tools: options.tools && [...options.tools],
+        toolSurface: { history: options.toolHistory },
+      },
     );
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
@@ -1311,7 +1440,7 @@ async function* remoteCompactionStream(
       model: route.model,
       modelDescriptor: prepared.model,
       input: prepared.input,
-      tools: prepared.tools ?? (projected.tools && [...projected.tools]),
+      tools: prepared.tools,
       promptCacheKey: promptCacheKey(route, routeConfig, ctx),
       promptCacheRetention: promptCacheRetention(routeConfig),
       cacheRetention: routeConfig.cacheRetention,
@@ -1680,6 +1809,33 @@ function inputHasNativeState(input: readonly unknown[]) {
   return input.some((item) => isRecord(item) && item.type === "compaction");
 }
 
+/**
+ * One redacted line per failed provider request. Only the LCX class and machine-safe provider
+ * identifiers are logged: never the provider message, a payload, a header or a credential.
+ * `warn` matches the compaction failure line; DSH 0.2.1-alpha.2 ships no persistent logger exporter
+ * (see ERRORS.md), so the line is visible wherever the host attaches one.
+ */
+function logStreamFailure(
+  ctx: HostContext,
+  route: "gpt" | "grok-native",
+  info: StreamFailureInfo,
+): void {
+  const parts = [
+    `route=${route}`,
+    `code=${info.code}`,
+    info.status === undefined ? "" : `status=${info.status}`,
+    info.requestId === undefined ? "" : `requestId=${info.requestId}`,
+    info.event === undefined ? "" : `event=${info.event}`,
+    info.providerCode === undefined ? "" : `providerCode=${info.providerCode}`,
+    info.providerType === undefined ? "" : `providerType=${info.providerType}`,
+    info.incompleteReason === undefined
+      ? ""
+      : `incompleteReason=${info.incompleteReason}`,
+    `emitted=${info.contentEmitted}`,
+  ].filter(Boolean);
+  ctx.logger?.warn?.(`[lcx-codex] responses stream failed: ${parts.join(" ")}`);
+}
+
 async function* managedResponsesStream(
   options: GenerateOptions,
   routeConfig: ResponsesRouteConfig,
@@ -1692,14 +1848,18 @@ async function* managedResponsesStream(
         new Error("LCX Responses does not support GenerateOptions.stop"),
         { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
       );
-    const projected = projectToolUpdates(options.messages, options.tools, undefined, options.toolHistory);
     const prepared = await serializeNativeAware(
-      projected.messages,
+      options.messages,
       route,
       routeConfig,
       ctx,
-      { signal: options.signal, tools: projected.tools && [...projected.tools] },
+      {
+        signal: options.signal,
+        tools: options.tools && [...options.tools],
+        toolSurface: { history: options.toolHistory },
+      },
     );
+    assertSupportedReasoningEffort(options.reasoningEffort, prepared.modelFacts);
     const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
     const headers = await authenticatedHeaders(
       ctx,
@@ -1710,7 +1870,7 @@ async function* managedResponsesStream(
     const body = buildResponsesBody({
       model: prepared.model,
       input: prepared.input,
-      tools: prepared.tools ?? (projected.tools && [...projected.tools]),
+      tools: prepared.tools,
       sessionId: cacheSessionId,
       promptCacheKey: promptCacheKey(route, routeConfig, ctx),
       promptCacheRetention: promptCacheRetention(routeConfig),
@@ -1736,6 +1896,7 @@ async function* managedResponsesStream(
       timeoutMs: routeConfig.timeoutMs,
       maxAttempts: 1,
       maxResponseBytes: routeConfig.maxResponseBytes,
+      onFailure: (info) => logStreamFailure(ctx, "gpt", info),
     });
   } catch (error) {
     yield managedFailureChunk(error, options.signal);
@@ -1788,7 +1949,8 @@ async function* managedGrokNativeSearchStream(
     const effectiveReasoning = options.reasoningEffort ?? routeConfig.profileReasoning;
     if (
       effectiveReasoning !== undefined &&
-      !getSupportedThinkingLevels(model).some((level) => level === effectiveReasoning)
+      !getSupportedThinkingLevels(model).some((level) => level === effectiveReasoning) &&
+      !(effectiveReasoning === "off" && routeConfig.modelControls?.offOmitsReasoning === true)
     )
       throw Object.assign(
         new Error(
@@ -1830,6 +1992,7 @@ async function* managedGrokNativeSearchStream(
       isServerToolItem: (item) => isGrokNativeServerToolItem(item, nativeSearch, declaredToolNames),
       declaredToolNames,
       nativeReplayRoute,
+      onFailure: (info) => logStreamFailure(ctx, "grok-native", info),
       onServerToolUsage(usage) {
         ctx.logger?.info?.(
           `[lcx-codex] Grok native search used ${usage.total} server-side tool call(s) (web=${usage.webSearchCalls}, x=${usage.xSearchCalls})`,
@@ -1944,7 +2107,11 @@ function installInjected(
     state.alphaSearch = configInput.alphaSearch.get();
     state.grokNativeWebSearch = configInput.grokNativeWebSearch.get();
     state.grokNativeXSearch = configInput.grokNativeXSearch.get();
-    runtimeConfig = baseConfig;
+    // Absent (older config shapes) means the default: addition-only. Only an explicit false selects the full list.
+    runtimeConfig =
+      configInput.incrementalToolUpdates?.get() === false
+        ? { ...baseConfig, toolUpdates: "full" }
+        : baseConfig;
     refreshTools();
   };
   syncSettings();

@@ -195,8 +195,12 @@ test('routes without in-history keep DSH head replacement and legacy mapping (re
       const request = raw.at(-1)
       assert.equal(request.messages.filter(m => m.role === 'system').length, 1, 'DSH rewrote the single head instead of appending')
       const body = await postedBody(index, bodies, request, routeConfig, ctx)
-      assert.deepEqual(body.input.map(item => item.role ?? item.type), ['developer', 'user', 'assistant', 'user'])
-      assert.match(instructionTexts(body.input, 'developer')[0], /PROMPT-V2$/u)
+      // Issue 119: the instruction role follows the model's reasoning capability as DSH resolves it. The catalog
+      // reasoning model renders developer; the custom-named route declares no reasoningEfforts, so DSH resolves it
+      // as non-reasoning and its single head keeps the plain system role.
+      const instructionRole = provider === 'openai' ? 'developer' : 'system'
+      assert.deepEqual(body.input.map(item => item.role ?? item.type), [instructionRole, 'user', 'assistant', 'user'])
+      assert.match(instructionTexts(body.input, instructionRole)[0], /PROMPT-V2$/u)
       await handle.dispose()
     }
   })
@@ -244,7 +248,7 @@ test('updates after a native checkpoint survive; superseded prompt snapshots are
   })
 })
 
-test('addition-only tool updates never reach the wire: full current tools, no developer registry, no deferLoading', async () => {
+test('routes whose compat opts out of additional_tools/tool_search keep the full-list fallback: no developer registry, no deferLoading', async () => {
   await withHarness(async ({ root, index, bodies, ctx, raw, state }) => {
     const { handle, ask } = await startAgent(ctx, root, 'i115-tools', 'openai', 'gpt-5.6-sol')
     const info = await ctx.llm.resolveModelInfo('openai', 'gpt-5.6-sol')
@@ -258,7 +262,7 @@ test('addition-only tool updates never reach the wire: full current tools, no de
     const request = raw.at(-1)
     assert.ok(request.messages.some(message => message.role === 'developer' && message.content.some(block => block.type === 'tool-addition')), 'host really produced developer tool-addition messages')
     assert.ok(request.tools.some(schema => schema.deferLoading === true), 'host really produced a deferLoading declaration')
-    const body = await postedBody(index, bodies, request, routeConfig, ctx)
+    const body = await postedBody(index, bodies, request, { ...routeConfig, responsesCompat: { supportsAdditionalTools: false, supportsToolSearch: false } }, ctx)
     const serialized = JSON.stringify(body)
     assert.doesNotMatch(serialized, /deferLoading|defer_loading|tool-addition|tool-removal|additional_tools|tool_search/u)
     assert.equal(body.input.some(item => item.role === 'developer' && /tool/iu.test(textOf(item)) && !/PROMPT-V/u.test(textOf(item)) && !/DeepSeek/u.test(textOf(item))), false)
