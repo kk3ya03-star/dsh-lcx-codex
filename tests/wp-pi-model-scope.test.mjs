@@ -88,15 +88,37 @@ test('frozen Pi 0.86 probe anchors agree with the provider-keyed baseline', () =
   }
 })
 
-test('Decision 8 matrix: Pi 0.87.1 plus gate matches frozen 0.86 ownership', () => {
+// Issue #123: ownership of a credential-only profile follows what DSH resolves, which is its installed Pi
+// catalog and no longer Pi 0.86. The frozen 0.86 baseline stays the reference; the only cells that may differ
+// are the pairs Pi 0.87.1 ships as Responses models and 0.86 lacked (also listed in the catalog-shape test).
+const newSincePi086 = {
+  'openai gpt-6-sol': 'gpt', 'openai gpt-6-luna': 'gpt',
+  'github-copilot gpt-6-sol': 'gpt', 'github-copilot gpt-6-luna': 'gpt',
+  'xai grok-4.7': 'grok', 'github-copilot grok-4.7': 'grok',
+}
+
+function expectedCell(shape, provider, model) {
+  const cell = matrix086[shape][provider][model]
+  const kind = shape === 'omitted' ? newSincePi086[`${provider} ${model}`] : undefined
+  if (kind === undefined) return cell
+  return {
+    gpt: kind === 'gpt', grok: kind === 'grok',
+    request: kind === 'gpt' ? 'managed-gpt' : 'grok-native',
+    compaction: kind === 'gpt' ? 'native-v2' : 'passthrough',
+  }
+}
+
+test('Decision 8 matrix: ownership is the frozen 0.86 baseline plus the pairs the Pi 0.87.1 catalog ships', () => {
   let cells = 0
+  let expanded = 0
   for (const shape of ['omitted', 'explicit']) {
     const context = fixture(shape)
     const projected = context.settings.describe().find(row => row.ns === 'llm-pi-ai').value.providers
     for (const provider of providers) {
       assert.equal(projected[provider].api, shape === 'explicit' ? 'openai-responses' : undefined)
       for (const model of models) {
-        const expected = matrix086[shape][provider][model]
+        const expected = expectedCell(shape, provider, model)
+        if (expected !== matrix086[shape][provider][model]) expanded += 1
         const options = { provider, model }
         const gpt = route.resolveResponsesRouteConfig(context, options, policy)
         const grok = route.resolveGrokResponsesRouteConfig(context, options, policy)
@@ -111,17 +133,18 @@ test('Decision 8 matrix: Pi 0.87.1 plus gate matches frozen 0.86 ownership', () 
     }
   }
   assert.equal(cells, 80)
+  assert.equal(expanded, Object.keys(newSincePi086).length)
 })
 
-test('Decision 8 matrix: unclaimed descriptors use frozen Pi 0.86 defaults and tool wire', async () => {
+test('Decision 8 matrix: owned pairs take the bundled catalog descriptor, all others the frozen defaults and tool wire', async () => {
   const schema = { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false }
   const tool = { name: 'lookup', description: 'fixture tool', parameters: schema, constrainedSampling: { type: 'json_schema', strict: 'prefer' } }
-  let owned = 0
-  let unclaimed = 0
+  let catalogBacked = 0
+  let defaulted = 0
   for (const shape of ['omitted', 'explicit']) {
     const context = fixture(shape)
     for (const provider of providers) for (const model of models) {
-      const cell = matrix086[shape][provider][model]
+      const cell = expectedCell(shape, provider, model)
       if (!cell.gpt && !cell.grok) continue
       const label = `${shape} ${provider}/${model}`
       const resolved = cell.gpt
@@ -129,8 +152,9 @@ test('Decision 8 matrix: unclaimed descriptors use frozen Pi 0.86 defaults and t
         : route.resolveGrokResponsesRouteConfig(context, { provider, model }, policy)
       const frozen = descriptors086[provider]?.[model]
       assert.equal(Boolean(frozen), pi086[provider]?.includes(model) ?? false, `${label} frozen catalog snapshot`)
-      const catalog = frozen && getBuiltinModels(provider).find(entry => entry.id === model && entry.api === 'openai-responses')
-      assert.equal(Boolean(catalog), Boolean(frozen), `${label} 0.86-listed pair still exists in current catalog`)
+      // The descriptor is the provider's own Pi 0.87.1 catalog entry whenever one exists, whether or not 0.86 had it.
+      const catalog = getBuiltinModels(provider).find(entry => entry.id === model && entry.api === 'openai-responses')
+      if (frozen) assert.ok(catalog, `${label} 0.86-listed pair still exists in current catalog`)
       const expectedCompat = { ...catalog?.compat, ...resolved.responsesCompat }
       const expectedDescriptor = {
         contextWindow: catalog?.contextWindow ?? 262144,
@@ -152,12 +176,12 @@ test('Decision 8 matrix: unclaimed descriptors use frozen Pi 0.86 defaults and t
       assert.equal(body.parallel_tool_calls, undefined, `${label} parallel tools`)
       assert.deepEqual([...serialized.grammarToolInputProperties], [], `${label} grammar tool fields`)
       assert.equal(serialized.deferredToolsMode, expectedCompat.supportsAdditionalTools === true ? 'additional-tools' : expectedCompat.supportsToolSearch === true ? 'tool-search' : undefined, `${label} dynamic tools`)
-      if (frozen) owned += 1
-      else unclaimed += 1
+      if (catalog) catalogBacked += 1
+      else defaulted += 1
     }
   }
-  assert.equal(owned, 20)
-  assert.equal(unclaimed, 30)
+  assert.equal(catalogBacked, 32)
+  assert.equal(defaulted, 24)
 })
 
 test('evidenced capability policy and ordinary routes retain their frozen scope', () => {
@@ -177,8 +201,13 @@ test('evidenced capability policy and ordinary routes retain their frozen scope'
   const grok = route.resolveGrokResponsesRouteConfig(explicit, { provider: 'xai', model: 'grok-4.6' }, policy)
   assert.deepEqual(Object.fromEntries(Object.entries(grok.modelControls.thinkingLevelMap).filter(([, value]) => value !== null).map(([key]) => [key, true])),
     { low: true, medium: true, high: true, xhigh: true })
+  // The provider's own catalog entry describes its models whether or not Pi 0.86 had it (Issue #123) ...
   const newGrok = route.resolveGrokResponsesRouteConfig(explicit, { provider: 'xai', model: 'grok-4.7' }, policy)
-  assert.equal(newGrok.modelDefaults, undefined, 'new catalog metadata must not lift into an ordinary explicit route')
+  assert.equal(newGrok.modelDefaults.reasoning, true)
+  assert.deepEqual(Object.keys(newGrok.modelDefaults.thinkingLevelMap).filter(key => newGrok.modelDefaults.thinkingLevelMap[key] !== null), ['low', 'medium', 'high', 'xhigh'])
+  // ... but a catalog entry never lifts into a provider the catalog does not ship.
+  const relayGrok = route.resolveGrokResponsesRouteConfig(explicit, { provider: 'relay', model: 'grok-4.7' }, policy)
+  assert.equal(relayGrok.modelDefaults, undefined, 'catalog metadata must not lift into an ordinary explicit route')
 })
 
 test('exact capability predicate, case behavior, and non-Responses profiles match Step 0(c)', () => {
@@ -204,17 +233,23 @@ test('exact capability predicate, case behavior, and non-Responses profiles matc
   }
 })
 
-test('partial catalog fallback cannot fill a new model endpoint', () => {
+test('the catalog fills the endpoint of a model it ships; a model it does not ship needs the profile to declare it', () => {
   const context = fixture('explicit', {
     openai: { api: 'openai-responses', apiKeyEnv: 'SYNTHETIC_KEY' },
     xai: { api: 'openai-responses', apiKeyEnv: 'SYNTHETIC_KEY' },
+    declared: { api: 'openai-responses', apiKeyEnv: 'SYNTHETIC_KEY' },
   })
-  assert.ok(route.resolveResponsesRouteConfig(context, { provider: 'openai', model: 'gpt-6-astra' }, policy))
-  assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'openai', model: 'gpt-6-sol' }, policy), undefined)
-  assert.equal(route.resolveGrokResponsesRouteConfig(context, { provider: 'xai', model: 'grok-4.7' }, policy), undefined)
+  assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'openai', model: 'gpt-6-astra' }, policy).baseURL, 'https://api.openai.com/v1')
+  assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'openai', model: 'gpt-6-sol' }, policy).baseURL, 'https://api.openai.com/v1')
+  assert.equal(route.resolveGrokResponsesRouteConfig(context, { provider: 'xai', model: 'grok-4.7' }, policy).baseURL, 'https://api.x.ai/v1')
+  // DSH serves no model its catalog does not describe unless the profile lists it, so an unlisted unknown model stays unresolved.
+  assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'openai', model: 'gpt-9-unlisted' }, policy), undefined)
+  assert.equal(route.resolveGrokResponsesRouteConfig(context, { provider: 'xai', model: 'grok-9-unlisted' }, policy), undefined)
+  // A custom-named route has no catalog to fill from.
+  assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'declared', model: 'gpt-6-sol' }, policy), undefined)
 })
 
-test('Pi 0.87.1 catalog shape is visible without granting new fallback ownership', () => {
+test('Pi 0.87.1 catalog shape: the pairs new since Pi 0.86 are owned on credential-only profiles', () => {
   for (const [provider, ids] of Object.entries(pi086)) {
     const now = new Set(getBuiltinModels(provider).filter(model => model.api === 'openai-responses').map(model => model.id))
     for (const id of ids) assert.ok(now.has(id), `${provider}/${id} removed`)
@@ -231,9 +266,10 @@ test('Pi 0.87.1 catalog shape is visible without granting new fallback ownership
     'opencode-go': ['grok-4.7'],
     xai: ['grok-4.7'],
   })
+  // Issue #123: a credential-only profile follows the catalog DSH resolves from, not the 0.86 snapshot.
   const omitted = fixture('omitted')
-  for (const [provider, model] of [['openai', 'gpt-6-sol'], ['github-copilot', 'gpt-6-luna'], ['xai', 'grok-4.7']]) {
-    assert.equal(route.resolveResponsesRouteConfig(omitted, { provider, model }, policy), undefined)
-    assert.equal(route.resolveGrokResponsesRouteConfig(omitted, { provider, model }, policy), undefined)
-  }
+  for (const [provider, model] of [['openai', 'gpt-6-sol'], ['github-copilot', 'gpt-6-luna']])
+    assert.ok(route.resolveResponsesRouteConfig(omitted, { provider, model }, policy), `${provider}/${model}`)
+  assert.ok(route.resolveGrokResponsesRouteConfig(omitted, { provider: 'xai', model: 'grok-4.7' }, policy))
+  assert.equal(route.resolveResponsesRouteConfig(omitted, { provider: 'xai', model: 'grok-4.7' }, policy), undefined)
 })

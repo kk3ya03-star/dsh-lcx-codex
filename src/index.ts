@@ -62,6 +62,7 @@ import {
 } from "./dsh-compat.js";
 import type { CompactionPatchRecords } from "./dsh-compat.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
+import { resolveCatalogModel } from "./model-catalog.js";
 import {
   authenticatedGrokHeaders,
   authenticatedHeaders,
@@ -72,10 +73,11 @@ import {
   promptCacheRetention,
   promptCacheSessionId,
   resolveGrokResponsesRouteConfig,
+  diagnoseResponsesRoute,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
-import type { ResolvedResponsesRoute, RouteContext } from "./route.js";
+import type { ResolvedResponsesRoute, ResponsesRouteDiagnosis, RouteContext } from "./route.js";
 import {
   DEFAULT_MAX_REQUEST_IMAGE_BYTES,
   DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
@@ -1119,18 +1121,21 @@ function locateSupersededItems(
 }
 
 /**
- * The reasoning projection a GPT route serializes and sends with. A profile's declared
- * `reasoningEfforts` wins (wire mapping, or `false` for a non-reasoning model); otherwise the catalog
- * entry stands, and a model with no catalog entry follows what DSH itself resolved for it instead of
- * being assumed to reason.
+ * The model facts a GPT route serializes and sends with. What DSH reported for the exact routed model
+ * (reasoning capability, context window) wins over the bundled catalog entry, and a profile's declared
+ * `reasoningEfforts` (wire mapping, or `false` for a non-reasoning model) wins over both. A model with no
+ * catalog entry follows what DSH itself resolved for it instead of being assumed to reason.
  */
 function gptModelOverride(
   routeConfig: Pick<ResponsesRouteConfig, "modelControls">,
-  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">,
 ): Record<string, unknown> | undefined {
-  if (routeConfig.modelControls !== undefined) return { ...routeConfig.modelControls };
-  if (!facts.resolved) return undefined;
-  return { reasoning: facts.reasoning !== undefined };
+  if (!facts.resolved) return routeConfig.modelControls === undefined ? undefined : { ...routeConfig.modelControls };
+  return {
+    reasoning: facts.reasoning !== undefined,
+    ...(facts.contextWindow === undefined ? {} : { contextWindow: facts.contextWindow }),
+    ...routeConfig.modelControls,
+  };
 }
 
 /** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
@@ -1169,6 +1174,24 @@ function reportToolSurfaceFallback(
   else ctx.logger?.debug?.(message);
 }
 
+const reportedCatalogGaps = new Set<string>();
+
+/**
+ * Say once per route model that LCX's bundled Pi catalog does not describe it, so its wire capabilities
+ * (strict tools, grammar tools, cache mode) come from the profile and from what DSH declares instead.
+ */
+function reportCatalogGap(ctx: HostContext, route: { provider: string; model: string }) {
+  const source = resolveCatalogModel(route.provider, route.model, true).source;
+  if (source !== "catalog-provider-default" && source !== "frozen-pi086") return;
+  const key = `${route.provider}/${route.model}`;
+  if (reportedCatalogGaps.has(key)) return;
+  if (reportedCatalogGaps.size >= 256) reportedCatalogGaps.clear();
+  reportedCatalogGaps.add(key);
+  ctx.logger?.debug?.(
+    `[lcx-codex] ${key} is not described by LCX's bundled model catalog; its wire capabilities follow the profile and what DSH declares for the model`,
+  );
+}
+
 async function serializeNativeAware(
   rawMessages: readonly RequestMessage[],
   route: { provider: string; model: string; baseURL: string; sessionId: string },
@@ -1188,6 +1211,7 @@ async function serializeNativeAware(
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
   const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
+  if (options.grokNativeReplayRoute === undefined) reportCatalogGap(ctx, route);
   const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
   const modelOverride = options.grokNativeReplayRoute === undefined
     ? gptModelOverride(routeConfig, modelFacts)
@@ -2010,13 +2034,18 @@ function isGptLifecycleTarget(options: Pick<GenerateOptions, "model">): boolean 
 
 async function* unavailableManagedRouteStream(
   options: GenerateOptions,
+  diagnosis: ResponsesRouteDiagnosis = "incomplete",
 ): AsyncGenerator<StreamChunk> {
+  // DSH names no protocol for a model its catalog lacks and the profile sets no `api`: say what to change.
+  const apiUnresolved = diagnosis === "api-unresolved";
   yield managedFailureChunk(
     Object.assign(
       new Error(
-        "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
+        apiUnresolved
+          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and the model is unknown to the catalog. Add api: openai-responses to the provider profile, or select a model DSH recognizes"
+          : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
       ),
-      { code: "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
+      { code: apiUnresolved ? "LCX_RESPONSES_API_UNRESOLVED" : "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
     ),
     options.signal,
   );
@@ -2220,7 +2249,7 @@ function installInjected(
         runtimeConfig,
       );
       if (options.purpose === "compaction") {
-        if (!routeConfig) return unavailableManagedRouteStream(options);
+        if (!routeConfig) return unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
         return remoteCompactionStream(
           options,
           routeWithPolicies(routeConfig, runtimeConfig),
@@ -2228,7 +2257,7 @@ function installInjected(
           next,
         );
       }
-      if (!routeConfig) return unavailableManagedRouteStream(options);
+      if (!routeConfig) return unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
       return managedResponsesStream(
         options,
         routeWithPolicies(routeConfig, runtimeConfig),

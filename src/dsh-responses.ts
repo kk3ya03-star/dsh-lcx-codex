@@ -28,10 +28,9 @@ import {
   convertResponsesMessages,
   convertResponsesTools,
   createGrammarToolInputProperties,
-  getBuiltinModels,
   normalizeContext,
 } from "./pi-responses-runtime.js";
-import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
+import { resolveCatalogModel } from "./model-catalog.js";
 import { withoutDeferLoading } from "./tool-surface.js";
 import type {
   AssistantMessage as PiAssistantMessage,
@@ -218,10 +217,12 @@ export async function resolveRouteModelFacts(
   toolUpdate: "in-history" | "addition-only" | undefined;
   /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
   reasoning: { efforts: string[] } | undefined;
+  /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
+  contextWindow: number | undefined;
   resolved: boolean;
 }> {
   const llm = ctx?.llm;
-  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -240,12 +241,13 @@ export async function resolveRouteModelFacts(
       reasoning: info.reasoning === undefined
         ? undefined
         : { efforts: info.reasoning.efforts.map((effort) => String(effort.id)) },
+      contextWindow: positiveSafeInteger(info.context?.contextWindow, 0) || undefined,
       resolved: true,
     };
   } catch {
     // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
     // to downgrade history that only an in-history route may legitimately contain.
-    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
   }
 }
 
@@ -644,13 +646,8 @@ async function dshToPiMessages(
 }
 
 function builtinResponsesModel(provider: string, modelId: string) {
-  // Keep descriptor and wire capabilities within the same frozen catalog scope as route ownership.
-  if (!wasPi086ResponsesModel(provider, modelId)) return undefined;
-  try {
-    return getBuiltinModels(provider as Parameters<typeof getBuiltinModels>[0]).find((model) => model.id === modelId && model.api === "openai-responses");
-  } catch {
-    return undefined;
-  }
+  // The exact bundled catalog entry (see `resolveCatalogModel`): the same descriptor the route resolution reads.
+  return resolveCatalogModel(provider, modelId).descriptor;
 }
 
 export function resolvePiResponsesModel(options: { imageSupport: unknown; route?: unknown; model?: unknown; responsesCompat?: unknown }) {

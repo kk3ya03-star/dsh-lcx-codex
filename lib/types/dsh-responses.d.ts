@@ -70,6 +70,8 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
     reasoning: {
         efforts: string[];
     } | undefined;
+    /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
+    contextWindow: number | undefined;
     resolved: boolean;
 }>;
 export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
