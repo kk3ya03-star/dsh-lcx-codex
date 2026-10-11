@@ -1,15 +1,15 @@
-# LCX architecture — 0.5.1
+# LCX architecture — 0.5.2
 
 This release (a stable bug-fix release on the `0.5.0` line) targets the DSH 0.2 contract. Its release baseline is **DSH 0.2.0-rc.2, Session V4 and host/plugin Pi 0.87.1**. Public DSH peers use the bounded `>=0.2.0-rc.2 <0.2.1` install/assessment range; later in-range releases require their own compatibility evidence. The stable `0.4.3` line (DSH 0.1.5) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
 
 ## Ownership and package boundary
 
 - **DSH** owns provider/model configuration, credentials, agents, tools, session persistence and migration, attachments, compaction ranges, durable transactions and context-pressure measurement.
-- **LCX** owns the enabled GPT Responses final request/transport/replay path and the bounded Grok native-search bridge. Unrelated model routes retain DSH behavior.
+- **LCX** owns the enabled GPT Responses final request/transport/replay path and the bounded Grok native-search bridge. Unrelated model routes retain DSH behavior. A route's protocol, endpoint and wire capabilities are resolved from the provider profile first, then from what DSH resolves for the model, then from the bundled Pi catalog; the frozen Pi 0.86 allowlist is only the last fallback, and a model none of them describes fails closed.
 - **Pi 0.87.1 public exports** supply canonical Responses serialization/stream helpers and model data. A reproducible build bundles the needed runtime subset; the plugin does not ship the complete Pi SDK dependency tree into user profiles or replace host Pi.
 - **The browser client** supplies settings, search-media presentation and auxiliary usage presentation. Presentation controls do not change model requests, tools, history, usage or cache semantics.
 
-`src/**` is strict TypeScript source. `lib/**` contains 57 reproducible generated files; the npm allowlist yields a 35-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata and README. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+`src/**` is strict TypeScript source. `lib/**` contains 59 reproducible generated files; the npm allowlist yields a 36-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata and README. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## GPT lifecycle and compaction
 
@@ -39,4 +39,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 634/634 plugin tests, strict host/client types, 4/4 schemas and 57/57 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real-runtime GPT and Grok workflows for the bug fixes in this release (image retention across compaction, restart and route migration; fork replay; tool-result pairing; reasoning controls; Grok native search; projection-cache persistence; in-stream failure retry). Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 645/645 plugin tests, strict host/client types, 4/4 schemas and 59/59 generated-source consistency on DSH 0.2.0-rc.2, together with bounded real-runtime GPT and Grok workflows for the route-resolution fix in this release (a provider profile without `api` selecting `gpt-6-sol`, `gpt-6-astra` and `grok-4.7`; Hosted and Grok native search; transient-failure retry; custom-route regression). Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 - stable release
+
+Stable bug-fix release for DSH `>=0.2.0-rc.2 <0.2.1` (release baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`; install range unchanged from `0.5.0` and `0.5.1`). Nothing specific to DSH `0.2.1` is included.
+
+- Fix GPT turns failing with `NO_ADAPTER: LCX could not resolve the selected Responses route` on a provider profile that names a catalog vendor but sets no `api`. A profile such as `openai` with only `baseURL`, `apiKeyEnv` and a `models` list, and a model such as `gpt-6-sol`, `gpt-6-luna` or `gpt-6.1-sol`, was resolved only from LCX's frozen Pi 0.86 allowlist, which lacks those models, although DSH resolves them from its own, newer catalog. LCX now resolves a route's protocol, endpoint and wire capabilities in this order: the provider profile, then what DSH itself resolves for the model (context window, input modalities and reasoning efforts, read through `llm.resolveModelInfo`; DSH publishes no more of the resolved model to plugins), then LCX's bundled Pi 0.87.1 catalog, and the frozen Pi 0.86 allowlist only as the last fallback. A model the catalog does not describe but the profile lists in `models` takes the one protocol and endpoint every model of that provider shares, exactly as DSH does. Models that are neither in a catalog nor listed in the profile still fail closed, and the error now says what to change (`add api: openai-responses to the provider profile or select a model DSH recognizes`). Explicit `api` / `baseURL` / `compat` settings and custom-named routes behave as before.
+- Credential-only profiles on the Grok route follow the same resolution: `grok-4.7` on `xai` now works without `api`.
+
 ## 0.5.1 - stable release
 
 Stable bug-fix release for DSH `>=0.2.0-rc.2 <0.2.1` (release baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`; install range unchanged from `0.5.0`). It carries the verified fixes of the prerelease line that apply to DSH `0.2.0-rc.2`; nothing specific to DSH `0.2.1` is included.

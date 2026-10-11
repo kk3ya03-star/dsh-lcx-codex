@@ -365,6 +365,7 @@ export function managedFailure(
     code = "GROK_NATIVE_PROTOCOL_ERROR";
   else if (
     sourceCodes.has("LCX_RESPONSES_ROUTE_UNAVAILABLE") ||
+    sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED") ||
     sourceCodes.has("LCX_RESPONSES_MODEL_UNAVAILABLE")
   )
     code = "NO_ADAPTER";
@@ -419,7 +420,9 @@ export function managedFailure(
     AUTH: "Responses request was rejected by authentication",
     INSUFFICIENT_QUOTA: "服务商额度不足或未满足请求预留额度，请检查中转额度（并非 API 密钥无效） / Provider quota is insufficient for this request",
     UNSUPPORTED_OPTION: "LCX Responses does not support this request option",
-    NO_ADAPTER: "LCX could not resolve the selected Responses route",
+    NO_ADAPTER: sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
+      ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and the model is unknown to the catalog); add api: openai-responses to the provider profile or select a model DSH recognizes"
+      : "LCX could not resolve the selected Responses route",
     RATE_LIMIT: "Responses provider rate limit was reached",
     SERVER: "Responses provider returned a server failure",
     INVALID_REQUEST: sourceCodes.has("LCX_CHECKPOINT_UNSUPPORTED")

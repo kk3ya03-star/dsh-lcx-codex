@@ -28,7 +28,7 @@ test('bounded Pi catalog preserves every public Responses descriptor previously 
 test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
-  assert.equal(pkg.version, '0.5.1')
+  assert.equal(pkg.version, '0.5.2')
   assert.equal(pkg.dependencies, undefined)
   assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.0-rc.2')
   assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.0-rc.2 <0.2.1', verifiedDsh: '0.2.0-rc.2', verifiedHostPi: '0.87.1', verifiedPluginPi: '0.87.1' })

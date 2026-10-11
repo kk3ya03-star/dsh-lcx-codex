@@ -38,15 +38,15 @@ Run `dsh --version` first, then pick the plugin line for your DSH version. Node.
 | Your DSH version | LCX version | Install tag |
 | --- | --- | --- |
 | `0.2.1-alpha.2` and later | `0.5.1-pre.1` (prerelease) | `@prelatest` |
-| `0.2.0` line (`0.2.0-rc.2`, before `0.2.1-alpha.2`) | `0.5.1` (stable) | `@latest` |
+| `0.2.0` line (`0.2.0-rc.2`, before `0.2.1-alpha.2`) | `0.5.2` (stable) | `@latest` |
 | `0.1.6` line (`0.1.6-alpha.2` and later) | `0.4.4-pre.1` (previous prerelease) | `@0.4.4-pre.1` |
 | `0.1.5` line (`0.1.5-rc.1` and later) | `0.4.3` (stable) | `@0.4.3` |
 
-The lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `@latest` is the stable `0.5.1` (release baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`; bug fixes only relative to `0.5.0`) and supports DSH `0.2` only; DSH `0.1.5` users must pin `@0.4.3`.
+The lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `@latest` is the stable `0.5.2` (release baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`; bug fixes only relative to `0.5.0`) and supports DSH `0.2` only; DSH `0.1.5` users must pin `@0.4.3`.
 
 `0.5.1-pre.1` is a prerelease for DSH `0.2.1-alpha.2`. Its install range has a **lower bound only** (`>=0.2.1-alpha.2`) and no upper bound: newer DSH versions can install it, but they are **unverified**. The verified baseline of this prerelease is exactly DSH `0.2.1-alpha.2` (host Pi `1.1.0`, plugin Pi `0.87.1`); do not read it as support for any other DSH version.
 
-> Note: the stable `0.5.1` install range is `>=0.2.0-rc.2 <0.2.1`. Under DSH's version-range semantics, `0.2.1` prereleases (for example `0.2.1-alpha.2`) may also be allowed to install it, but they are **not** supported or verified for `0.5.1`; use `@prelatest` on DSH `0.2.1-alpha.2` and later.
+> Note: the stable `0.5.2` install range is `>=0.2.0-rc.2 <0.2.1`. Under DSH's version-range semantics, `0.2.1` prereleases (for example `0.2.1-alpha.2`) may also be allowed to install it, but they are **not** supported or verified for `0.5.2`; use `@prelatest` on DSH `0.2.1-alpha.2` and later.
 
 DSH `0.2.1-alpha.2` and later (prerelease):
 
@@ -69,7 +69,7 @@ dsh plugin --profile web add dsh-lcx-codex@0.4.3
 dsh web
 ```
 
-DSH `0.1.6` line: `dsh plugin --profile web add dsh-lcx-codex@0.4.4-pre.1`. To update later, run the same `add` command again. If you already installed `0.5.0` or `0.5.0-pre.1`, running the `@latest` command (DSH `0.2.0` line) moves you to `0.5.1` (bug fixes, same install range; see the CHANGELOG); on DSH `0.2.1-alpha.2` and later use `@prelatest`.
+DSH `0.1.6` line: `dsh plugin --profile web add dsh-lcx-codex@0.4.4-pre.1`. To update later, run the same `add` command again. If you already installed `0.5.0`, `0.5.1` or `0.5.0-pre.1`, running the `@latest` command (DSH `0.2.0` line) moves you to `0.5.2` (bug fixes, same install range; see the CHANGELOG; `0.5.2` fixes `NO_ADAPTER` for models such as `gpt-6-sol` when the provider profile sets no `api`); on DSH `0.2.1-alpha.2` and later use `@prelatest`.
 
 ## Enable features
 
@@ -123,7 +123,7 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 ## Compatibility and known limits
 
-- Baselines: `0.5.1-pre.1` is verified only on exactly DSH `0.2.1-alpha.2` (prerelease; host Pi `1.1.0`). Its install range has no upper bound, so newer DSH versions install but are unverified. The real-runtime pass on that baseline covers GPT routes, search and compaction scenarios; Grok routes, Alpha search and user image input were not part of that pass. `0.5.1` is released against the baseline DSH `0.2.0-rc.2` (host/plugin Pi `0.87.1`); `0.4.4-pre.1` verified on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
+- Baselines: `0.5.1-pre.1` is verified only on exactly DSH `0.2.1-alpha.2` (prerelease; host Pi `1.1.0`). Its install range has no upper bound, so newer DSH versions install but are unverified. The real-runtime pass on that baseline covers GPT routes, search and compaction scenarios; Grok routes, Alpha search and user image input were not part of that pass. `0.5.2` is released against the baseline DSH `0.2.0-rc.2` (host/plugin Pi `0.87.1`); `0.4.4-pre.1` verified on DSH `0.1.6-alpha.2`; stable `0.4.3` on DSH `0.1.5-rc.1` (also checked on `0.1.5-rc.2`). Later releases inside each install range need separate assessment.
 - When upgrading, starting a new session is recommended; old saved compaction state is not guaranteed to remain compatible. On DSH `0.2`, an old long session carrying a previous LCX checkpoint reports `LCX_CHECKPOINT_UNSUPPORTED` on the LCX path; start a new session. Other routes are unaffected.
 - Grok native search supports API-key / API-gateway routes. xAI OAuth / SuperGrok login is outside the current scope. Native X Search has been verified on `grok-4.6` only.
 - Grok agentic calls report usage that is cumulative across internal requests. When the terminal response carries complete live-context details, LCX uses them for compaction pressure and otherwise falls back to an estimate; billed usage is unchanged.
@@ -140,7 +140,7 @@ Long tasks do not require you to watch the context window manually. With LCX ena
 
 **Plugin "failed to import" after upgrading to DSH 0.2?** A profile upgraded from much older versions may still contain stale packages. Stop `dsh web`, move away or delete `node_modules` and `pnpm-lock.yaml` in `profiles/web/` under your DSH home (default `~/.dsh`, or `DSH_HOME`), run the matching `dsh plugin --profile web add dsh-lcx-codex@latest` command again (`@prelatest` on DSH `0.2.1-alpha.2` and later), then start `dsh web`.
 
-**`@latest` / `@prelatest` installed the previous version right after a release?** The package manager's metadata cache may not have refreshed yet, and DSH rejects the incompatible version. Retry after a few minutes, or pin the exact version, for example `dsh-lcx-codex@0.5.1-pre.1` or `dsh-lcx-codex@0.5.1`.
+**`@latest` / `@prelatest` installed the previous version right after a release?** The package manager's metadata cache may not have refreshed yet, and DSH rejects the incompatible version. Retry after a few minutes, or pin the exact version, for example `dsh-lcx-codex@0.5.1-pre.1` or `dsh-lcx-codex@0.5.2`.
 
 When opening an [issue](https://github.com/kk3ya03-star/dsh-lcx-codex/issues), include plugin, DSH, and Node.js versions plus reproduction steps. Do not post API keys, full requests, or unredacted session logs.
 

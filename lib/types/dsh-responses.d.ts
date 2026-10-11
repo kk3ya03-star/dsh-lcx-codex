@@ -45,6 +45,8 @@ export type RouteModelFacts = {
     reasoning: {
         efforts: string[];
     } | undefined;
+    /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
+    contextWindow: number | undefined;
     /** False when DSH could not resolve the model, so absent facts mean unknown rather than known-absent. */
     resolved: boolean;
 };
