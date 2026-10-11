@@ -138,8 +138,6 @@ type Slots = {
   }, component: (props: Props) => unknown): unknown;
 };
 
-type Require = (specifier: string) => unknown;
-
 declare global {
   interface Window {
     __ModuleLoader__: Pick<ClientModuleLoaderTarget, "load">;

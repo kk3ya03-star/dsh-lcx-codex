@@ -1,9 +1,8 @@
+import { isRecord, codedError } from "./util.js";
 export const PORTABLE_BUDGET_ERROR_CODE = "LCX_PORTABLE_BUDGET_EXCEEDED";
 export const PORTABLE_UNSUPPORTED_CONTENT_CODE = "LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT";
 function unsupportedContent(kind: unknown): Error & { code: string } {
-  return Object.assign(new Error(`LCX cannot budget unsupported message content: ${String(kind)}`), {
-    code: PORTABLE_UNSUPPORTED_CONTENT_CODE,
-  });
+  return codedError(`LCX cannot budget unsupported message content: ${String(kind)}`, PORTABLE_UNSUPPORTED_CONTENT_CODE);
 }
 const MAX_BUDGET_INPUT_CHARS = 2_000_000;
 const CONSERVATIVE_IMAGE_TOKEN_COST = 2_048;
@@ -14,7 +13,6 @@ const STRUCTURAL = /[\p{P}\p{S}]/u;
 const DATA_URI = /^data:[^;,\s]+(?:;[^,\s]*)?;base64,[A-Za-z0-9+/\s]+={0,2}$/u;
 const ENCODED_TEXT = /^[A-Za-z0-9+/_-]{512,}={0,2}$/u;
 
-/** @param {string} value */
 function looksEncodedText(value: string) {
   return DATA_URI.test(value) || ENCODED_TEXT.test(value);
 }
@@ -22,8 +20,6 @@ function looksEncodedText(value: string) {
 /**
  * A small conservative fallback, deliberately not a tokenizer. The baseline
  * preserves legacy /4 while CJK and structural characters cost more.
- * @param {unknown} value
- * @returns {number | undefined}
  */
 export function estimateTextTokens(value: unknown): number | undefined {
   if (typeof value !== "string") return undefined;
@@ -49,18 +45,6 @@ export function estimateTextTokens(value: unknown): number | undefined {
   return Math.max(1, Math.ceil(value.length / 4), weighted);
 }
 
-/**
- * @param {unknown} value
- * @returns {value is UnknownRecord}
- */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-/**
- * @param {unknown} value
- * @param {Set<object>} [seen]
- * @returns {boolean}
- */
 function containsOpaqueValue(
   value: unknown,
   seen = new Set<object>(),
@@ -75,7 +59,6 @@ function containsOpaqueValue(
   seen.add(value);
   return Object.values(value).some((entry) => containsOpaqueValue(entry, seen));
 }
-/** @param {unknown} value */
 function safeJson(value: unknown): string | undefined {
   try {
     if (containsOpaqueValue(value)) return undefined;
@@ -85,7 +68,6 @@ function safeJson(value: unknown): string | undefined {
     return undefined;
   }
 }
-/** @param {unknown} value */
 function safeScalar(value: unknown): string | undefined {
   return typeof value === "string" ||
     typeof value === "number" ||
@@ -94,16 +76,12 @@ function safeScalar(value: unknown): string | undefined {
     : undefined;
 }
 
-/**
- * @param {unknown} content
- * @returns {unknown[] | undefined}
- */
 function visibleContent(content: unknown): unknown[] | undefined {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return undefined;
   const parts: unknown[] = [];
   for (const part of content) {
-    if (!isObject(part) || typeof part.type !== "string") throw unsupportedContent("missing block type");
+    if (!isRecord(part) || typeof part.type !== "string") throw unsupportedContent("missing block type");
     if (["text", "input_text", "output_text"].includes(part.type)) {
       if (typeof part.text !== "string") return undefined;
       parts.push({ type: part.type, text: part.text });
@@ -139,11 +117,9 @@ function visibleContent(content: unknown): unknown[] | undefined {
 /**
  * Project an item to model-visible fields only. Opaque provider state, raw
  * binary, and replay/session metadata are intentionally excluded.
- * @param {unknown} item
- * @returns {unknown | undefined}
  */
 export function modelVisibleBudgetView(item: unknown) {
-  if (!isObject(item)) return undefined;
+  if (!isRecord(item)) return undefined;
   if (item.type === "function_call") {
     const callId = safeScalar(item.call_id);
     const name = safeScalar(item.name);
@@ -186,8 +162,6 @@ export function modelVisibleBudgetView(item: unknown) {
 /**
  * Images have provider/model-dependent costs. Count each known image block with
  * a fixed conservative surcharge without inspecting base64 or attachment data.
- * @param {unknown} value
- * @returns {number}
  */
 function imageTokenCost(value: unknown) {
   if (Array.isArray(value)) {
@@ -195,16 +169,12 @@ function imageTokenCost(value: unknown) {
     for (const entry of value) total += imageTokenCost(entry);
     return total;
   }
-  if (!isObject(value)) return 0;
+  if (!isRecord(value)) return 0;
   let total = value.image === true ? CONSERVATIVE_IMAGE_TOKEN_COST : 0;
   for (const entry of Object.values(value)) total += imageTokenCost(entry);
   return total;
 }
 
-/**
- * @param {unknown} item
- * @returns {number | undefined}
- */
 export function estimateBudgetItem(item: unknown): number | undefined {
   const view = modelVisibleBudgetView(item);
   if (view === undefined) return undefined;
@@ -213,7 +183,6 @@ export function estimateBudgetItem(item: unknown): number | undefined {
   return textCost === undefined ? undefined : textCost + imageTokenCost(view);
 }
 
-/** @param {unknown} maxChars */
 export function portableTokenCeiling(maxChars: unknown) {
   return typeof maxChars === "number" &&
     Number.isSafeInteger(maxChars) &&
@@ -222,10 +191,6 @@ export function portableTokenCeiling(maxChars: unknown) {
     : undefined;
 }
 
-/** @param {string} message */
 export function portableBudgetError(message: string): Error & { code: string } {
-  /** @type {Error & { code?: string }} */
-  const error = new Error(message) as Error & { code: string };
-  error.code = PORTABLE_BUDGET_ERROR_CODE;
-  return error;
+  return codedError(message, PORTABLE_BUDGET_ERROR_CODE);
 }

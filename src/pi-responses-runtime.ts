@@ -1,4 +1,4 @@
-// Public Pi 0.87.1 runtime surface used by LCX. The release build bundles this file.
+// Public Pi 1.1.0 runtime surface used by LCX. The release build bundles this file.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { CLOUDFLARE_AI_GATEWAY_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-ai-gateway.models";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";
@@ -37,27 +37,6 @@ const RESPONSE_CATALOGS: Readonly<
   xai: XAI_MODELS,
 };
 
-const providers: readonly BundledResponsesProvider[] = Object.freeze(
-  Object.keys(RESPONSE_CATALOGS) as BundledResponsesProvider[],
-);
-function responsesOnly(
-  catalog: Readonly<Record<string, Model<Api>>>,
-): readonly Model<"openai-responses">[] {
-  return Object.values(catalog).filter(
-    (model): model is Model<"openai-responses"> => model.api === "openai-responses",
-  );
-}
-const models: Readonly<
-  Record<BundledResponsesProvider, readonly Model<"openai-responses">[]>
-> = {
-  "cloudflare-ai-gateway": responsesOnly(RESPONSE_CATALOGS["cloudflare-ai-gateway"]),
-  "github-copilot": responsesOnly(RESPONSE_CATALOGS["github-copilot"]),
-  openai: responsesOnly(RESPONSE_CATALOGS.openai),
-  opencode: responsesOnly(RESPONSE_CATALOGS.opencode),
-  "opencode-go": responsesOnly(RESPONSE_CATALOGS["opencode-go"]),
-  xai: responsesOnly(RESPONSE_CATALOGS.xai),
-};
-
 /**
  * Every catalog entry of a bundled provider whatever its wire protocol. DSH resolves the protocol of a
  * model its catalog has not caught up with from the one protocol all of the provider's shipped models
@@ -65,14 +44,9 @@ const models: Readonly<
  */
 export function getCatalogModels(provider: string): readonly Model<Api>[] {
   return Object.hasOwn(RESPONSE_CATALOGS, provider)
-    ? Object.values(RESPONSE_CATALOGS[provider as BundledResponsesProvider])
+    ? Object.values(RESPONSE_CATALOGS[provider as BundledResponsesProvider]).filter(
+        // Pi 1.x catalogs may also hold image / classifier models; only chat models are routable here.
+        (model) => (model as { type?: string }).type === undefined || (model as { type?: string }).type === "chat",
+      )
     : [];
-}
-
-export function getBuiltinProviders(): readonly BundledResponsesProvider[] {
-  return providers;
-}
-
-export function getBuiltinModels(provider: string): readonly Model<"openai-responses">[] {
-  return models[provider as BundledResponsesProvider] ?? [];
 }

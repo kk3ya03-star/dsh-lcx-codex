@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -20,7 +19,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
-import { loadHostSource } from './wp2-source.mjs'
+import { loadHostSource, loadSource } from './wp2-source.mjs'
 
 // Issue #120: native addition-only tool updates on GPT Responses routes. Everything below runs the real DSH
 // agent loop, session, llm runtime and the real llm-pi-ai catalog adapter (which declares
@@ -39,12 +38,7 @@ const visible = body => [...(body.tools ?? []).map(entry => entry.name), ...adde
 
 const [checkpoint] = await Promise.all([loadHostSource('native-checkpoint')])
 
-async function loadIndexInternals() {
-  const output = resolve(`.i120-index-${process.pid}.mjs`)
-  const result = await build({ entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external', format: 'esm', platform: 'node', target: 'node24', write: false, footer: { js: '\nexport { serializeNativeAware, managedResponsesStream, remoteCompactionStream };' } })
-  await writeFile(output, result.outputFiles[0].contents)
-  try { return await import(pathToFileURL(output).href) } finally { await rm(output) }
-}
+const loadIndexInternals = () => loadSource('index', 'serializeNativeAware, managedResponsesStream, remoteCompactionStream')
 
 async function harness(root, index) {
   const ctx = new Context()

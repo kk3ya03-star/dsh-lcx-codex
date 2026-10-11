@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Message, ToolSchema } from "@deepseek-ai/dsh-llm";
+import { isRecord } from "./util.js";
 
 export const GROK_NATIVE_SERVER_TOOL_TYPES = new Set([
   "web_search_call",
@@ -59,9 +60,6 @@ const GROK_UI_CITATION_MARKER = /render_inline_citation[^\r\n]*[ \t]*/g
 const GROK_PRIVATE_RENDER_MARKER = /[\uE000-\uF8FF]render_inline_citation[^\uE000-\uF8FF\r\n]*[\uE000-\uF8FF][ \t]*/giu;
 const GROK_EOS_MARKER = /<\|eos\|>/giu;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function citationId(annotation: Record<string, unknown>): string | undefined {
   const value = annotation.citation_id ?? annotation.citationId ?? annotation.id;

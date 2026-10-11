@@ -219,6 +219,17 @@ test('credentials are resolved only through the DSH credentials service', async 
       await route.resolveApiKey({ credentials: { resolve: async () => ({ value: 'service-value' }) } }, { apiKeyEnv: 'WP2_SENTINEL_KEY' }),
       'service-value',
     )
+    // DSH's key definition: surrounding whitespace is trimmed, a key no HTTP header can carry is refused
+    // by reference and never echoed.
+    assert.equal(
+      await route.resolveApiKey({ credentials: { resolve: async () => ({ value: '  padded-value  ' }) } }, { apiKeyEnv: 'WP2_SENTINEL_KEY' }),
+      'padded-value',
+    )
+    const bad = 'bad key\nwith newline'
+    await assert.rejects(
+      route.resolveApiKey({ credentials: { resolve: async () => ({ value: bad }) } }, { apiKeyEnv: 'WP2_SENTINEL_KEY' }),
+      error => error.code === 'INVALID_CREDENTIAL' && error.message.includes('WP2_SENTINEL_KEY') && !error.message.includes('bad key'),
+    )
   } finally {
     if (previous === undefined) delete process.env.WP2_SENTINEL_KEY
     else process.env.WP2_SENTINEL_KEY = previous

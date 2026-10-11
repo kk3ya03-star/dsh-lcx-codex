@@ -1,15 +1,15 @@
 # LCX architecture — 0.6.0-pre.2
 
-This prerelease targets the DSH 0.2.1 contract. Its verified baseline is exactly **DSH 0.2.1-alpha.2, Session V4, host Pi 1.1.0 and plugin Pi 0.87.1**. Public DSH peers use a lower-bound-only `>=0.2.1-alpha.2` install range (no upper bound): newer DSH versions can install it but are unverified and need their own compatibility evidence. The stable `0.5.x` line (DSH 0.2.0-rc.2) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
+This prerelease targets the DSH 0.2.1 contract. Its verified baseline is exactly **DSH 0.2.1-alpha.2, Session V4, host Pi 1.1.0 and plugin Pi 1.1.0**. Public DSH peers use a lower-bound-only `>=0.2.1-alpha.2` install range (no upper bound): newer DSH versions can install it but are unverified and need their own compatibility evidence. The stable `0.5.x` line (DSH 0.2.0-rc.2) is documented in earlier Git versions of this file. This is a model-scoped plugin, not a replacement DSH runtime.
 
 ## Ownership and package boundary
 
 - **DSH** owns provider/model configuration, credentials, agents, tools, session persistence and migration, attachments, compaction ranges, durable transactions and context-pressure measurement.
 - **LCX** owns the enabled GPT Responses final request/transport/replay path and the bounded Grok native-search bridge. Unrelated model routes retain DSH behavior.
-- **Pi 0.87.1 public exports** supply canonical Responses serialization/stream helpers and model data. A reproducible build bundles the needed runtime subset; the plugin does not ship the complete Pi SDK dependency tree into user profiles or replace host Pi.
+- **Pi 1.1.0 public exports (the same Pi as the host)** supply canonical Responses serialization/stream helpers and model data. A reproducible build bundles the needed runtime subset; the plugin does not ship the complete Pi SDK dependency tree into user profiles or replace host Pi.
 - **The browser client** supplies settings, search-media presentation and auxiliary usage presentation. Presentation controls do not change model requests, tools, history, usage or cache semantics.
 
-`src/**` is strict TypeScript source. `lib/**` contains 62 reproducible generated files; the npm allowlist yields a 40-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata, README, the Plugin Manager icon and the two locale files. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+`src/**` is strict TypeScript source. `lib/**` contains 64 reproducible generated files; the npm allowlist yields a 41-file package with selected declarations, host/client JavaScript, the plugin patch, license/notices, package metadata, README, the Plugin Manager icon and the two locale files. Tests, test fixtures and build scripts remain repository-only. No DSH Core patch or private control-plane material is included. Third-party licensing is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## GPT lifecycle and compaction
 
@@ -41,4 +41,4 @@ Search-usage presentation installs into DSH's public client slots and fails clos
 
 ## Validation
 
-The candidate passes 696/696 plugin tests, strict host/client types, 4/4 schemas and 62/62 generated-source consistency on DSH 0.2.1-alpha.2, together with bounded real-runtime GPT workflows (system-prompt updates, tool toggles including a live addition-only A/B, compaction, restart, fork, lifecycle, web search, inline search media, searches made from `run_code` and the Plugin Manager card). Grok native search and user image input received only a limited regression check, and Alpha search and the naturally triggered compaction pressure band were not part of that runtime pass. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.
+The candidate passes 693/693 plugin tests, strict host/client types, 4/4 schemas and 64/64 generated-source consistency on DSH 0.2.1-alpha.2, together with bounded real-runtime GPT workflows (system-prompt updates, tool toggles including a live addition-only A/B, compaction, restart, fork, lifecycle, web search, inline search media, searches made from `run_code` and the Plugin Manager card). Grok native search and user image input received only a limited regression check, and Alpha search and the naturally triggered compaction pressure band were not part of that runtime pass. Capabilities listed above as not covered are excluded from success claims. See the [README](README_EN.md) for installation.

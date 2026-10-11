@@ -214,30 +214,6 @@ export function sessionFor(
     : undefined;
 }
 
-export function readWebSearchProvider(ctx: unknown): unknown {
-  const web = resolveContextService(ctx, "web");
-  if (!mutableService(web)) return undefined;
-  try {
-    return Reflect.get(web, "searchProviderId");
-  } catch {
-    return undefined;
-  }
-}
-
-export function writeWebSearchProvider(
-  ctx: unknown,
-  providerId: unknown,
-): boolean {
-  const web = resolveContextService(ctx, "web");
-  if (!mutableService(web)) return false;
-  try {
-    if (!Reflect.set(web, "searchProviderId", providerId)) return false;
-    return Reflect.get(web, "searchProviderId") === providerId;
-  } catch {
-    return false;
-  }
-}
-
 export function contextService(ctx: unknown, name: string): unknown {
   if (!mutableService(ctx)) return undefined;
   const get = ctx.get;
@@ -519,44 +495,3 @@ export function restoreCompactionConfig(
   }
 }
 
-export function patchVisibleWebSearchTimeout(
-  agent: unknown,
-  getTimeoutMs: () => number | undefined,
-  patchedDefinitions: Map<MutableService, unknown>,
-): void {
-  const tools = resolveScopedService(agent, "tools");
-  if (!mutableService(tools) || typeof tools.get !== "function") return;
-  const definition = Reflect.apply(tools.get, tools, ["web_search", agent]);
-  if (!mutableService(definition)) return;
-  if (!patchedDefinitions.has(definition))
-    patchedDefinitions.set(definition, definition.timeoutMs);
-  const timeoutMs = getTimeoutMs();
-  const target =
-    timeoutMs === undefined ? patchedDefinitions.get(definition) : timeoutMs;
-  try {
-    definition.timeoutMs = target;
-  } catch {}
-}
-
-export function refreshVisibleWebSearchTimeouts(
-  patchedDefinitions: ReadonlyMap<MutableService, unknown>,
-  timeoutMs: number | undefined,
-): void {
-  for (const [definition, original] of patchedDefinitions) {
-    try {
-      definition.timeoutMs = timeoutMs === undefined ? original : timeoutMs;
-    } catch {}
-  }
-}
-
-export function restoreVisibleWebSearchTimeouts(
-  patchedDefinitions: Map<MutableService, unknown>,
-): void {
-  for (const [definition, original] of patchedDefinitions) {
-    try {
-      if (original === undefined) delete definition.timeoutMs;
-      else definition.timeoutMs = original;
-    } catch {}
-  }
-  patchedDefinitions.clear();
-}

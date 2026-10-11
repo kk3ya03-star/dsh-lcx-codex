@@ -12,5 +12,3 @@ export type BundledResponsesProvider = "cloudflare-ai-gateway" | "github-copilot
  * share, so ownership needs the complete provider catalog and not only the Responses subset.
  */
 export declare function getCatalogModels(provider: string): readonly Model<Api>[];
-export declare function getBuiltinProviders(): readonly BundledResponsesProvider[];
-export declare function getBuiltinModels(provider: string): readonly Model<"openai-responses">[];

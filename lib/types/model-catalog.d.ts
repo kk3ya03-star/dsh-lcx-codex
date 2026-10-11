@@ -10,11 +10,9 @@ import type { Model } from "@earendil-works/pi-ai";
  *   2. `catalog-provider-default` a model the catalog has not caught up with, which DSH serves anyway
  *                                 (the profile lists it in `models`, or DSH's own newer catalog resolves it), takes the one
  *                                 protocol (and endpoint) every model the provider ships agrees on, exactly
- *                                 as `dsh-llm-pi-ai` does for a newer model of an installed catalog route;
- *   3. `frozen-pi086`             last fallback only: the frozen Pi 0.86 allowlist says the pair was a
- *                                 Responses model, which is all it can say (no endpoint, no capabilities).
+ *                                 as `dsh-llm-pi-ai` does for a newer model of an installed catalog route.
  */
-export type CatalogModelSource = "catalog-model" | "catalog-provider-default" | "frozen-pi086" | "unknown";
+export type CatalogModelSource = "catalog-model" | "catalog-provider-default" | "unknown";
 export type CatalogModelFacts = {
     source: CatalogModelSource;
     /** The wire protocol DSH would resolve for this model when the profile names none. */

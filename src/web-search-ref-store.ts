@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { JsonStore } from "./json-store.js";
+import { isRecord } from "./util.js";
 
 const VERSION = 2;
 
-type RecordValue = Record<string, unknown>;
 export interface AlphaRefProvenance {
   action: string;
   originKind: "response" | "request" | "legacy-unattributed";
@@ -17,9 +17,6 @@ interface LegacyRefRecord { refId: string; url?: string }
 interface LegacySessionRecord { routeFingerprint: string; updatedAt: string; refs: Record<string, LegacyRefRecord> }
 interface LegacyRefStoreData { version: 1; sessions: Record<string, LegacySessionRecord> }
 
-function isRecord(value: unknown): value is RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function validHttpUrl(value: unknown): value is string | undefined {
   if (value === undefined) return true;

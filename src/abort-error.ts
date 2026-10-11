@@ -1,5 +1,3 @@
-// @ts-check
-
 /**
  * DSH 0.1.6 cancels with plain-object `AgentCancelCause` values — `{ kind: "user" }`,
  * `{ kind: "parent" }`, `{ kind: "disposed" }`, `{ kind: "hook", reason }` — and exposes

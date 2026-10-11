@@ -22,6 +22,7 @@ import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import apply, { Config } from '../lib/index.js'
 import { resolveRouteModelFacts, routeModelOverride, serializeDshMessages } from '../lib/dsh-responses.js'
 import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
+import { resolveCatalogModel } from '../lib/model-catalog.js'
 
 // Issue #123, real path. A provider profile in the shape of the Product Owner's desktop profile names a catalog
 // vendor (`openai`, `xai`) without `api`: it sets only baseURL, apiKeyEnv and a `models` list whose entries carry
@@ -142,6 +143,25 @@ async function withHarness(profiles, settings, run) {
   }
 }
 
+/**
+ * A host newer than the bundled Pi catalog. DSH 0.2.1-alpha.2 runs on the same Pi (1.1.0) that LCX bundles, so no
+ * real model is known to the host and not to LCX; this stands in for a later DSH whose own catalog is ahead, and
+ * answers the one public lookup LCX has (`llm.resolveModelInfo`) the way DSH would for a model it serves.
+ */
+function simulateNewerHost(ctx, ids, isServed = () => true) {
+  const original = ctx.llm.resolveModelInfo.bind(ctx.llm)
+  const lookups = []
+  ctx.llm.resolveModelInfo = async (provider, model, signal) => {
+    lookups.push(`${provider}/${model}`)
+    return provider === 'openai' && ids.includes(model) && isServed()
+      ? { provider, id: model, name: model, inputModalities: ['text', 'image'], context: { contextWindow: 272000 }, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' }
+      : original(provider, model, signal)
+  }
+  return lookups
+}
+
+const hi = model => ({ provider: 'openai', model, messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] })
+
 async function collect(stream) {
   const chunks = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -253,12 +273,12 @@ test('a model the profile declares but DSH\'s catalog lacks takes the provider\'
   })
 })
 
-test('gpt-6.1-sol, newer than the bundled Pi 0.87.1, is owned and follows the tool-update mode the host declares', async () => {
+test('gpt-6.1-sol is a bundled catalog model and follows the tool-update mode the host declares', async () => {
   const profiles = desktopProfiles()
   profiles.openai.models.push(entry('gpt-6.1-sol'))
   await withHarness(profiles, {}, async ({ ctx, setting, open, requests, warnings }) => {
     const info = await ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol')
-    // Host Pi 1.1.0 describes the model; LCX's own catalog (Pi 0.87.1) does not know it.
+    // Host Pi 1.1.0 and the bundled Pi 1.1.0 catalog both describe the model.
     assert.equal(info.toolUpdate, 'addition-only')
     assert.equal(info.systemPromptUpdate, 'in-history')
     const session = await open('openai', 'gpt-6.1-sol')
@@ -317,21 +337,40 @@ test('a nonempty models list is authoritative even for a model the bundled catal
   })
 })
 
-// The Technical Lead repro: no `models` list at all. Host Pi 1.1.0 (this DSH) has gpt-6.1-sol in its own
-// catalog and serves it; LCX's bundled Pi 0.87.1 does not know it, and nothing in the profile names it.
+// The Technical Lead repro: no `models` list at all.
 const bareProfiles = () => ({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL } })
 
-test('a model only the newer DSH catalog describes is owned on a profile with no models list and no api', async () => {
-  await withHarness(bareProfiles(), {}, async ({ ctx, turn, requests, open }) => {
+test('gpt-6.1-sol on a bare profile is owned from the first request, with the LCX search tools on that request', async () => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, open, requests }) => {
     const info = await ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol')
     assert.equal(info.toolUpdate, 'addition-only', 'DSH recognizes the model')
-    const request = await turn('openai', 'gpt-6.1-sol')
-    assert.equal(requests.length, 1)
-    assert.equal(request.url, `${baseURL}/responses`)
-    assert.equal(request.body.model, 'gpt-6.1-sol')
-    // The recognition is remembered: the next turn resolves without asking DSH again for the route.
+    assert.equal(resolveCatalogModel('openai', 'gpt-6.1-sol').source, 'catalog-model', 'the bundled Pi follows the Pi of DSH')
     const session = await open('openai', 'gpt-6.1-sol')
-    try { assert.equal((await session.ask('again')).url, `${baseURL}/responses`) } finally { await session.dispose() }
+    try {
+      const first = await session.ask('first turn')
+      assert.equal(requests.length, 1)
+      assert.equal(first.url, `${baseURL}/responses`)
+      assert.equal(first.body.model, 'gpt-6.1-sol')
+      assert.ok(names(first.body).includes('web_search'), 'LCX registered its search tool before the first request')
+      assert.deepEqual(first.body.tools.filter(tool => tool.name === 'web_search').map(tool => tool.type), ['function'])
+    } finally { await session.dispose() }
+  })
+})
+
+test('a model only a newer DSH catalog describes is still owned on a bare profile (host-recognition fallback)', async () => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, requests }) => {
+    const lookups = simulateNewerHost(ctx, ['gpt-9-future'])
+    assert.equal(resolveCatalogModel('openai', 'gpt-9-future').source, 'unknown', 'the bundled catalog cannot know it')
+    const chunks = await collect(ctx.llm.stream(hi('gpt-9-future')))
+    assert.equal(chunks.at(-1).reason.kind, 'stop')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, `${baseURL}/responses`)
+    assert.equal(requests[0].body.model, 'gpt-9-future')
+    const firstTurnLookups = lookups.length
+    // The recognition is remembered: the next request does not need the route lookup again.
+    await collect(ctx.llm.stream(hi('gpt-9-future')))
+    assert.equal(requests.length, 2)
+    assert.ok(lookups.length - firstTurnLookups < firstTurnLookups, 'the second request skips the route lookup')
   })
 })
 
@@ -397,42 +436,44 @@ test('the DSH-reported context window overrides the catalog descriptor on the Gr
 })
 
 test('a live profile change that stops DSH serving a recognized model stops LCX serving it too', async () => {
-  await withHarness(bareProfiles(), {}, async ({ ctx, turn, requests, forms, setProviders }) => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, requests, forms, setProviders }) => {
     const described = () => forms.describe().find(row => row.ns === 'llm-pi-ai').value.providers.openai
-    const streamOnce = () => collect(ctx.llm.stream({
-      provider: 'openai',
-      model: 'gpt-6.1-sol',
-      messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }],
-    }))
-    // Bare profile: DSH's own catalog serves gpt-6.1-sol and LCX follows (this also records the recognition).
-    assert.equal((await turn('openai', 'gpt-6.1-sol')).url, `${baseURL}/responses`)
+    // A newer DSH serves gpt-9-future while the profile is bare and refuses it once a models list excludes it,
+    // which is what DSH's real resolver does on a live configuration change.
+    simulateNewerHost(ctx, ['gpt-9-future'], () => described().models.length === 0)
+    const streamOnce = model => collect(ctx.llm.stream(hi(model)))
+    // Bare profile: the host serves the model and LCX follows (this also records the recognition).
+    assert.equal((await streamOnce('gpt-9-future')).at(-1).reason.kind, 'stop')
     assert.equal(requests.length, 1)
 
-    // Live change: the profile now serves only gpt-6-sol. DSH stops resolving gpt-6.1-sol ...
+    // Live change through DSH's own path: the profile now serves only gpt-6-sol.
     setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6-sol')] } })
     assert.deepEqual(described().models.map(model => model.id), ['gpt-6-sol'], 'LCX reads the live profile')
+    // The real DSH now refuses a bundled-catalog model the list omits, and LCX refuses it too ...
     await assert.rejects(ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol'), /no configured model/u)
-    // ... and so does LCX: no request, NO_ADAPTER.
-    const rejected = await streamOnce()
-    assert.equal(rejected.at(-1).reason.failure.code, 'NO_ADAPTER')
-    assert.equal(requests.length, 1, 'no request left LCX for the removed model')
-    // The listed model keeps working.
-    assert.equal((await turn('openai', 'gpt-6-sol')).url, `${baseURL}/responses`)
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'NO_ADAPTER')
+    // ... and so for the recognized model, whose remembered recognition no longer applies.
+    assert.equal((await streamOnce('gpt-9-future')).at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.equal(requests.length, 1, 'no request left LCX for the removed models')
     requests.length = 0
-
-    // Back to a bare profile: DSH serves the model again, a fresh lookup decides and LCX serves it again.
-    setProviders(bareProfiles())
-    assert.deepEqual(described().models, [], 'the schema materializes an absent models list as empty')
-    assert.equal((await turn('openai', 'gpt-6.1-sol')).url, `${baseURL}/responses`)
+    assert.equal((await streamOnce('gpt-6-sol')).at(-1).reason.kind, 'stop', 'the listed model keeps working')
     assert.equal(requests.length, 1)
 
-    // A models list that still names the model keeps it served; one that drops it is authoritative even for a
-    // model LCX recognized earlier.
+    // Back to a bare profile: a fresh lookup decides and both models are served again.
+    setProviders(bareProfiles())
+    assert.deepEqual(described().models, [], 'the schema materializes an absent models list as empty')
+    requests.length = 0
+    assert.equal((await streamOnce('gpt-9-future')).at(-1).reason.kind, 'stop')
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.kind, 'stop')
+    assert.equal(requests.length, 2)
+
+    // A models list that names a model keeps it served; one that drops it is authoritative.
     setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6.1-sol')] } })
-    assert.equal((await turn('openai', 'gpt-6.1-sol')).body.model, 'gpt-6.1-sol')
+    requests.length = 0
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.kind, 'stop')
     setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6-luna')] } })
     requests.length = 0
-    assert.equal((await streamOnce()).at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'NO_ADAPTER')
     assert.equal(requests.length, 0)
   })
 })

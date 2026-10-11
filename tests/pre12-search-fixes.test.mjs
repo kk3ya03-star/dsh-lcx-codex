@@ -16,7 +16,6 @@ import {
   ALPHA_SCHEMA_FINGERPRINT,
   ALPHA_STATEFUL_RETRY_MAX_ATTEMPTS,
   alphaSearchRetryOptions,
-  fetchAlphaSearchJson,
   normalizeAlphaSearchArgs,
   parseAlphaSearchResponse,
   renderAlphaSearchResult,
@@ -32,6 +31,7 @@ import {
   assertAlphaActionAllowed,
 } from '../lib/web-search-capability.js'
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
+import { fetchJsonWithRetry } from '../lib/transport.js'
 import { routeFingerprint } from '../lib/route.js'
 
 function hostedCitationFixture(maxResults) {
@@ -298,13 +298,15 @@ test('Alpha stateful helper never auto-retries a POST that may already have exec
     requests.push({ headers: new Headers(init.headers), body: JSON.parse(init.body) })
     return new Response('retry', { status: 500, headers: { 'retry-after-ms': '0' } })
   })
-  await assert.rejects(() => fetchAlphaSearchJson({
-    url: 'https://gateway.example/v1/alpha/search',
-    body: { id: 'session-search-audit', commands: { time: [{ utc_offset: '+00:00' }] } },
-    headers: { authorization: 'Bearer synthetic' },
-    sessionId: 'session-search-audit',
-    timeoutMs: 1000,
-  }))
+  // The production path: the shared JSON transport with the Alpha retry options (one attempt).
+  await assert.rejects(() => fetchJsonWithRetry(
+    'https://gateway.example/v1/alpha/search',
+    { id: 'session-search-audit', commands: { time: [{ utc_offset: '+00:00' }] } },
+    { authorization: 'Bearer synthetic' },
+    undefined,
+    1000,
+    alphaSearchRetryOptions(),
+  ))
   assert.equal(requests.length, 1)
   assert.equal(requests[0].body.id, 'session-search-audit')
   assert.equal(requests[0].headers.has('idempotency-key'), false)

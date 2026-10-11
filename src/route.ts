@@ -3,9 +3,12 @@ import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { SessionId, type Session } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-settings";
-import { attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { assertUsableApiKey, attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { resolveCatalogModel } from "./model-catalog.js";
+import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
+import { codedError, isPositiveFinite, isPositiveSafeInteger, isRecord } from "./util.js";
+import { DEFAULTS } from "./defaults.js";
 
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
@@ -52,30 +55,15 @@ type UnresolvedRouteConfig = RoutePolicy & { provider: string; model: string; ba
 export type ResolvedResponsesRoute = UnresolvedRouteConfig & { api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
 type GenerationControls = { reasoningEffort?: unknown; temperature?: unknown; maxTokens?: unknown };
 type CheckpointRouteRecord = { version: number; provider: unknown; model: unknown; baseURLFingerprint: unknown; sourceSessionId: unknown };
-type LcxError = Error & { code?: string };
 
-/** @param {unknown} value */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-/** @param {unknown} value */
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-function isPositiveFinite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
 
-/** @param {unknown} value */
 export function normalizeBaseURL(value: unknown): string {
   return String(value ?? "").trim().replace(/\/+$/u, "");
 }
-/** @param {unknown} baseURL */
 export function baseURLFingerprint(baseURL: unknown): string {
   return createHash("sha256").update(normalizeBaseURL(baseURL), "utf8").digest("hex");
 }
 
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {{ includeSession?: boolean }} [options] */
 export function routeFingerprint(route: Partial<RouteIdentity> | null | undefined, options: { includeSession?: boolean } = {}): string {
   const includeSession = options.includeSession !== false;
   return createHash("sha256").update([
@@ -83,14 +71,6 @@ export function routeFingerprint(route: Partial<RouteIdentity> | null | undefine
   ].join("\u001f"), "utf8").digest("hex");
 }
 
-/** @param {unknown} value */
-function clampPromptCacheKey(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  const chars = Array.from(String(value));
-  return chars.length <= 64 ? String(value) : chars.slice(0, 64).join("");
-}
-
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export function promptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
   if (config.cacheRetention === "none") return undefined;
   const sessionId = route?.sessionId ? String(route.sessionId) : undefined;
@@ -110,9 +90,8 @@ export function promptCacheSessionId(route: Partial<RouteIdentity> | null | unde
   return current?.id ?? sessionId;
 }
 
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export function promptCacheKey(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
-  return clampPromptCacheKey(promptCacheSessionId(route, config, ctx));
+  return clampOpenAIPromptCacheKey(promptCacheSessionId(route, config, ctx));
 }
 
 /** Grok follows Pi directly: cache/affinity belongs to the selected child session. */
@@ -124,15 +103,13 @@ export function grokPromptCacheSessionId(
   const sessionId = String(route?.sessionId ?? "");
   return sessionId || undefined;
 }
-/** @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention' | 'supportsLongCacheRetention' | 'responsesCompat'>>} [config] */
 export function promptCacheRetention(config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">> = {}): "24h" | undefined {
   return config.cacheRetention === "long" && config.supportsLongCacheRetention === true && config.responsesCompat?.supportsExplicitPromptCacheMode !== true ? "24h" : undefined;
 }
 
-/** @param {RetryPolicyConfig | null | undefined} policy @param {number} [fallback] */
-function retryAttempts(policy: RetryPolicyConfig | null | undefined, fallback = 3): number {
+function retryAttempts(policy: RetryPolicyConfig | null | undefined, fallback: number = DEFAULTS.maxAttempts): number {
   if (!policy) return fallback;
-  try { const resolved = resolveRetryPolicy(policy, "llm-pi-ai provider retryPolicy"); if (resolved.mode === "normal" && isPositiveInteger(resolved.maxRetries)) return Math.min(resolved.maxRetries + 1, 6); } catch {}
+  try { const resolved = resolveRetryPolicy(policy, "llm-pi-ai provider retryPolicy"); if (resolved.mode === "normal" && isPositiveSafeInteger(resolved.maxRetries)) return Math.min(resolved.maxRetries + 1, DEFAULTS.maxAttemptsCap); } catch {}
   return fallback;
 }
 
@@ -159,9 +136,7 @@ function configuredProviderProfile(
   }
 }
 
-/** @type {Set<keyof ResponsesCompat>} */
 const RESPONSES_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "sessionAffinityFormat", "supportsStrictMode", "supportsLongCacheRetention", "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch", "supportsExplicitPromptCacheMode", "supportsMaxOutputTokens"]);
-/** @param {ResponsesCompat} target @param {unknown} source */
 function copyResponsesCompat(target: ResponsesCompat, source: unknown): void {
   if (!isRecord(source)) return;
   for (const field of RESPONSES_COMPAT_FIELDS) {
@@ -192,7 +167,7 @@ function modelDescriptorDefaults(
 const hostRecognizedModels = new WeakMap<object, Map<string, string>>();
 
 function recognitionKey(provider: unknown, modelId: unknown): string {
-  return `${String(provider)} ${String(modelId)}`;
+  return `${String(provider)}\u001f${String(modelId)}`;
 }
 
 /** What decides whether DSH serves a model of this provider: the endpoint, the protocol and the served model ids. */
@@ -253,7 +228,6 @@ function configuredModelProfile(
     : profile?.modelOverrides?.[String(modelId)];
 }
 
-/** @param {ProviderProfile | null | undefined} profile @param {unknown} modelId @returns {ResponsesCompat | undefined} */
 function configuredResponsesCompat(profile: ProviderProfile | null | undefined, modelId: unknown): ResponsesCompat | undefined {
   const compat: ResponsesCompat = {};
   copyResponsesCompat(compat, profile?.compat);
@@ -384,11 +358,11 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     // and what DSH resolved for it (see `routeModelOverride`).
     ...(declaredControls === undefined ? {} : { modelControls: declaredControls }),
     // These are explicitly LCX-owned transport and request-capability policies.
-    timeoutMs: isPositiveInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
+    timeoutMs: isPositiveSafeInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
-    maxRequestImageBytes: isPositiveInteger(configured.maxRequestImageBytes) ? configured.maxRequestImageBytes : policy.maxRequestImageBytes,
-    requestImagePixelBudget: isPositiveInteger(configured.requestImagePixelBudget) ? configured.requestImagePixelBudget : policy.requestImagePixelBudget,
-    requestImageMaxBytes: isPositiveInteger(configured.requestImageMaxBytes) ? configured.requestImageMaxBytes : policy.requestImageMaxBytes,
+    maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes) ? configured.maxRequestImageBytes : policy.maxRequestImageBytes,
+    requestImagePixelBudget: isPositiveSafeInteger(configured.requestImagePixelBudget) ? configured.requestImagePixelBudget : policy.requestImagePixelBudget,
+    requestImageMaxBytes: isPositiveSafeInteger(configured.requestImageMaxBytes) ? configured.requestImageMaxBytes : policy.requestImageMaxBytes,
   };
 }
 
@@ -465,34 +439,34 @@ export function resolveGrokResponsesRouteConfig(
     profileReasoning: profileReasoning(configured.reasoning),
     // Pi applies only an explicitly configured request deadline; stream liveness
     // is owned separately by the provider idle watchdog.
-    timeoutMs: isPositiveInteger(configured.timeoutMs)
+    timeoutMs: isPositiveSafeInteger(configured.timeoutMs)
       ? configured.timeoutMs
       : undefined,
     streamIdleTimeoutMs: isPositiveFinite(configured.streamIdleTimeoutMs)
       ? configured.streamIdleTimeoutMs
-      : 300_000,
+      : DEFAULTS.streamIdleTimeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
-    maxRequestImageBytes: isPositiveInteger(configured.maxRequestImageBytes)
+    maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes)
       ? configured.maxRequestImageBytes
       : policy.maxRequestImageBytes,
-    requestImagePixelBudget: isPositiveInteger(configured.requestImagePixelBudget)
+    requestImagePixelBudget: isPositiveSafeInteger(configured.requestImagePixelBudget)
       ? configured.requestImagePixelBudget
       : policy.requestImagePixelBudget,
-    requestImageMaxBytes: isPositiveInteger(configured.requestImageMaxBytes)
+    requestImageMaxBytes: isPositiveSafeInteger(configured.requestImageMaxBytes)
       ? configured.requestImageMaxBytes
       : policy.requestImageMaxBytes,
   };
 }
 
-/** @param {RouteContext | null | undefined} ctx @param {Pick<ResolvedResponsesRoute, 'apiKeyEnv'>} config */
 export async function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string> {
   const resolved = await ctx?.credentials.resolve(credentialRef(config.apiKeyEnv));
-  if (resolved?.value.trim()) return resolved.value.trim();
-  const error: LcxError = new Error(
+  // DSH's own definition of a usable key (trimmed, nothing an HTTP header cannot carry). A rejected key is
+  // reported by its reference only, never by its value.
+  if (resolved?.value.trim()) return assertUsableApiKey(resolved.value, "lcx-codex", config.apiKeyEnv);
+  throw codedError(
     `DSH provider credential is unavailable: ${config.apiKeyEnv}`,
+    "LCX_CREDENTIAL_UNAVAILABLE",
   );
-  error.code = "LCX_CREDENTIAL_UNAVAILABLE";
-  throw error;
 }
 
 function setHeaderCaseInsensitive(
@@ -519,11 +493,8 @@ function effectiveGrokProfileHeaders(
   return effective;
 }
 
-/** @param {HeaderMap | null | undefined} headers @param {string} name */
 function hasHeader(headers: HeaderMap | null | undefined, name: string): boolean { return Object.keys(headers ?? {}).some((key) => key.toLowerCase() === name.toLowerCase()); }
-/** @param {HeaderMap | null | undefined} headers */
 function hasExplicitSessionAffinity(headers: HeaderMap | null | undefined): boolean { return ["session-id", "session_id", "x-session-id"].some((name) => hasHeader(headers, name)); }
-/** @param {Partial<ResolvedResponsesRoute> | null | undefined} config */
 function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | undefined): "none" | "openai" | "openai-nosession" | "openrouter" {
   if (config?.api && config.api !== "openai-responses") return "none";
   const explicit = config?.responsesCompat?.sessionAffinityFormat;
@@ -534,7 +505,6 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
     : "openai";
 }
 
-/** @param {RouteContext | null | undefined} ctx @param {ResolvedResponsesRoute} config @param {unknown} sessionId @param {string | null | undefined} requestId @returns {Promise<HeaderMap>} */
 export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined): Promise<HeaderMap> {
   const explicit = { ...(config.headers ?? {}) };
   const headers: HeaderMap = {
@@ -572,24 +542,20 @@ export async function authenticatedGrokHeaders(
   return headers;
 }
 
-/** @param {RouteOptions | null | undefined} options @param {Pick<UnresolvedRouteConfig, 'provider' | 'model' | 'baseURL'>} config @returns {RouteIdentity} */
 export function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity {
   return { provider: String(options?.provider ?? config.provider ?? ""), model: String(options?.model ?? config.model ?? ""), baseURL: normalizeBaseURL(config.baseURL), sessionId: String(options?.sessionId ?? "") };
 }
 
-/** @param {RequestHeader | null | undefined} header @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls {
   const config = header?.config;
   if (!config || String(config.provider ?? "") !== String(route?.provider ?? "") || String(config.model ?? "") !== String(route?.model ?? "")) return {};
   const controls: GenerationControls = {}; if (config.reasoningEffort !== undefined) controls.reasoningEffort = config.reasoningEffort; if (config.temperature !== undefined) controls.temperature = config.temperature; if (config.maxTokens !== undefined) controls.maxTokens = config.maxTokens; return controls;
 }
 
-/** @param {RouteSession | null | undefined} session @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export function generationControlsFromSession(session: RouteSession | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls {
   try { return generationControlsFromHeader(session?.requestHeader?.(), route); } catch { return {}; }
 }
 
-/** @param {CheckpointRouteRecord | null | undefined} record @param {RouteIdentity} route @param {unknown} ctx */
 export function routeCompatible(record: CheckpointRouteRecord | null | undefined, route: RouteIdentity, ctx: unknown): boolean {
   void ctx;
   return !!record && record.version === 5 && record.provider === route.provider && record.model === route.model && record.baseURLFingerprint === baseURLFingerprint(route.baseURL) && record.sourceSessionId === route.sessionId;

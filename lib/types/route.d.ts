@@ -91,21 +91,15 @@ type CheckpointRouteRecord = {
     baseURLFingerprint: unknown;
     sourceSessionId: unknown;
 };
-/** @param {unknown} value */
 export declare function normalizeBaseURL(value: unknown): string;
-/** @param {unknown} baseURL */
 export declare function baseURLFingerprint(baseURL: unknown): string;
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {{ includeSession?: boolean }} [options] */
 export declare function routeFingerprint(route: Partial<RouteIdentity> | null | undefined, options?: {
     includeSession?: boolean;
 }): string;
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export declare function promptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>, ctx?: RouteContext | null | undefined): string | undefined;
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export declare function promptCacheKey(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>, ctx?: RouteContext | null | undefined): string | undefined;
 /** Grok follows Pi directly: cache/affinity belongs to the selected child session. */
 export declare function grokPromptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>): string | undefined;
-/** @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention' | 'supportsLongCacheRetention' | 'responsesCompat'>>} [config] */
 export declare function promptCacheRetention(config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">>): "24h" | undefined;
 /** Record that DSH resolves this exact provider/model under the provider's current profile. */
 export declare function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): void;
@@ -122,18 +116,12 @@ export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "a
 export declare function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, options: RouteOptions): ResponsesRouteDiagnosis;
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export declare function resolveGrokResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
-/** @param {RouteContext | null | undefined} ctx @param {Pick<ResolvedResponsesRoute, 'apiKeyEnv'>} config */
 export declare function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string>;
-/** @param {RouteContext | null | undefined} ctx @param {ResolvedResponsesRoute} config @param {unknown} sessionId @param {string | null | undefined} requestId @returns {Promise<HeaderMap>} */
 export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined): Promise<HeaderMap>;
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
 export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown): Promise<HeaderMap>;
-/** @param {RouteOptions | null | undefined} options @param {Pick<UnresolvedRouteConfig, 'provider' | 'model' | 'baseURL'>} config @returns {RouteIdentity} */
 export declare function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity;
-/** @param {RequestHeader | null | undefined} header @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export declare function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;
-/** @param {RouteSession | null | undefined} session @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export declare function generationControlsFromSession(session: RouteSession | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;
-/** @param {CheckpointRouteRecord | null | undefined} record @param {RouteIdentity} route @param {unknown} ctx */
 export declare function routeCompatible(record: CheckpointRouteRecord | null | undefined, route: RouteIdentity, ctx: unknown): boolean;
 export {};

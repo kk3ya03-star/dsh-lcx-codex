@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { buildNativeCompactionBody } from '../lib/compact-v2.js'
 import { persistNativeImageReferences, readDshPiReplayState, serializeDshMessages } from '../lib/dsh-responses.js'
-import { nativeCheckpointChunks, retainedConversationInput, stateRouteCompatible } from '../lib/native-checkpoint.js'
+import { nativeCheckpointChunks, retainedConversationPlan, stateRouteCompatible } from '../lib/native-checkpoint.js'
 import { baseURLFingerprint, generationControlsFromHeader, generationControlsFromSession, promptCacheSessionId } from '../lib/route.js'
 
 const MODEL_ID = 'gpt-5.6-fixture'
@@ -154,7 +154,7 @@ test('canonical developer, system and user messages remain durable and image saf
     { role: 'system', content: 'system-shape' },
     { role: 'user', content: [{ type: 'input_image', detail: 'auto', image_url: imageUrl }] },
   ]
-  const retained = retainedConversationInput(canonical)
+  const retained = retainedConversationPlan(canonical).items
   assert.deepEqual(retained.map(item => item.role), ['developer', 'system', 'user'], 'canonical input roles must survive retained-history selection')
   const persisted = persistNativeImageReferences(retained, new Map([[imageUrl, attachment]]))
   assert.equal(persisted[2].content[0].type, 'dsh_image_attachment')

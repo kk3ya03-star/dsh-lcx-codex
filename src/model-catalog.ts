@@ -1,6 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { getCatalogModels } from "./pi-responses-runtime.js";
-import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
 
 /**
  * What LCX knows about a route model when the provider profile does not say. DSH does not hand the resolved
@@ -13,14 +12,11 @@ import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
  *   2. `catalog-provider-default` a model the catalog has not caught up with, which DSH serves anyway
  *                                 (the profile lists it in `models`, or DSH's own newer catalog resolves it), takes the one
  *                                 protocol (and endpoint) every model the provider ships agrees on, exactly
- *                                 as `dsh-llm-pi-ai` does for a newer model of an installed catalog route;
- *   3. `frozen-pi086`             last fallback only: the frozen Pi 0.86 allowlist says the pair was a
- *                                 Responses model, which is all it can say (no endpoint, no capabilities).
+ *                                 as `dsh-llm-pi-ai` does for a newer model of an installed catalog route.
  */
 export type CatalogModelSource =
   | "catalog-model"
   | "catalog-provider-default"
-  | "frozen-pi086"
   | "unknown";
 
 export type CatalogModelFacts = {
@@ -80,7 +76,5 @@ export function resolveCatalogModel(provider: unknown, modelId: unknown, dshServ
       baseUrl: defaults.baseUrl,
       descriptor: undefined,
     };
-  if (wasPi086ResponsesModel(providerName, id))
-    return { source: "frozen-pi086", api: "openai-responses", baseUrl: undefined, descriptor: undefined };
   return { source: "unknown", api: undefined, baseUrl: undefined, descriptor: undefined };
 }

@@ -85,10 +85,6 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
 export declare function routeModelOverride(routeConfig: {
     modelControls?: object;
 }, facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">, grok: boolean): Record<string, unknown> | undefined;
-export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
-    provider?: unknown;
-    model?: unknown;
-}, signal?: AbortSignal): Promise<ImageSupport>;
 export declare function readDshPiReplayState(value: unknown): {
     response: ReplayResponse;
     blocks: ReplayBlock[];

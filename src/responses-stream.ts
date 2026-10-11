@@ -1,5 +1,3 @@
-// @ts-check
-
 import type {
   AssistantMessageEvent,
   Model as PiModel,
@@ -9,7 +7,7 @@ import {
   processResponsesStream,
 } from "./pi-responses-runtime.js";
 import { abortError } from "./abort-error.js";
-import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId } from "@deepseek-ai/dsh-llm";
+import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId, isContextWindowExceededError } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry } from "./transport.js";
 import { sanitizeContextDetails, type ProviderContextDetails } from "./search-accounting.js";
@@ -19,6 +17,8 @@ import {
   sanitizeGrokVisibleText,
   type GrokNativeReplayRoute,
 } from "./grok-native-search.js";
+import { codedError, isPositiveFinite, isRecord } from "./util.js";
+import { DEFAULTS } from "./defaults.js";
 
 type UnknownRecord = Record<string, unknown>;
 type ResponseStreamEvent = import("openai/resources/responses/responses.js").ResponseStreamEvent;
@@ -158,26 +158,19 @@ function emptyUsage() {
   };
 }
 
-/** @param {unknown} value @returns {value is UnknownRecord} */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
-/** @param {unknown} raw */
 function safeStatus(raw: unknown) {
   return Number.isInteger(raw) && Number(raw) >= 100 && Number(raw) <= 599
     ? Number(raw)
     : undefined;
 }
 
-/** @param {unknown} raw */
 function safeRequestId(raw: unknown) {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > 160)
     return undefined;
   return /^[A-Za-z0-9._:\/-]+$/u.test(raw) ? raw : undefined;
 }
 
-/** @param {unknown} error */
 function errorFacts(error: unknown) {
   const seen = new Set();
   const codes = [];
@@ -189,7 +182,7 @@ function errorFacts(error: unknown) {
   for (
     let depth = 0;
     depth < 8 &&
-    (current instanceof Error || isObject(current)) &&
+    (current instanceof Error || isRecord(current)) &&
     !seen.has(current);
     depth += 1
   ) {
@@ -217,7 +210,6 @@ function errorFacts(error: unknown) {
   };
 }
 
-/** @param {unknown} value */
 function safeMachineField(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 96)
     return undefined;
@@ -238,10 +230,10 @@ function observeUpstreamFailure(event: UnknownRecord, meta: ResponseWireMeta): v
   if (type === "error") {
     // OpenAI sends flat `{code, message}`; some gateways nest `{error: {code, type}}`. `type` is only
     // ever the error type when nested, because the flat `type` is the event name itself.
-    const nested = isObject(event.error) ? event.error : undefined;
+    const nested = isRecord(event.error) ? event.error : undefined;
     source = { code: nested?.code ?? event.code, type: nested?.type };
     hasError = true;
-  } else if (isObject(event.response)) {
+  } else if (isRecord(event.response)) {
     const response = event.response;
     const status = response.status;
     const failedTerminal =
@@ -252,12 +244,12 @@ function observeUpstreamFailure(event: UnknownRecord, meta: ResponseWireMeta): v
       (type === "response.completed" && status === "incomplete");
     if (!failedTerminal && !incompleteTerminal) return;
     incomplete = incompleteTerminal;
-    details = isObject(response.incomplete_details)
+    details = isRecord(response.incomplete_details)
       ? response.incomplete_details.reason
       : undefined;
     // max_output_tokens is a length stop that Pi maps to a normal finish, not a failure.
     if (incompleteTerminal && details === "max_output_tokens") return;
-    source = isObject(response.error) ? response.error : undefined;
+    source = isRecord(response.error) ? response.error : undefined;
     hasError = source !== undefined;
   } else return;
   const code = safeMachineField(source?.code);
@@ -322,8 +314,6 @@ function classifyUpstreamFailure(
 
 /**
  * Provider bodies/messages are deliberately not surfaced. Only a stable class and safe facts leave the wire boundary.
- * @param {unknown} error
- * @param {AbortSignal} [signal]
  */
 export function managedFailure(
   error: unknown,
@@ -377,6 +367,7 @@ export function managedFailure(
     facts.status === 401 ||
     facts.status === 403 ||
     sourceCodes.has("AUTH") ||
+    sourceCodes.has("INVALID_CREDENTIAL") ||
     sourceCodes.has("LCX_CREDENTIAL_UNAVAILABLE")
   )
     code = "AUTH";
@@ -385,6 +376,8 @@ export function managedFailure(
     code = "RATE_LIMIT";
   else if (facts.status !== undefined && facts.status >= 500) code = "SERVER";
   else if (
+    // DSH's own overflow wording first, then the LCX phrases it does not cover.
+    isContextWindowExceededError(text) ||
     /context (?:window|length)|maximum context|too many tokens/iu.test(text) ||
     [...sourceCodes].some((value) =>
       /context.*(?:window|length|exceed)/iu.test(value),
@@ -417,7 +410,7 @@ export function managedFailure(
     code = "TRANSPORT";
   // Nothing in the text said otherwise: a failure the provider reported without a usable code is its own.
   if (code === "RESPONSES_ERROR" && upstreamClass !== undefined) code = upstreamClass.code;
-  const messages = /** @type {Record<string, string>} */ {
+  const messages = {
     ABORTED: "Responses request was aborted",
     AUTH: "Responses request was rejected by authentication",
     INSUFFICIENT_QUOTA: "服务商额度不足或未满足请求预留额度，请检查中转额度（并非 API 密钥无效） / Provider quota is insufficient for this request",
@@ -455,7 +448,6 @@ export function managedFailure(
   };
 }
 
-/** @param {unknown} error @param {AbortSignal} [signal] */
 /**
  * The host image-offload contract, when this failure carries it.
  *
@@ -464,12 +456,10 @@ export function managedFailure(
  * code and `offloadImages` count before recording an `image/offload` decision
  * and retrying. Normalizing it into the closed LCX taxonomy would drop both
  * fields and turn a recoverable step into a terminal turn failure.
- * @param {unknown} error
- * @returns {LlmFailure | undefined}
  */
 function imageOffloadFailure(error: unknown): LlmFailure | undefined {
-  if (!isObject(error)) return undefined;
-  const source = isObject(error.failure) ? error.failure : error;
+  if (!isRecord(error)) return undefined;
+  const source = isRecord(error.failure) ? error.failure : error;
   if (source.code !== IMAGE_OFFLOAD_REQUIRED_CODE) return undefined;
   const offloadImages = source.offloadImages;
   if (!Number.isSafeInteger(offloadImages) || (offloadImages as number) <= 0)
@@ -521,35 +511,43 @@ async function readWithSignal(
   });
 }
 
+/**
+ * An abort controller that follows `parent` and can be closed by the consumer: closing clears the caller's
+ * timer, detaches from the parent and aborts with a stable "consumer stopped" reason when nothing else did.
+ */
+function linkedAbort(parent: AbortSignal | undefined, consumerStoppedMessage: string) {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener("abort", onParentAbort, { once: true });
+  return {
+    signal: controller.signal,
+    abort: (reason: unknown) => controller.abort(reason),
+    close(clearTimer: () => void) {
+      clearTimer();
+      parent?.removeEventListener("abort", onParentAbort);
+      if (!controller.signal.aborted)
+        controller.abort(codedError(consumerStoppedMessage, "LCX_ABORTED"));
+    },
+  };
+}
+
 function requestDeadline(
   parent: AbortSignal | undefined,
   timeoutMs: number | undefined,
 ) {
-  const controller = new AbortController();
+  const linked = linkedAbort(parent, "Responses request consumer stopped");
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const onParentAbort = () => controller.abort(parent?.reason);
-  if (parent?.aborted) onParentAbort();
-  else parent?.addEventListener("abort", onParentAbort, { once: true });
-  if (
-    !controller.signal.aborted &&
-    typeof timeoutMs === "number" &&
-    Number.isFinite(timeoutMs) &&
-    timeoutMs > 0
-  )
-    timer = setTimeout(() => controller.abort(Object.assign(
-      new Error(`Responses request timeout after ${timeoutMs}ms`),
-      { code: "LCX_REQUEST_TIMEOUT" },
-    )), timeoutMs);
+  if (!linked.signal.aborted && isPositiveFinite(timeoutMs))
+    timer = setTimeout(
+      () => linked.abort(codedError(`Responses request timeout after ${timeoutMs}ms`, "LCX_REQUEST_TIMEOUT")),
+      timeoutMs,
+    );
   return {
-    signal: controller.signal,
-    dispose() {
+    signal: linked.signal,
+    dispose: () => linked.close(() => {
       if (timer !== undefined) clearTimeout(timer);
-      parent?.removeEventListener("abort", onParentAbort);
-      if (!controller.signal.aborted)
-        controller.abort(Object.assign(new Error("Responses request consumer stopped"), {
-          code: "LCX_ABORTED",
-        }));
-    },
+    }),
   };
 }
 
@@ -557,44 +555,32 @@ function streamIdleWatchdog(
   parent: AbortSignal | undefined,
   idleTimeoutMs: number | undefined,
 ) {
-  const controller = new AbortController();
+  const linked = linkedAbort(parent, "Responses stream consumer stopped");
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const onParentAbort = () => controller.abort(parent?.reason);
-  if (parent?.aborted) onParentAbort();
-  else parent?.addEventListener("abort", onParentAbort, { once: true });
   const disarm = () => {
     if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
   };
   const arm = () => {
-    if (controller.signal.aborted) return;
+    if (linked.signal.aborted) return;
     disarm();
-    if (typeof idleTimeoutMs === "number" && Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0)
-      timer = setTimeout(() => controller.abort(Object.assign(
-        new Error(`Responses stream idle timeout after ${idleTimeoutMs}ms`),
-        { code: "LCX_STREAM_IDLE_TIMEOUT" },
-      )), idleTimeoutMs);
+    if (isPositiveFinite(idleTimeoutMs))
+      timer = setTimeout(
+        () => linked.abort(codedError(`Responses stream idle timeout after ${idleTimeoutMs}ms`, "LCX_STREAM_IDLE_TIMEOUT")),
+        idleTimeoutMs,
+      );
   };
   return {
-    signal: controller.signal,
+    signal: linked.signal,
     arm,
     disarm,
-    dispose() {
-      disarm();
-      parent?.removeEventListener("abort", onParentAbort);
-      if (!controller.signal.aborted)
-        controller.abort(Object.assign(new Error("Responses stream consumer stopped"), {
-          code: "LCX_ABORTED",
-        }));
-    },
+    dispose: () => linked.close(disarm),
   };
 }
 
 /**
  * Minimal JSON SSE reader. LCX owns the exact HTTP wire; Pi owns event semantics after this boundary.
  * Stream liveness is measured after Pi emits meaningful DSH progress, not here.
- * @param {Response} response
- * @param {StreamOptions} [options]
  */
 async function* responseEvents(
   response: Response,
@@ -607,10 +593,9 @@ async function* responseEvents(
     });
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const maxBytes = options.maxResponseBytes ?? 8 * 1024 * 1024;
+  const maxBytes = options.maxResponseBytes ?? DEFAULTS.maxResponseBytes;
   let bytes = 0;
   let pending = "";
-  /** @type {string[]} */
   let dataLines: string[] = [];
   const decode = () => {
     if (dataLines.length === 0) return undefined;
@@ -661,7 +646,7 @@ async function* responseEvents(
 }
 
 function isSupportedOutputItem(value: unknown): value is ResponseOutputItem {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   if (value.type === "message")
     return (
       typeof value.id === "string" &&
@@ -672,7 +657,7 @@ function isSupportedOutputItem(value: unknown): value is ResponseOutputItem {
       Array.isArray(value.content) &&
       value.content.every(
         (part) =>
-          isObject(part) &&
+          isRecord(part) &&
           ((part.type === "output_text" &&
             typeof part.text === "string" &&
             Array.isArray(part.annotations)) ||
@@ -684,7 +669,7 @@ function isSupportedOutputItem(value: unknown): value is ResponseOutputItem {
       typeof value.id === "string" &&
       Array.isArray(value.summary) &&
       value.summary.every(
-        (part) => isObject(part) && typeof part.text === "string",
+        (part) => isRecord(part) && typeof part.text === "string",
       )
     );
   if (value.type === "function_call")
@@ -704,7 +689,7 @@ function isSupportedOutputItem(value: unknown): value is ResponseOutputItem {
 }
 
 function isTerminalResponse(value: unknown): boolean {
-  if (!isObject(value) || typeof value.id !== "string") return false;
+  if (!isRecord(value) || typeof value.id !== "string") return false;
   if (!Array.isArray(value.output)) return false;
   return (
     value.status === "completed" ||
@@ -743,7 +728,7 @@ const PI_RESPONSE_EVENT_TYPES = new Set([
 function isSupportedResponseStreamEvent(
   value: unknown,
 ): value is ResponseStreamEvent {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   if (
     !Number.isSafeInteger(value.sequence_number) ||
     typeof value.type !== "string" ||
@@ -751,7 +736,7 @@ function isSupportedResponseStreamEvent(
   )
     return false;
   if (value.type === "response.created")
-    return isObject(value.response) && typeof value.response.id === "string";
+    return isRecord(value.response) && typeof value.response.id === "string";
   if (
     value.type === "response.output_item.added" ||
     value.type === "response.output_item.done"
@@ -810,7 +795,7 @@ function isSupportedResponseStreamEvent(
     value.type === "response.incomplete"
   )
     return isTerminalResponse(value.response);
-  if (value.type === "response.failed") return isObject(value.response);
+  if (value.type === "response.failed") return isRecord(value.response);
   return typeof value.code === "string" && typeof value.message === "string";
 }
 
@@ -819,7 +804,7 @@ async function* validatedResponseEvents(
 ): AsyncGenerator<ResponseStreamEvent> {
   let sequenceNumber = 0;
   for await (const raw of source) {
-    if (!isObject(raw)) continue;
+    if (!isRecord(raw)) continue;
     if (!PI_RESPONSE_EVENT_TYPES.has(String(raw.type ?? ""))) continue;
     const event = { ...raw, sequence_number: sequenceNumber++ };
     if (!isSupportedResponseStreamEvent(event))
@@ -831,7 +816,6 @@ async function* validatedResponseEvents(
   }
 }
 
-/** @param {UnknownRecord} item */
 function itemKind(item: Pick<WireItem, "type">) {
   if (item.type === "message") return "text";
   if (item.type === "reasoning") return "reasoning";
@@ -840,7 +824,6 @@ function itemKind(item: Pick<WireItem, "type">) {
   return undefined;
 }
 
-/** @param {UnknownRecord} item */
 function itemIdentity(item: Pick<WireItem, "id" | "call_id" | "type">) {
   const id =
     typeof item.id === "string" && item.id
@@ -851,7 +834,6 @@ function itemIdentity(item: Pick<WireItem, "id" | "call_id" | "type">) {
   return id ? `${String(item.type)}:${id}` : undefined;
 }
 
-/** @param {UnknownRecord} item */
 function itemText(item: Pick<
   WireItem,
   "type" | "content" | "summary" | "arguments" | "input"
@@ -859,7 +841,7 @@ function itemText(item: Pick<
   if (item.type === "message")
     return (Array.isArray(item.content) ? item.content : [])
       .map((part: { type: string; text: unknown; refusal: unknown }) =>
-        isObject(part) &&
+        isRecord(part) &&
         (part.type === "output_text" || part.type === "refusal")
           ? String(part.text ?? part.refusal ?? "")
           : "",
@@ -874,7 +856,7 @@ function itemText(item: Pick<
           : [];
     return parts
       .map((part: { text: unknown }) =>
-        isObject(part) ? String(part.text ?? "") : "",
+        isRecord(part) ? String(part.text ?? "") : "",
       )
       .join("\n\n");
   }
@@ -886,7 +868,7 @@ function itemText(item: Pick<
 function itemAnnotations(item: WireItem): unknown[] {
   if (item.type !== "message" || !Array.isArray(item.content)) return [];
   return item.content.flatMap((part) =>
-    isObject(part) && Array.isArray(part.annotations) ? part.annotations : []);
+    isRecord(part) && Array.isArray(part.annotations) ? part.annotations : []);
 }
 
 function sanitizeGrokTerminalItem(item: WireItem, index: number): WireItem {
@@ -895,7 +877,7 @@ function sanitizeGrokTerminalItem(item: WireItem, index: number): WireItem {
   return {
     ...normalized,
     content: normalized.content.map((part) => {
-      if (!isObject(part) || (part.type !== "output_text" && part.type !== "refusal")) return structuredClone(part);
+      if (!isRecord(part) || (part.type !== "output_text" && part.type !== "refusal")) return structuredClone(part);
       const text = sanitizeGrokVisibleText(
         String(part.text ?? part.refusal ?? ""),
         Array.isArray(part.annotations) ? part.annotations : [],
@@ -907,7 +889,6 @@ function sanitizeGrokTerminalItem(item: WireItem, index: number): WireItem {
   };
 }
 
-/** @param {UnknownRecord} item @param {number} index */
 function normalizedTerminalItem(item: WireItem, index: number): WireItem {
   if (item.type === "message")
     return {
@@ -948,7 +929,6 @@ function normalizedTerminalItem(item: WireItem, index: number): WireItem {
   return structuredClone(item);
 }
 
-/** @param {UnknownRecord} item @param {number} index */
 function addedShell(
   item: Pick<WireItem, "type" | "id" | "call_id" | "name">,
   index: number,
@@ -980,13 +960,12 @@ function addedShell(
   };
 }
 
-/** @param {UnknownRecord} record @param {UnknownRecord} item */
 function recordMatches(
   record: { kind: string | undefined; item: WireItem; text: unknown },
   item: WireItem,
 ) {
   if (record.kind !== itemKind(item)) return false;
-  const recordItem = /** @type {UnknownRecord} */ record.item;
+  const recordItem = record.item;
   if (
     itemIdentity(recordItem) &&
     itemIdentity(recordItem) === itemIdentity(item)
@@ -1006,8 +985,6 @@ function recordMatches(
 /**
  * Some compatible gateways omit `response.output_item.added/done`, or terminal output indexes drift
  * when a reasoning item is inserted. Normalize only the missing framing; Pi remains authoritative for item semantics.
- * @param {AsyncIterable<unknown>} source
- * @param {{ responseModel?: string }} [meta]
  */
 async function* normalizedResponseEvents(
   source: AsyncIterable<unknown>,
@@ -1067,7 +1044,7 @@ async function* normalizedResponseEvents(
   const serverToolIds = new Map<string, Set<string>>();
   const nativeServerSearchEchoCallIds = new Set<string>();
   const isServerToolItem = (value: unknown): value is WireItem =>
-    isObject(value) && (options.serverToolTypes?.has(String(value.type ?? "")) === true ||
+    isRecord(value) && (options.serverToolTypes?.has(String(value.type ?? "")) === true ||
       options.isServerToolItem?.(value) === true);
   const observeServerTool = (item: WireItem) => {
     meta.inputTokenScope = "aggregate";
@@ -1081,7 +1058,6 @@ async function* normalizedResponseEvents(
     }
     ids.add(typeof item.id === "string" && item.id ? item.id : `${type}:${ids.size}`);
   };
-  /** @param {number} index @param {UnknownRecord} item */
   const ensure = function* (
     index: number,
     item: WireItem,
@@ -1100,18 +1076,18 @@ async function* normalizedResponseEvents(
   };
 
   for await (const raw of source) {
-    if (!isObject(raw)) continue;
-    const event = /** @type {UnknownRecord} */ raw;
+    if (!isRecord(raw)) continue;
+    const event = raw;
     observeUpstreamFailure(event, meta);
     if (options.serverToolTypes && ['response.completed','response.failed','response.incomplete'].includes(String(event.type))) {
-      meta.contextDetails = sanitizeContextDetails(isObject(event.response) && isObject(event.response.usage)
+      meta.contextDetails = sanitizeContextDetails(isRecord(event.response) && isRecord(event.response.usage)
         ? event.response.usage.context_details : undefined);
     }
     // Scope is response-local evidence, including failed/incomplete terminal samples.
-    if (options.serverToolTypes && isObject(event.response)) {
+    if (options.serverToolTypes && isRecord(event.response)) {
       const response = event.response;
-      const usage = isObject(response.usage) ? response.usage : {};
-      const details = isObject(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
+      const usage = isRecord(response.usage) ? response.usage : {};
+      const details = isRecord(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
       if (Number(usage.num_server_side_tools_used ?? 0) > 0 ||
           Number(details.web_search_calls ?? 0) > 0 || Number(details.x_search_calls ?? 0) > 0)
         meta.inputTokenScope = "aggregate";
@@ -1121,7 +1097,7 @@ async function* normalizedResponseEvents(
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : 0;
-    if (event.type === "response.output_item.done" && isObject(event.item))
+    if (event.type === "response.output_item.done" && isRecord(event.item))
       completedWireItems.set(index, structuredClone(event.item));
     if (
       (event.type === "response.output_item.added" ||
@@ -1144,10 +1120,10 @@ async function* normalizedResponseEvents(
     if (
       options.serverToolTypes &&
       (event.type === "response.output_item.added" || event.type === "response.output_item.done") &&
-      isObject(event.item) && event.item.type === "reasoning" &&
+      isRecord(event.item) && event.item.type === "reasoning" &&
       !itemText(event.item as WireItem).trim() && !open.get(index)?.text.trim()
     ) continue;
-    if (event.type === "response.output_item.added" && isObject(event.item)) {
+    if (event.type === "response.output_item.added" && isRecord(event.item)) {
       const rawItem = normalizedTerminalItem(event.item as WireItem, index);
       const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
       open.set(index, { kind: itemKind(item), item: rawItem, text: itemText(rawItem) });
@@ -1261,7 +1237,7 @@ async function* normalizedResponseEvents(
       yield event;
       continue;
     }
-    if (event.type === "response.output_item.done" && isObject(event.item)) {
+    if (event.type === "response.output_item.done" && isRecord(event.item)) {
       const rawItem = normalizedTerminalItem(event.item as WireItem, index);
       const item = options.serverToolTypes ? sanitizeGrokTerminalItem(rawItem, index) : rawItem;
       if (options.serverToolTypes && item.type === "message") {
@@ -1277,9 +1253,9 @@ async function* normalizedResponseEvents(
     if (
       (event.type === "response.completed" ||
         event.type === "response.incomplete") &&
-      isObject(event.response)
+      isRecord(event.response)
     ) {
-      const response = /** @type {UnknownRecord} */ event.response;
+      const response = event.response;
       if (typeof response.model === "string" && response.model.length > 0)
         meta.responseModel = response.model;
       const terminalOutput = Array.isArray(response.output) && response.output.length > 0
@@ -1289,14 +1265,14 @@ async function* normalizedResponseEvents(
             .map(([, item]) => item);
       const nativeOutput = terminalOutput.map((item) => structuredClone(item));
       for (const item of terminalOutput) {
-        if (isServerToolItem(item) && isObject(item) && item.type === "custom_tool_call" &&
+        if (isServerToolItem(item) && isRecord(item) && item.type === "custom_tool_call" &&
             item.status !== "completed")
           throw Object.assign(
             new Error("Grok native custom search item did not complete on the server"),
             { code: "LCX_GROK_NATIVE_PROTOCOL_ERROR" },
           );
         if (isServerToolItem(item)) observeServerTool(item);
-        else if (options.serverToolTypes && isObject(item) && item.type === "custom_tool_call" &&
+        else if (options.serverToolTypes && isRecord(item) && item.type === "custom_tool_call" &&
                  typeof item.name === "string" && options.declaredToolNames?.has(item.name) !== true)
           throw Object.assign(
             new Error(`Grok returned undeclared client custom tool "${item.name}"`),
@@ -1305,10 +1281,10 @@ async function* normalizedResponseEvents(
       }
       const output = terminalOutput
         .filter((item) => !isServerToolItem(item))
-        .filter((item) => !(options.serverToolTypes && isObject(item) &&
+        .filter((item) => !(options.serverToolTypes && isRecord(item) &&
           item.type === "reasoning" && !itemText(item as WireItem).trim()))
         .map((item: unknown, terminalIndex: number) =>
-          isObject(item)
+          isRecord(item)
             ? (options.serverToolTypes
                 ? sanitizeGrokTerminalItem(item as WireItem, terminalIndex)
                 : normalizedTerminalItem(item as WireItem, terminalIndex))
@@ -1321,8 +1297,8 @@ async function* normalizedResponseEvents(
       ) {
         meta.nativeOutput = nativeOutput;
         meta.nativeServerSearchEchoCallIds = [...nativeServerSearchEchoCallIds];
-        const usage = isObject(response.usage) ? response.usage : {};
-        const details = isObject(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
+        const usage = isRecord(response.usage) ? response.usage : {};
+        const details = isRecord(usage.server_side_tool_usage_details) ? usage.server_side_tool_usage_details : {};
         meta.inputTokenScope = meta.inputTokenScope === "aggregate" || serverToolIds.size > 0 || nativeOutput.some(isServerToolItem)
           || Number(usage.num_server_side_tools_used ?? 0) > 0
           || Number(details.web_search_calls ?? 0) > 0 || Number(details.x_search_calls ?? 0) > 0
@@ -1333,7 +1309,7 @@ async function* normalizedResponseEvents(
         let terminalIndex = output.findIndex(
           (item: unknown, candidateIndex: unknown) =>
             !used.has(candidateIndex) &&
-            isObject(item) &&
+            isRecord(item) &&
             candidateIndex === streamIndex &&
             recordMatches(record, item as WireItem),
         );
@@ -1341,7 +1317,7 @@ async function* normalizedResponseEvents(
           terminalIndex = output.findIndex(
             (item: unknown, candidateIndex: unknown) =>
               !used.has(candidateIndex) &&
-              isObject(item) &&
+              isRecord(item) &&
               recordMatches(record, item as WireItem),
           );
         const item =
@@ -1365,7 +1341,7 @@ async function* normalizedResponseEvents(
       grokTextProjection.clear();
       for (const [terminalIndex, candidate] of output.entries()) {
         if (
-          !isObject(candidate) ||
+          !isRecord(candidate) ||
           !itemKind(candidate as WireItem) ||
           used.has(terminalIndex)
         )
@@ -1423,8 +1399,8 @@ async function* normalizedResponseEvents(
         if (identity) completed.add(identity);
       }
       if (options.onServerToolUsage) {
-        const usage = isObject(response.usage) ? response.usage : {};
-        const details = isObject(usage.server_side_tool_usage_details)
+        const usage = isRecord(response.usage) ? response.usage : {};
+        const details = isRecord(usage.server_side_tool_usage_details)
           ? usage.server_side_tool_usage_details
           : {};
         const safeCount = (value: unknown, fallback: number) =>
@@ -1453,10 +1429,9 @@ async function* normalizedResponseEvents(
   }
 }
 
-/** @param {unknown} usage */
 function isManagedFailure(value: unknown): value is ManagedFailure {
   return (
-    isObject(value) &&
+    isRecord(value) &&
     typeof value.message === "string" &&
     typeof value.code === "string" &&
     (value.status === undefined || typeof value.status === "number") &&
@@ -1467,7 +1442,7 @@ function isManagedFailure(value: unknown): value is ManagedFailure {
 }
 
 function dshUsage(usage: unknown) {
-  const value = /** @type {UnknownRecord} */ isObject(usage) ? usage : {};
+  const value = isRecord(usage) ? usage : {};
   const inputTokens = Number(value.input ?? 0);
   const outputTokens = Number(value.output ?? 0);
   const cacheReadTokens = Number(value.cacheRead ?? 0);
@@ -1487,25 +1462,23 @@ function dshUsage(usage: unknown) {
   };
 }
 
-/** @param {unknown} value */
 function rawArguments(value: unknown) {
   try {
-    return JSON.stringify(isObject(value) ? value : {});
+    return JSON.stringify(isRecord(value) ? value : {});
   } catch {
     return "{}";
   }
 }
 
-/** @param {unknown} message */
 function replayState(
   message: UnknownRecord,
   nativeOutput?: readonly unknown[],
   nativeReplayRoute?: GrokNativeReplayRoute,
   nativeServerSearchEchoCallIds: readonly string[] = [],
 ) {
-  if (!isObject(message)) return undefined;
+  if (!isRecord(message)) return undefined;
   const content: UnknownRecord[] = Array.isArray(message.content)
-    ? message.content.filter(isObject)
+    ? message.content.filter(isRecord)
     : [];
   const provider =
     typeof message.provider === "string" ? message.provider : undefined;
@@ -1565,12 +1538,11 @@ function replayState(
   };
 }
 
-/** @param {unknown} message */
 function successfulFinish(message: unknown): FinishReason {
-  const value = /** @type {UnknownRecord} */ isObject(message) ? message : {};
+  const value = isRecord(message) ? message : {};
   const stopReason = String(value.stopReason ?? "stop");
-  const content = /** @type {UnknownRecord[]} */ Array.isArray(value.content)
-    ? value.content.filter(isObject)
+  const content = Array.isArray(value.content)
+    ? value.content.filter(isRecord)
     : [];
   if (stopReason === "length") return { kind: "max-tokens" };
   if (
@@ -1591,8 +1563,6 @@ function successfulFinish(message: unknown): FinishReason {
 
 /**
  * Pi event vocabulary -> DSH StreamChunk. This remains thin and provider-neutral.
- * @param {AsyncIterable<AssistantMessageEvent>} events
- * @param {AbortSignal} [signal]
  */
 async function* toDshChunks(
   events: AsyncIterable<AssistantMessageEvent>,
@@ -1648,14 +1618,14 @@ async function* toDshChunks(
         };
         break;
       case "toolcall_start": {
-        const partial = /** @type {UnknownRecord | undefined} */ isObject(
+        const partial = isRecord(
           event.partial,
         )
           ? event.partial
           : undefined;
         const content = Array.isArray(partial?.content) ? partial.content : [];
         const item = content[Number(event.contentIndex)];
-        const block = isObject(item) ? item : undefined;
+        const block = isRecord(item) ? item : undefined;
         toolIds.set(Number(event.contentIndex), {
           id: String(block?.id ?? ""),
           name: String(block?.name ?? ""),
@@ -1682,7 +1652,7 @@ async function* toDshChunks(
         break;
       }
       case "toolcall_end": {
-        const call: UnknownRecord = isObject(event.toolCall)
+        const call: UnknownRecord = isRecord(event.toolCall)
           ? event.toolCall
           : {};
         yield {
@@ -1698,7 +1668,7 @@ async function* toDshChunks(
         break;
       }
       case "done": {
-        const message: UnknownRecord = isObject(event.message)
+        const message: UnknownRecord = isRecord(event.message)
           ? event.message
           : {};
         yield { type: "usage", usage: dshUsage(message.usage) };
@@ -1722,7 +1692,7 @@ async function* toDshChunks(
         return;
       }
       case "error": {
-        const message: UnknownRecord = isObject(event.error)
+        const message: UnknownRecord = isRecord(event.error)
           ? event.error
           : {};
         yield { type: "usage", usage: dshUsage(message.usage) };
@@ -1776,20 +1746,6 @@ async function* toDshChunks(
 /**
  * Send one LCX-owned OpenAI Responses request. Ordinary and replay use one provider attempt;
  * the DSH agent recovery layer remains the visible retry owner.
- * @param {object} options
- * @param {string} options.baseURL
- * @param {string} options.provider
- * @param {string} options.model
- * @param {UnknownRecord} options.piModel
- * @param {UnknownRecord} options.body
- * @param {Map<string, string>} [options.grammarToolInputProperties]
- * @param {Record<string, string>} [options.headers]
- * @param {AbortSignal} [options.signal]
- * @param {number} [options.timeoutMs]
- * @param {number} [options.maxAttempts]
- * @param {number} [options.maxResponseBytes]
- * @param {ReadonlySet<string>} [options.serverToolTypes]
- * @param {(usage: ServerToolUsage) => void} [options.onServerToolUsage]
  */
 export async function* streamResponsesRequest({
   baseURL,
@@ -1839,7 +1795,7 @@ export async function* streamResponsesRequest({
       // Diagnostics must never change the stream outcome.
     }
   };
-  const effectiveTimeoutMs = timeoutMs ?? (applyDefaultTimeout ? 300_000 : undefined);
+  const effectiveTimeoutMs = timeoutMs ?? (applyDefaultTimeout ? DEFAULTS.requestTimeoutMs : undefined);
   const deadline = requestDeadline(signal, effectiveTimeoutMs);
   const watchdog = streamIdleWatchdog(deadline.signal, streamIdleTimeoutMs);
   try {
@@ -1911,7 +1867,7 @@ export async function* streamResponsesRequest({
         output.__lcxFailure = managedFailure(error, signal, wireMeta.upstreamFailure);
         piEvents.push({
           type: "error",
-          reason: /** @type {'aborted' | 'error'} */ output.stopReason,
+          reason: output.stopReason,
           error: output,
         });
         piEvents.end();

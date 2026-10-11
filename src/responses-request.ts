@@ -1,11 +1,9 @@
-// @ts-check
-
 import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
 import { responsesTools } from "./dsh-responses.js";
+import { isRecord } from "./util.js";
 
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
-/** @typedef {'none' | 'short' | 'long'} CacheRetention */
 type UnknownRecord = Record<string, unknown>;
 type CacheRetention = "none" | "short" | "long";
 type ResponsesCompat = {
@@ -45,10 +43,6 @@ type ResponsesWireBody = UnknownRecord & {
   parallel_tool_calls?: boolean;
 };
 
-/** @param {unknown} value */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function modelId(model: PiResponsesModel | string): string {
   return typeof model === "string" ? model : model.id;
@@ -56,7 +50,7 @@ function modelId(model: PiResponsesModel | string): string {
 
 function modelRecord(model: PiResponsesModel | string): PiResponsesModel {
   return typeof model === "string"
-    ? /** @type {PiResponsesModel} */ {
+    ? {
         id: model,
         provider: "lcx",
         reasoning: true,
@@ -64,7 +58,6 @@ function modelRecord(model: PiResponsesModel | string): PiResponsesModel {
     : model;
 }
 
-/** @param {unknown} value */
 function normalizeCacheRetention(value: unknown): CacheRetention {
   const normalized = String(value);
   return normalized === "none" || normalized === "short" || normalized === "long"
@@ -74,7 +67,6 @@ function normalizeCacheRetention(value: unknown): CacheRetention {
 
 /**
  * Pi-parity generation controls for OpenAI Responses.
- * @param {GenerationControls & { model?: PiResponsesModel | string, includeDefaultReasoning?: boolean }} [controls]
  */
 export function responsesGenerationEnvelope({
   model = "unknown",
@@ -137,7 +129,6 @@ export function responsesGenerationEnvelope({
 /**
  * Build the shared LCX-owned request envelope while retaining Pi 0.86.0 Responses semantics.
  * Production LCX ordinary/compact/replay construction places the DSH system prompt in canonical input.
- * @param {BuildResponsesBodyOptions} options
  */
 export function buildResponsesBody({
   model,
@@ -198,14 +189,13 @@ export function buildResponsesBody({
       includeDefaultReasoning: true,
     }),
   };
-  if (isObject(samplingParams))
+  if (isRecord(samplingParams))
     Object.assign(body, structuredClone(samplingParams));
   return body;
 }
 
 /**
  * Compact is the standard request plus the one opaque-history transition patch.
- * @param {BuildResponsesBodyOptions} options
  */
 export function buildCompactionResponsesBody(
   options: BuildResponsesBodyOptions,
@@ -213,7 +203,7 @@ export function buildCompactionResponsesBody(
   const body = buildResponsesBody(options);
   if (
     body.input.some(
-      (item) => isObject(item) && item.type === "compaction_trigger",
+      (item) => isRecord(item) && item.type === "compaction_trigger",
     )
   ) {
     throw Object.assign(

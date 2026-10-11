@@ -44,7 +44,7 @@ Run `dsh --version` first, then pick the plugin line for your DSH version. Node.
 
 The lines are not interchangeable; installing the wrong one may only print a dependency warning while the plugin fails to work. `@latest` is the stable `0.5.2` (release baseline DSH `0.2.0-rc.2`, host/plugin Pi `0.87.1`) and supports DSH `0.2` only; DSH `0.1.5` users must pin `@0.4.3`.
 
-`0.6.0-pre.2` is a prerelease for DSH `0.2.1-alpha.2`. Its install range has a **lower bound only** (`>=0.2.1-alpha.2`) and no upper bound: newer DSH versions can install it, but they are **unverified**. The verified baseline of this prerelease is exactly DSH `0.2.1-alpha.2` (host Pi `1.1.0`, plugin Pi `0.87.1`); do not read it as support for any other DSH version.
+`0.6.0-pre.2` is a prerelease for DSH `0.2.1-alpha.2`. Its install range has a **lower bound only** (`>=0.2.1-alpha.2`) and no upper bound: newer DSH versions can install it, but they are **unverified**. The verified baseline of this prerelease is exactly DSH `0.2.1-alpha.2` (host Pi `1.1.0`, plugin Pi `1.1.0`); do not read it as support for any other DSH version.
 
 This release adopts the plugin-facing features of DSH `0.2.1`:
 

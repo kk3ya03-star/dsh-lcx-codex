@@ -2,9 +2,9 @@
 
 `lib/pi-responses-runtime.js` is generated from public exports of the packages below. The build recipe in `scripts/build-pi-runtime.mjs` verifies that no other third-party package contributes output bytes.
 
-## @earendil-works/pi-ai 0.85.1
+## @earendil-works/pi-ai 1.1.0
 
-Upstream source: https://github.com/earendil-works/pi/tree/v0.85.1/packages/ai
+Upstream source: https://github.com/earendil-works/pi/tree/v1.1.0/packages/ai
 
 Included public Responses helpers and model catalogs:
 
@@ -12,6 +12,7 @@ Included public Responses helpers and model catalogs:
 - `api/constrained-sampling`
 - `api/openai-prompt-cache`
 - `utils/event-stream`
+- `utils/transcript`
 - model helpers from the package root
 - Responses-bearing catalogs for `cloudflare-ai-gateway`, `github-copilot`, `openai`, `opencode`, `opencode-go`, and `xai`
 

@@ -66,20 +66,8 @@ type NativeCompactionResult = {
     usage?: CanonicalUsage;
 };
 export declare const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
-/**
- * @param {HeaderMap} [headers]
- * @returns {HeaderMap}
- */
 export declare function mergeFeatureHeader(headers?: HeaderMap): HeaderMap;
-/**
- * @param {GenerationControls} [controls]
- * @returns {GenerationEnvelope}
- */
 export declare function responsesGenerationEnvelope(controls?: GenerationControls): GenerationEnvelope;
-/**
- * @param {NativeCompactionBodyOptions} options
- * @returns {NativeCompactionBody}
- */
 export declare function buildNativeCompactionBody({ model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, }: NativeCompactionBodyOptions): {
     [x: string]: unknown;
 } & {
@@ -92,13 +80,7 @@ export declare function buildNativeCompactionBody({ model, modelDescriptor, inpu
 };
 /**
  * Provider SSE events enter as unknown; response.completed remains authoritative.
- * @param {Response} response
- * @param {SseParseOptions} [options]
- * @returns {Promise<NativeCompactionResult>}
  */
 export declare function parseNativeCompactionSse(response: Response, options?: SseParseOptions): Promise<NativeCompactionResult>;
-/**
- * @param {NativeCompactionRequestOptions} options
- */
 export declare function requestNativeCompaction({ baseURL, model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, idempotencyKey, headers, signal, timeoutMs, maxAttempts, maxResponseBytes, }: NativeCompactionRequestOptions): Promise<NativeCompactionResult>;
 export {};

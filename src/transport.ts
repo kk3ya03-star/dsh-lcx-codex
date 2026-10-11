@@ -1,7 +1,8 @@
 import { abortError } from "./abort-error.js";
+import { DEFAULTS } from "./defaults.js";
 
-const DEFAULT_TIMEOUT_MS = 300_000;
-const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = DEFAULTS.requestTimeoutMs;
+const DEFAULT_MAX_BYTES = DEFAULTS.maxResponseBytes;
 const MAX_ERROR_BYTES = 512 * 1024;
 
 type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener" | "removeEventListener">;
@@ -127,40 +128,41 @@ async function readLimited(response: Response, maxBytes = DEFAULT_MAX_BYTES) {
   }
 }
 
-export async function fetchJsonWithRetry(
+/**
+ * The shared request core: POST with bounded retries. A non-2xx answer becomes a classified error (quota,
+ * retryable status, other) with its retry-after delay, a transport failure is retried with backoff, and a
+ * 2xx answer is handed to `onOk`, whose failures are classified like any other.
+ */
+async function postWithRetry<T>(
   url: string | URL | Request,
-  body: JsonRequestBody,
-  headers: HeadersInit = {},
+  body: Record<string, unknown>,
+  headers: HeadersInit,
+  accept: string,
   signal: AbortSignal | undefined,
-  timeoutMs: number | undefined = DEFAULT_TIMEOUT_MS,
-  options: RetryOptions = {},
-) {
-  const maxAttempts = Math.max(
-    1,
-    Math.min(6, Number(options.maxAttempts ?? 3)),
-  );
-  const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_BYTES;
+  requestTimeoutMs: number | undefined,
+  maxAttemptsOption: unknown,
+  maxErrorBytes: number,
+  onOk: (response: Response, requestSignal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const maxAttempts = Math.max(1, Math.min(DEFAULTS.maxAttemptsCap, Number(maxAttemptsOption ?? DEFAULTS.maxAttempts)));
   let last;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     abortIfNeeded(signal);
     try {
-      const requestSignal = combinedSignal(signal, timeoutMs);
+      const requestSignal = combinedSignal(signal, requestTimeoutMs);
       const response = await fetch(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          accept: "application/json",
+          accept,
           ...headers,
         },
         body: JSON.stringify(body),
         signal: requestSignal,
         redirect: "error",
       });
-      const text = await readLimited(
-        response,
-        response.ok ? maxResponseBytes : Math.min(maxResponseBytes, MAX_ERROR_BYTES),
-      );
       if (!response.ok) {
+        const text = await readLimited(response, maxErrorBytes);
         const quota = isQuotaError(text);
         const retryable = !quota && retryableStatus(response.status);
         const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
@@ -179,22 +181,12 @@ export async function fetchJsonWithRetry(
               : { providerRetryAfterMs }),
           },
         );
-        if (!error.retryable || attempt >= maxAttempts) throw error;
+        if (!retryable || attempt >= maxAttempts) throw error;
         last = error;
         await sleep(delayFromHeaders(response.headers, attempt), signal);
         continue;
       }
-      let parsed;
-      try {
-        parsed = text ? JSON.parse(text) : {};
-      } catch (cause) {
-        throw makeError(
-          `invalid JSON response from ${url}`,
-          "LCX_INVALID_JSON",
-          { status: response.status, cause },
-        );
-      }
-      return parsed;
+      return await onOk(response, requestSignal);
     } catch (error) {
       if (signal?.aborted) throw abortError(signal, error);
       const details = errorFacts(error);
@@ -225,6 +217,39 @@ export async function fetchJsonWithRetry(
   throw last ?? makeError("request failed", "LCX_REQUEST_FAILED");
 }
 
+export async function fetchJsonWithRetry(
+  url: string | URL | Request,
+  body: JsonRequestBody,
+  headers: HeadersInit = {},
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined = DEFAULT_TIMEOUT_MS,
+  options: RetryOptions = {},
+) {
+  const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_BYTES;
+  return postWithRetry(
+    url,
+    body,
+    headers,
+    "application/json",
+    signal,
+    timeoutMs,
+    options.maxAttempts,
+    Math.min(maxResponseBytes, MAX_ERROR_BYTES),
+    async (response) => {
+      const text = await readLimited(response, maxResponseBytes);
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch (cause) {
+        throw makeError(
+          `invalid JSON response from ${url}`,
+          "LCX_INVALID_JSON",
+          { status: response.status, cause },
+        );
+      }
+    },
+  );
+}
+
 export async function fetchSseWithRetry<T = Response>(
   url: string | URL | Request,
   body: SseRequestBody,
@@ -235,85 +260,20 @@ export async function fetchSseWithRetry<T = Response>(
 ): Promise<T> {
   const requestTimeoutMs = timeoutMs ??
     (options.applyDefaultTimeout === false ? undefined : DEFAULT_TIMEOUT_MS);
-  const maxAttempts = Math.max(
-    1,
-    Math.min(6, Number(options.maxAttempts ?? 3)),
+  return postWithRetry<T>(
+    url,
+    body,
+    headers,
+    "text/event-stream",
+    signal,
+    requestTimeoutMs,
+    options.maxAttempts,
+    Math.min(options.maxResponseBytes ?? DEFAULT_MAX_BYTES, MAX_ERROR_BYTES),
+    async (response, requestSignal) =>
+      typeof options.consume === "function"
+        ? options.consume(response, { requestSignal })
+        : (response as T),
   );
-  let last;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    abortIfNeeded(signal);
-    try {
-      const requestSignal = combinedSignal(signal, requestTimeoutMs);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "text/event-stream",
-          ...headers,
-        },
-        body: JSON.stringify(body),
-        signal: requestSignal,
-        redirect: "error",
-      });
-      if (!response.ok) {
-        const text = await readLimited(
-          response,
-          Math.min(options.maxResponseBytes ?? DEFAULT_MAX_BYTES, MAX_ERROR_BYTES),
-        );
-        const quota = isQuotaError(text);
-        const retryable = !quota && retryableStatus(response.status);
-        const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
-        const error = makeError(
-          `HTTP ${response.status}`,
-          quota ? "LCX_INSUFFICIENT_QUOTA" : retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
-          {
-            status: response.status,
-            retryable,
-            requestId:
-              response.headers.get("x-request-id") ??
-              response.headers.get("request-id") ??
-              undefined,
-            ...(providerRetryAfterMs === undefined
-              ? {}
-              : { providerRetryAfterMs }),
-          },
-        );
-        if (!retryable || attempt >= maxAttempts) throw error;
-        last = error;
-        await sleep(delayFromHeaders(response.headers, attempt), signal);
-        continue;
-      }
-      if (typeof options.consume === "function")
-        return await options.consume(response, { requestSignal });
-      return response as T;
-    } catch (error) {
-      if (signal?.aborted) throw abortError(signal, error);
-      const details = errorFacts(error);
-      const retryable =
-        details.retryable === true ||
-        details.code === "LCX_HTTP_RETRYABLE" ||
-        error instanceof TypeError ||
-        [
-          "ECONNRESET",
-          "ECONNREFUSED",
-          "ETIMEDOUT",
-          "EAI_AGAIN",
-          "UND_ERR_CONNECT_TIMEOUT",
-        ].includes(details.code ?? "");
-      if (!retryable || attempt >= maxAttempts) {
-        if (attempt >= maxAttempts && retryable)
-          throw makeError(
-            `request failed after ${maxAttempts} attempts`,
-            "LCX_RETRY_EXHAUSTED",
-            { cause: error, retryable: true },
-          );
-        throw error;
-      }
-      last = error;
-      await sleep(Math.min(10_000, 500 * 2 ** (attempt - 1)), signal);
-    }
-  }
-  throw last ?? makeError("request failed", "LCX_REQUEST_FAILED");
 }
 
 export async function consumeSse(

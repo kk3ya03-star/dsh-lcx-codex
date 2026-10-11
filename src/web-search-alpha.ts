@@ -3,7 +3,6 @@ import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { JsonSchemaNode } from "@deepseek-ai/dsh-tools";
 import { isIP } from "node:net";
 import { ServiceMutex } from "./service-mutex.js";
-import { fetchJsonWithRetry } from "./transport.js";
 import {
   mergeWebRunLinks,
   outputDomains,
@@ -13,6 +12,8 @@ import {
   parseWebRunOutput,
   type WebRunLink,
 } from "./web-run-output.js";
+import { isRecord, codedError } from "./util.js";
+import { DEFAULTS } from "./defaults.js";
 
 export const ALPHA_ACTIONS = [
   "search_query",
@@ -139,10 +140,7 @@ type AlphaProbeValue = RecordValue & {
 type AlphaInvoke = (args: RecordValue) => Promise<AlphaProbeValue>;
 
 function failure(message: string | undefined, code = "WEB_INVALID_REQUEST"): Error & { code: string } {
-  return Object.assign(new Error(message), { code });
-}
-function isObject(v: unknown): v is RecordValue {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
+  return codedError(message, code);
 }
 function text(
   value: unknown,
@@ -194,7 +192,7 @@ function isAlphaAction(value: unknown): value is AlphaAction {
 }
 
 export function normalizeAlphaSearchArgs(args: unknown): NormalizedAlphaArgs {
-  if (!isObject(args) || !isAlphaAction(args.action))
+  if (!isRecord(args) || !isAlphaAction(args.action))
     throw failure("websearch_alpha.action is invalid");
   // The advertised flat schema permits every declared field for every action.
   // Ignore fields owned by another action; never forward them to Alpha.
@@ -368,7 +366,7 @@ export function buildAlphaSearchBody(
   model: unknown,
   sessionId: string,
   externalWebAccess = true,
-  maxOutputTokens = 2500,
+  maxOutputTokens: number = DEFAULTS.alphaMaxOutputTokens,
   input?: Record<string, unknown>[],
 ) {
   if (typeof sessionId !== "string" || !sessionId)
@@ -653,7 +651,7 @@ function artifacts(results: unknown, provenance: AlphaRefProvenance): AlphaArtif
   const result: AlphaArtifacts = { refs: [], refRecords: [], sources: [], observations: new Map() };
   const seenSources = new Set<string>();
   const visit = (value: unknown, inheritedArtifact?: string): void => {
-    if (!isObject(value) && !Array.isArray(value)) return;
+    if (!isRecord(value) && !Array.isArray(value)) return;
     if (Array.isArray(value)) {
       value.forEach(item => visit(item, inheritedArtifact));
       return;
@@ -699,10 +697,10 @@ function structuredLinks(results: unknown): WebRunLink[] {
       value.forEach(visit);
       return;
     }
-    if (!isObject(value)) return;
+    if (!isRecord(value)) return;
     if (Array.isArray(value.links)) {
       for (const item of value.links) {
-        if (!isObject(item)) continue;
+        if (!isRecord(item)) continue;
         const id = item.id ?? item.link_id ?? item.linkId;
         if (typeof id !== "number" || !Number.isSafeInteger(id)) continue;
         const url = httpUrl(item.url ?? item.href);
@@ -787,7 +785,7 @@ export function parseAlphaSearchResponse(
   },
 ) {
   if (
-    !isObject(response) ||
+    !isRecord(response) ||
     typeof response.output !== "string" ||
     (response.results !== undefined && !Array.isArray(response.results))
   )
@@ -881,10 +879,10 @@ function sourceUrlForRef(sources: RecordValue[], refId: string): string | undefi
   return typeof match?.url === "string" ? match.url : undefined;
 }
 export function renderAlphaSearchResult(value: unknown): ContentBlock[] {
-  const data = isObject(value) ? value : {};
+  const data = isRecord(value) ? value : {};
   const parts: string[] = [];
   if (typeof data.content === "string") parts.push(data.content);
-  const sources = Array.isArray(data.sources) ? data.sources.filter(isObject) : [];
+  const sources = Array.isArray(data.sources) ? data.sources.filter(isRecord) : [];
   const refs = opaqueRefList(data.refs);
   if (refs.length) {
     parts.push(`可继续操作的引用：\n${refs.map((ref) => {
@@ -893,7 +891,7 @@ export function renderAlphaSearchResult(value: unknown): ContentBlock[] {
     }).join("\n")}`);
   }
   const links = Array.isArray(data.links)
-    ? data.links.filter((link): link is RecordValue => isObject(link) && Number.isSafeInteger(link.id))
+    ? data.links.filter((link): link is RecordValue => isRecord(link) && Number.isSafeInteger(link.id))
     : [];
   if (links.length) {
     parts.push(`可点击链接：\n${links.map((link) => {
@@ -927,7 +925,7 @@ export function remapAlphaResultRefs<T>(value: T, handles: Record<string, string
       return output;
     }
     if (Array.isArray(input)) return input.map((item) => replace(item));
-    if (isObject(input)) return Object.fromEntries(Object.entries(input).map(([field, item]) => [field, replace(item, field)]));
+    if (isRecord(input)) return Object.fromEntries(Object.entries(input).map(([field, item]) => [field, replace(item, field)]));
     return input;
   };
   return replace(value) as T;
@@ -961,28 +959,8 @@ export async function runWithAlphaSessionLock<T>(
       alphaSessionLocks.delete(sessionId);
   }
 }
-export async function fetchAlphaSearchJson(options: {
-  url: string;
-  body: Record<string, unknown>;
-  headers?: HeadersInit;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  maxResponseBytes?: number;
-  sessionId: unknown;
-}) {
-  return runWithAlphaSessionLock(options.sessionId, options.signal, () =>
-    fetchJsonWithRetry(
-      options.url,
-      options.body,
-      options.headers,
-      options.signal,
-      options.timeoutMs,
-      alphaSearchRetryOptions(options.maxResponseBytes),
-    ),
-  );
-}
 function probeFailureState(error: unknown): "unsupported" | "unknown" {
-  const detail = isObject(error) ? error : {};
+  const detail = isRecord(error) ? error : {};
   if (
     [404, 405].includes(detail.status as number) ||
     ["LCX_ALPHA_ACTION_UNAVAILABLE", "LCX_ALPHA_ACTION_FAILED"].includes(String(detail.code ?? "")) ||
@@ -997,7 +975,7 @@ function alphaProbeStructuredResult(value: unknown, seen = new Set<object>()): b
   if (!value || typeof value !== "object" || seen.has(value)) return false;
   seen.add(value);
   if (Array.isArray(value)) return value.some((item) => alphaProbeStructuredResult(item, seen));
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   const refId =
     typeof value.ref_id === "string" && value.ref_id
       ? value.ref_id
@@ -1016,23 +994,23 @@ function alphaProbeStructuredResult(value: unknown, seen = new Set<object>()): b
   );
 }
 function alphaProbeStructuredBlock(block: unknown): boolean {
-  if (!isObject(block)) return false;
+  if (!isRecord(block)) return false;
   const references = Array.isArray(block.references) ? block.references : [];
   const links = Array.isArray(block.links) ? block.links : [];
   const metadata = Array.isArray(block.metadata) ? block.metadata : [];
   const lines = Array.isArray(block.lines) ? block.lines : [];
   if (references.some((ref) => typeof ref === "string" && ref && !isAlphaHttpUrl(ref)))
     return true;
-  if (links.some((link) => isObject(link) && Number.isSafeInteger(link.id)))
+  if (links.some((link) => isRecord(link) && Number.isSafeInteger(link.id)))
     return true;
   if (metadata.some((item) => item === "HTML" || item === "PDF" || /^\d+ (?:lines|pages)$/u.test(String(item))))
     return true;
-  return lines.some((line) => isObject(line) && (Number.isSafeInteger(line.line) || Number.isSafeInteger(line.page)));
+  return lines.some((line) => isRecord(line) && (Number.isSafeInteger(line.line) || Number.isSafeInteger(line.page)));
 }
 const ALPHA_PROBE_SEMANTIC_FAILURE =
   /\breference(?: id)?\s+(?:is\s+)?(?:invalid|unavailable)\b/iu;
 function alphaProbeResultHasEvidence(action: string, value: unknown): boolean {
-  const data = isObject(value) ? value : {};
+  const data = isRecord(value) ? value : {};
   if (alphaPageFetchFailed(data.content, action)) return false;
   if (alphaCommandErrorEnvelope(data.content, action)) return false;
   if (
@@ -1047,7 +1025,7 @@ function alphaProbeResultHasEvidence(action: string, value: unknown): boolean {
     );
   const links =
     Array.isArray(data.links) &&
-    data.links.some((link) => isObject(link) && Number.isSafeInteger(link.id));
+    data.links.some((link) => isRecord(link) && Number.isSafeInteger(link.id));
   const pdfRefs =
     Array.isArray(data.pdfRefs) &&
     data.pdfRefs.some(
@@ -1144,7 +1122,7 @@ export async function probeAlphaCapabilities({
         actions.open = "supported";
         break;
       } catch (error) {
-        if (isObject(error) && error.code === "LCX_ALPHA_PAGE_FETCH_FAILED") continue;
+        if (isRecord(error) && error.code === "LCX_ALPHA_PAGE_FETCH_FAILED") continue;
         actions.open = probeFailureState(error);
         result.classification = chain === 0 && actions.open === "unsupported" ? "emulated-search-only" : "unknown";
         return result;
@@ -1183,7 +1161,7 @@ export async function probeAlphaCapabilities({
   const clickRefs = clickPage && Array.isArray(clickPage.refs) ? clickPage.refs : [];
   const clickLinks = clickPage && Array.isArray(clickPage.links) ? clickPage.links : [];
   const clickRef = clickRefs[0];
-  const linkId = isObject(clickLinks[0]) ? clickLinks[0].id : undefined;
+  const linkId = isRecord(clickLinks[0]) ? clickLinks[0].id : undefined;
   if (clickRef && Number.isSafeInteger(linkId)) {
     try {
       const clicked = await invoke({

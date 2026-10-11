@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildResponsesBody, responsesGenerationEnvelope } from '../lib/responses-request.js'
-import { getBuiltinModels } from '../lib/pi-responses-runtime.js'
+import { getCatalogModels } from '../lib/pi-responses-runtime.js'
 
 // Issue 119 item 4: in a Pi `thinkingLevelMap` an unmapped level means "send the level as is" while an
 // explicit `null` means "this level is unsupported". `?? requested` collapsed the two and sent a level
@@ -28,7 +28,7 @@ test('a null-mapped level also suppresses the default off effort', () => {
 })
 
 test('a real catalog model with a null-mapped level omits it (gpt-5.4-pro has no low or minimal)', () => {
-  const pro = getBuiltinModels('openai').find((entry) => entry.id === 'gpt-5.4-pro')
+  const pro = getCatalogModels('openai').find((entry) => entry.id === 'gpt-5.4-pro')
   assert.ok(pro, 'catalog entry exists')
   assert.equal(pro.thinkingLevelMap.low, null)
   assert.equal(responsesGenerationEnvelope({ model: pro, reasoningEffort: 'low' }).reasoning, undefined)

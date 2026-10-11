@@ -20,7 +20,7 @@ export const NESTED_SETTLE_EVENT = 'tool/ptc-dispatch';
  * model-direct call settles as `tool/result` (its name comes from the earlier `tool/call`); a nested call settles
  * as `tool/ptc-dispatch`, whose `name`, `subCallId` and `meta` are its own fields.
  */
-export function searchSettlementOf(event: unknown, pendingName?: string): { name: string; meta: Record<string, any> } | undefined {
+function searchSettlementOf(event: unknown, pendingName?: string): { name: string; meta: Record<string, any> } | undefined {
   if (!object(event) || !object(event.data) || !object(event.data.meta)) return;
   // Official ToolMessageSource carries only callId; a direct result resolves its name from tool/call.
   // A nested settlement states the tool it dispatched, so it needs no pending entry.
@@ -61,19 +61,6 @@ export function mergeBuckets(base: unknown, extra: Buckets): unknown {
   for (const key of Object.keys(extra) as (keyof Buckets)[]) {
     // Keep unavailable host buckets unavailable rather than inventing zero.
     if (count(base[key])) next[key] = base[key] + extra[key];
-  }
-  return next;
-}
-export function addTurnUsage(base: unknown, records: readonly SearchUsage[]): unknown {
-  if (!object(base) || !records.length || !count(base.totalTokens)) return base;
-  const next = mergeBuckets(base, addUsage(zeroBuckets(),records)) as Record<string,unknown>;
-  next.totalTokens = base.totalTokens + records.reduce((n,r)=>n+r.usage.totalTokens,0);
-  // Auxiliary responses do not always disclose a reasoning subset.
-  delete next.reasoningTokens;
-  if (Array.isArray(base.routes)) {
-    const routes = new Map<string,unknown>();
-    for (const r of [...base.routes,...records]) routes.set(`${r.provider}\0${r.model}`,{provider:r.provider,model:r.model});
-    next.routes = [...routes.values()];
   }
   return next;
 }

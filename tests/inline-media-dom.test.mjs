@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import {TILE_ASPECT_MAX,TILE_ASPECT_MIN,inlineMediaCss,nativeMarkdownImageCss,installInlineMedia,supportsInlineMediaDom} from '../src/client/inline-media.ts';
-import {extractDirectMediaLinks,extractDirectVideoLinks} from '../src/client/search-media.ts';
+import {extractDirectMediaLinks} from '../src/client/search-media.ts';
+// Direct video files only: the video subset of the shared direct-media extraction.
+const extractDirectVideoLinks=text=>extractDirectMediaLinks(text).filter(item=>item.kind==='video');
 
 // Issue #102 ownership: DSH owns Markdown/native images; LCX owns structured provider images and direct video only.
 const photo='https://example.com/photo.jpg', video='https://example.com/video.mp4';

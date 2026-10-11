@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, createUserMessage, projectToolUpdates } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
@@ -18,7 +17,7 @@ import Agents from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
-import { loadHostSource } from './wp2-source.mjs'
+import { loadHostSource, loadSource } from './wp2-source.mjs'
 
 const [checkpoint, responses] = await Promise.all([
   loadHostSource('native-checkpoint'), loadHostSource('dsh-responses'),
@@ -27,12 +26,7 @@ const baseURL = 'https://fixture.invalid/v1'
 const routeConfig = { baseURL, portableReplayMaxChars: 200000 }
 const tool = (name, description, properties = {}) => ({ name, description, parameters: { type: 'object', properties, additionalProperties: false } })
 
-async function loadIndexInternals() {
-  const output = resolve(`.wp3-index-${process.pid}.mjs`)
-  const result = await build({ entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external', format: 'esm', platform: 'node', target: 'node24', write: false, footer: { js: '\nexport { serializeNativeAware, managedResponsesStream, remoteCompactionStream, managedGrokNativeSearchStream };' } })
-  await writeFile(output, result.outputFiles[0].contents)
-  try { return await import(pathToFileURL(output).href) } finally { await rm(output) }
-}
+const loadIndexInternals = () => loadSource('index', 'serializeNativeAware, managedResponsesStream, remoteCompactionStream, managedGrokNativeSearchStream')
 
 class StubAdapter extends LlmAdapter {
   constructor(toolCalls = []) { super(); this.toolCalls = toolCalls }

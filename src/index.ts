@@ -9,7 +9,6 @@ import type { ToolHistory } from "@deepseek-ai/dsh-llm";
 import type {
   ContentBlock,
   GenerateOptions,
-  LlmRuntime,
   Message,
   StreamChunk,
 } from "@deepseek-ai/dsh-llm";
@@ -39,7 +38,6 @@ import {
   agentUsesSession,
   compactionConfigState,
   compactionPatchCandidate,
-  contextService,
   installCompactionPatch,
   patchCompactionConfig,
   patchToolResultPruner,
@@ -54,7 +52,6 @@ import {
   restoreToolResultPruner,
   sessionFor,
   sessionFromAgent,
-  sessionsService,
   scopedToolRuntime,
   onScopedToolExecute,
   tokenMeterTotal,
@@ -152,6 +149,7 @@ import {
   type GrokNativeReplayRoute,
   type GrokNativeSearchState,
 } from "./grok-native-search.js";
+import { DEFAULTS } from "./defaults.js";
 
 export const name = "lcx-codex";
 export const inject = ["llm", "web", "sessions", "tools", "settings", "credentials", "attachments", "fs"];
@@ -321,10 +319,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-function asAbortSignal(value: unknown): AbortSignal | undefined {
-  return value instanceof AbortSignal ? value : undefined;
-}
-
 function errorDetails(value: unknown): {
   name?: unknown;
   code?: unknown;
@@ -371,21 +365,21 @@ export const Config = z.object({
   alphaRefPath: z.string().default(""),
   alphaProfile: z.string().default(""),
   alphaGroup: z.string().default(""),
-  alphaMaxOutputTokens: z.number().default(2500),
-  webSearchProvider: z.string().default("lcx-responses"),
-  webMaxResults: z.number().default(8),
-  timeoutMs: z.number().default(300000),
-  maxResponseBytes: z.number().default(8 * 1024 * 1024),
-  maxAttempts: z.number().default(3),
+  alphaMaxOutputTokens: z.number().default(DEFAULTS.alphaMaxOutputTokens),
+  webSearchProvider: z.string().default(DEFAULTS.webSearchProvider),
+  webMaxResults: z.number().default(DEFAULTS.webMaxResults),
+  timeoutMs: z.number().default(DEFAULTS.requestTimeoutMs),
+  maxResponseBytes: z.number().default(DEFAULTS.maxResponseBytes),
+  maxAttempts: z.number().default(DEFAULTS.maxAttempts),
   maxRequestImageBytes: z.number().default(DEFAULT_MAX_REQUEST_IMAGE_BYTES),
   requestImagePixelBudget: z
     .number()
     .default(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
   requestImageMaxBytes: z.number().default(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
-  portableReplayMaxChars: z.number().default(80_000),
-  nativeRetentionTokenBudget: z.number().default(64_000),
-  assistantRetentionTokenReserve: z.number().default(24_000),
-  assistantRetentionPerMessageTokenCap: z.number().default(3_000),
+  portableReplayMaxChars: z.number().default(DEFAULTS.portableReplayMaxChars),
+  nativeRetentionTokenBudget: z.number().default(DEFAULTS.nativeRetentionTokenBudget),
+  assistantRetentionTokenReserve: z.number().default(DEFAULTS.assistantRetentionTokenReserve),
+  assistantRetentionPerMessageTokenCap: z.number().default(DEFAULTS.assistantRetentionPerMessageTokenCap),
 });
 
 function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
@@ -400,12 +394,12 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
     alphaRefPath: stringValue(input.alphaRefPath, defaultAlphaRefPath()),
     alphaProfile: String(input.alphaProfile ?? ""),
     alphaGroup: String(input.alphaGroup ?? ""),
-    alphaMaxOutputTokens: positiveInteger(input.alphaMaxOutputTokens, 2500, 32_000),
-    webSearchProvider: stringValue(input.webSearchProvider, "lcx-responses"),
-    webMaxResults: positiveInteger(input.webMaxResults, 8),
-    timeoutMs: positiveInteger(input.timeoutMs, 300000),
-    maxResponseBytes: positiveInteger(input.maxResponseBytes, 8 * 1024 * 1024),
-    maxAttempts: positiveInteger(input.maxAttempts, 3, 6),
+    alphaMaxOutputTokens: positiveInteger(input.alphaMaxOutputTokens, DEFAULTS.alphaMaxOutputTokens, DEFAULTS.alphaMaxOutputTokensCap),
+    webSearchProvider: stringValue(input.webSearchProvider, DEFAULTS.webSearchProvider),
+    webMaxResults: positiveInteger(input.webMaxResults, DEFAULTS.webMaxResults),
+    timeoutMs: positiveInteger(input.timeoutMs, DEFAULTS.requestTimeoutMs),
+    maxResponseBytes: positiveInteger(input.maxResponseBytes, DEFAULTS.maxResponseBytes),
+    maxAttempts: positiveInteger(input.maxAttempts, DEFAULTS.maxAttempts, DEFAULTS.maxAttemptsCap),
     maxRequestImageBytes: positiveInteger(
       input.maxRequestImageBytes,
       DEFAULT_MAX_REQUEST_IMAGE_BYTES,
@@ -418,20 +412,20 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
       input.requestImageMaxBytes,
       DEFAULT_REQUEST_IMAGE_MAX_BYTES,
     ),
-    portableReplayMaxChars: positiveInteger(input.portableReplayMaxChars, 80_000),
+    portableReplayMaxChars: positiveInteger(input.portableReplayMaxChars, DEFAULTS.portableReplayMaxChars),
     nativeRetentionTokenBudget: positiveInteger(
       input.nativeRetentionTokenBudget,
-      64_000,
+      DEFAULTS.nativeRetentionTokenBudget,
     ),
     assistantRetentionTokenReserve:
       typeof input.assistantRetentionTokenReserve === "number" &&
       Number.isSafeInteger(input.assistantRetentionTokenReserve) &&
       input.assistantRetentionTokenReserve >= 0
         ? input.assistantRetentionTokenReserve
-        : 24_000,
+        : DEFAULTS.assistantRetentionTokenReserve,
     assistantRetentionPerMessageTokenCap: positiveInteger(
       input.assistantRetentionPerMessageTokenCap,
-      3_000,
+      DEFAULTS.assistantRetentionPerMessageTokenCap,
     ),
     toolUpdates: DEFAULT_TOOL_UPDATES,
   };
@@ -1149,7 +1143,7 @@ function reportToolSurfaceFallback(
   surface: { fallbackReason?: string; fallbackUnexpected?: boolean },
 ) {
   const reason = surface.fallbackReason ?? "unknown";
-  const key = `${route.sessionId} ${reason}`;
+  const key = `${route.sessionId}\u001f${reason}`;
   if (reportedToolSurfaceFallbacks.has(key)) return;
   if (reportedToolSurfaceFallbacks.size >= 256) reportedToolSurfaceFallbacks.clear();
   reportedToolSurfaceFallbacks.add(key);
@@ -1166,7 +1160,7 @@ const reportedCatalogGaps = new Set<string>();
  */
 function reportCatalogGap(ctx: HostContext, route: { provider: string; model: string }) {
   const source = resolveCatalogModel(route.provider, route.model, true).source;
-  if (source !== "catalog-provider-default" && source !== "frozen-pi086") return;
+  if (source !== "catalog-provider-default") return;
   const key = `${route.provider}/${route.model}`;
   if (reportedCatalogGaps.has(key)) return;
   if (reportedCatalogGaps.size >= 256) reportedCatalogGaps.clear();
