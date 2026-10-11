@@ -1,17 +1,22 @@
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client';
 import { auxiliaryUsageOf, isSearchTool, NESTED_SETTLE_EVENT, object, type SearchUsage } from '../search-accounting.js';
-import { createCallTurns } from './nested-calls.js';
+import { createCallTurns, type CallTurns } from './nested-calls.js';
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
   interface ConversationTurnDataMap { 'lcx-search-usage': readonly SearchUsage[] }
 }
-// A nested settlement carries no turn: resolve it through the root call it names (see nested-calls.ts).
-const callTurns = createCallTurns();
-/** A turn-local data contribution; it adds no transcript rows and keeps built-in actions. */
-export const searchUsageDefinition: ConversationNodeDefinition<{turn:number;records:SearchUsage[];pending:Record<string,string>;complete:boolean}> = {
+type UsageState = {turn:number;records:SearchUsage[];pending:Record<string,string>;complete:boolean};
+/**
+ * A turn-local data contribution; it adds no transcript rows and keeps built-in actions. A nested settlement
+ * carries no turn: it is resolved through the root call it names, remembered in `callTurns` (see nested-calls.ts),
+ * which the owner clears when the Definition is unregistered.
+ */
+export function createSearchUsageDefinition(callTurns:CallTurns=createCallTurns()): ConversationNodeDefinition<UsageState> {
+  return {
   kind:'lcx-search-usage',
   match(event) {
+    if (event.type!=='assistant/live-chunk') callTurns.observe(event.seq);
     if (event.type==='turn/start') return {id:String(event.data.turn),role:'start'};
     if (event.type==='tool/call') callTurns.remember(event.data.callId,event.data.turn);
     if (event.type==='turn/end' || event.type==='tool/result' || event.type==='tool/call') return {id:String(event.data.turn),role:'update'};
@@ -39,7 +44,9 @@ export const searchUsageDefinition: ConversationNodeDefinition<{turn:number;reco
     const s=context.state;
     return scope==='turn' && s?.complete ? {kind:'turn',turn:s.turn,key:'lcx-search-usage',value:s.records}:null;
   },
-};
+  };
+}
+export const searchUsageDefinition = createSearchUsageDefinition();
 type Translator = (key: string) => string;
 type CreateElement = (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => unknown;
 type UsageSlotName = 'conversation.chat.turnTail' | 'conversation.composer.dock';

@@ -9,7 +9,7 @@ import {
 import { abortError } from "./abort-error.js";
 import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId, isContextWindowExceededError } from "@deepseek-ai/dsh-llm";
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
-import { fetchSseWithRetry } from "./transport.js";
+import { fetchSseWithRetry, readSseEvents } from "./transport.js";
 import { sanitizeContextDetails, type ProviderContextDetails } from "./search-accounting.js";
 import {
   createGrokNativeReplayEnvelope,
@@ -356,7 +356,6 @@ export function managedFailure(
   else if (
     sourceCodes.has("LCX_RESPONSES_ROUTE_UNAVAILABLE") ||
     sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED") ||
-    sourceCodes.has("LCX_RESPONSES_MODEL_NOT_CONFIGURED") ||
     sourceCodes.has("LCX_RESPONSES_MODEL_UNAVAILABLE") ||
     sourceCodes.has("LCX_SYSTEM_PROMPT_MODE_UNKNOWN")
   )
@@ -417,11 +416,9 @@ export function managedFailure(
     UNSUPPORTED_OPTION: "LCX Responses does not support this request option",
     NO_ADAPTER: sourceCodes.has("LCX_SYSTEM_PROMPT_MODE_UNKNOWN")
       ? "LCX could not read the route's model information, so in-history system prompt updates cannot be sent safely; retry once the route is available"
-      : sourceCodes.has("LCX_RESPONSES_MODEL_NOT_CONFIGURED")
-        ? "LCX is enabled but the selected model is not configured for this provider (the provider profile lists other models); add it to the profile's models list or select a listed model"
-        : sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
-          ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and LCX could not infer one for this model); add api: openai-responses to the provider profile or select another model"
-          : "LCX could not resolve the selected Responses route",
+      : sourceCodes.has("LCX_RESPONSES_API_UNRESOLVED")
+        ? "LCX could not determine the wire protocol of the selected GPT route (the provider profile sets no api and LCX could not infer one for this model); add api: openai-responses to the provider profile or select another model"
+        : "LCX could not resolve the selected Responses route",
     RATE_LIMIT: "Responses provider rate limit was reached",
     SERVER: "Responses provider returned a server failure",
     INVALID_REQUEST: sourceCodes.has("LCX_CHECKPOINT_UNSUPPORTED")
@@ -494,21 +491,6 @@ export function managedFailureChunk(
         ? { kind: "aborted", failure }
         : { kind: "error", failure },
   };
-}
-
-async function readWithSignal(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  signal: AbortSignal | undefined,
-): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (!signal) return reader.read();
-  if (signal.aborted) throw abortError(signal);
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(abortError(signal));
-    signal.addEventListener("abort", onAbort, { once: true });
-    reader.read().then(resolve, reject).finally(() => {
-      signal.removeEventListener("abort", onAbort);
-    });
-  });
 }
 
 /**
@@ -586,63 +568,26 @@ async function* responseEvents(
   response: Response,
   options: StreamOptions = {},
 ): AsyncGenerator<UnknownRecord> {
-  if (!response?.body)
-    throw Object.assign(new Error("Responses stream returned no body"), {
-      code: "LCX_INVALID_SSE",
-      status: response?.status,
-    });
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const maxBytes = options.maxResponseBytes ?? DEFAULTS.maxResponseBytes;
-  let bytes = 0;
-  let pending = "";
-  let dataLines: string[] = [];
-  const decode = () => {
-    if (dataLines.length === 0) return undefined;
-    const data = dataLines.join("\n");
-    dataLines = [];
-    if (data === "[DONE]") return undefined;
-    try {
-      return JSON.parse(data);
-    } catch (cause) {
-      throw Object.assign(
-        new Error("Responses stream contained malformed SSE JSON", { cause }),
-        { code: "LCX_INVALID_SSE" },
-      );
-    }
-  };
-  try {
-    while (true) {
-      if (options.signal?.aborted) throw abortError(options.signal);
-      const { done, value } = await readWithSignal(reader, options.signal);
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > maxBytes)
-        throw Object.assign(
-          new Error(`Responses SSE exceeds ${maxBytes} bytes`),
-          { code: "LCX_RESPONSE_TOO_LARGE" },
-        );
-      pending += decoder.decode(value, { stream: true });
-      let newline;
-      while ((newline = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, newline).replace(/\r$/u, "");
-        pending = pending.slice(newline + 1);
-        if (line === "") {
-          const event = decode();
-          if (event !== undefined) yield event;
-        } else if (!line.startsWith(":") && line.startsWith("data:")) {
-          dataLines.push(line.slice(5).replace(/^ /u, ""));
-        }
-      }
-    }
-    pending += decoder.decode();
-    if (pending.startsWith("data:"))
-      dataLines.push(pending.slice(5).replace(/^ /u, ""));
-    const event = decode();
-    if (event !== undefined) yield event;
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
+  yield* readSseEvents(response, {
+    signal: options.signal,
+    maxBytes: options.maxResponseBytes ?? DEFAULTS.maxResponseBytes,
+    errors: {
+      noBody: (failed) =>
+        Object.assign(new Error("Responses stream returned no body"), {
+          code: "LCX_INVALID_SSE",
+          status: failed?.status,
+        }),
+      malformed: (cause) =>
+        Object.assign(
+          new Error("Responses stream contained malformed SSE JSON", { cause }),
+          { code: "LCX_INVALID_SSE" },
+        ),
+      tooLarge: (maxBytes) =>
+        Object.assign(new Error(`Responses SSE exceeds ${maxBytes} bytes`), {
+          code: "LCX_RESPONSE_TOO_LARGE",
+        }),
+    },
+  }) as AsyncGenerator<UnknownRecord>;
 }
 
 function isSupportedOutputItem(value: unknown): value is ResponseOutputItem {

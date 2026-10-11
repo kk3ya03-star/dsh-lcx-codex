@@ -1,5 +1,5 @@
 import type {} from "@deepseek-ai/dsh-api-session-controller";
-import { symbols as cordisSymbols } from "@deepseek-ai/cordis";
+import { symbols as cordisSymbols, type Context } from "@deepseek-ai/cordis";
 import {
   Session,
   SessionId,
@@ -7,6 +7,8 @@ import {
   type SessionEvent,
 } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import type { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
+import type { TokenMeter } from "@deepseek-ai/dsh-token-meter";
 import type { ToolExecuteListener } from "./auxiliary-usage.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { ServiceMutex } from "./service-mutex.js";
@@ -142,9 +144,9 @@ export function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof r
   const session = sessionFromAgent(agent);
   if (!session) return route;
   // Cold/resumed Agents recover pending selection from DSH's public projection.
-  const projections = resolveScopedService(agent, "sessionProjections");
-  if (mutableService(projections) && typeof projections.stateOf === "function") {
-    const selection = Reflect.apply(projections.stateOf, projections, [session, "modelSelection"]);
+  const projections = resolveScopedService(agent, "sessionProjections") as Partial<Pick<SessionProjectionRegistry, "stateOf">> | undefined;
+  if (typeof projections?.stateOf === "function") {
+    const selection = projections.stateOf(session, "modelSelection");
     if (mutableService(selection))
       return { ...route, requestConfig: selection.pending ?? route.requestConfig };
   }
@@ -155,13 +157,11 @@ export function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof r
 export function scopedToolRuntime(
   agent: unknown,
 ): (Pick<ToolRuntime, "register"> & Partial<Pick<ToolRuntime, "get">>) | undefined {
-  const tools = resolveScopedService(agent, "tools");
-  if (!mutableService(tools) || typeof tools.register !== "function") return undefined;
+  const tools = resolveScopedService(agent, "tools") as Partial<Pick<ToolRuntime, "register" | "get">> | undefined;
+  if (typeof tools?.register !== "function") return undefined;
   return {
-    register: (tools.register as ToolRuntime["register"]).bind(tools),
-    ...(typeof tools.get === "function"
-      ? { get: (tools.get as ToolRuntime["get"]).bind(tools) }
-      : {}),
+    register: tools.register.bind(tools),
+    ...(typeof tools.get === "function" ? { get: tools.get.bind(tools) } : {}),
   };
 }
 
@@ -174,33 +174,33 @@ export function onScopedToolExecute(
   agent: unknown,
   listener: ToolExecuteListener,
 ): (() => void) | undefined {
-  const ctx = agentLike(agent)?.ctx;
-  if (!mutableService(ctx) || typeof ctx.on !== "function") return undefined;
+  const ctx = agentLike(agent)?.ctx as Partial<Pick<Context, "on">> | undefined;
+  if (typeof ctx?.on !== "function") return undefined;
   try {
-    const dispose = Reflect.apply(ctx.on, ctx, ["tools/execute", listener]);
-    return typeof dispose === "function" ? () => void Reflect.apply(dispose, undefined, []) : undefined;
+    const dispose = ctx.on("tools/execute", listener);
+    return typeof dispose === "function" ? () => void dispose() : undefined;
   } catch {
     return undefined;
   }
 }
 
 export function tokenMeterTotal(value: unknown, session: Session): number | undefined {
-  if (!mutableService(value) || typeof value.measure !== "function") return undefined;
-  const measurement = Reflect.apply(value.measure, value, [session]);
-  if (!mutableService(measurement) || typeof measurement.totalTokens !== "number")
-    return undefined;
-  return Number.isFinite(measurement.totalTokens) ? measurement.totalTokens : undefined;
+  const meter = value as Partial<Pick<TokenMeter, "measure">> | null | undefined;
+  if (typeof meter?.measure !== "function") return undefined;
+  const measurement: Partial<ReturnType<TokenMeter["measure"]>> | undefined = meter.measure(session);
+  return typeof measurement?.totalTokens === "number" && Number.isFinite(measurement.totalTokens)
+    ? measurement.totalTokens
+    : undefined;
 }
 
 export function sessionsService(
   ctx: unknown,
 ): Pick<SessionStore, "get"> | undefined {
-  const service = resolveContextService(ctx, "sessions");
-  if (!mutableService(service) || typeof service.get !== "function")
-    return undefined;
+  const service = resolveContextService(ctx, "sessions") as Partial<Pick<SessionStore, "get">> | undefined;
+  if (typeof service?.get !== "function") return undefined;
   return {
     get(id) {
-      const value = Reflect.apply(service.get as CompatMethod, service, [id]);
+      const value = service.get?.(id);
       return value instanceof Session ? value : undefined;
     },
   };

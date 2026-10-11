@@ -7,6 +7,7 @@ import { assertUsableApiKey, attributionHeaders, resolveRetryPolicy } from "@dee
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { resolveCatalogModel } from "./model-catalog.js";
 import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
+import { providerSessionHeaders } from "./provider-headers.js";
 import { codedError, isPositiveFinite, isPositiveSafeInteger, isRecord } from "./util.js";
 import { DEFAULTS } from "./defaults.js";
 
@@ -52,7 +53,7 @@ type ModelDescriptorDefaults = Partial<
   Pick<PiResponsesModel, "reasoning" | "thinkingLevelMap">
 >;
 type UnresolvedRouteConfig = RoutePolicy & { provider: string; model: string; baseURL: string; apiKeyEnv: string; headers?: HeaderMap };
-export type ResolvedResponsesRoute = UnresolvedRouteConfig & { api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
+export type ResolvedResponsesRoute = UnresolvedRouteConfig & { catalogHeaders?: HeaderMap; api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
 type GenerationControls = { reasoningEffort?: unknown; temperature?: unknown; maxTokens?: unknown };
 type CheckpointRouteRecord = { version: number; provider: unknown; model: unknown; baseURLFingerprint: unknown; sourceSessionId: unknown };
 
@@ -181,20 +182,72 @@ function profileFingerprint(profile: ProviderProfile | null | undefined): string
   ]);
 }
 
-/** Record that DSH resolves this exact provider/model under the provider's current profile. */
-export function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): void {
+/**
+ * Record that DSH resolves this exact provider/model under the provider's current profile.
+ * @returns whether this changed what is remembered (a new model, or the profile changed since).
+ */
+export function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): boolean {
   const owner: unknown = ctx;
-  if (owner === null || typeof owner !== "object") return;
+  if (owner === null || typeof owner !== "object") return false;
   let known = hostRecognizedModels.get(owner);
   if (known === undefined) hostRecognizedModels.set(owner, known = new Map());
   if (known.size >= 256) known.clear();
-  known.set(recognitionKey(provider, modelId), profileFingerprint(configuredProviderProfile(ctx, String(provider))));
+  const key = recognitionKey(provider, modelId);
+  const fingerprint = profileFingerprint(configuredProviderProfile(ctx, String(provider)));
+  const changed = known.get(key) !== fingerprint;
+  known.set(key, fingerprint);
+  return changed;
+}
+
+/**
+ * Ask DSH, ahead of any request, which GPT / Grok models it serves on providers whose profile lists no
+ * `models`, and remember the ones LCX's bundled catalog does not describe. One `listModels` call per such
+ * provider: it returns exactly the models DSH would resolve. A model listed in a profile needs no lookup
+ * (the list itself declares it) and a provider DSH does not serve is skipped.
+ * @returns whether the remembered set changed, so the caller can resynchronise the tools it registers.
+ */
+export async function warmHostRecognizedModels(ctx: RouteContext | null | undefined): Promise<boolean> {
+  let entries: ReturnType<RouteContext["llm"]["listConfigurableProviders"]>;
+  try {
+    entries = ctx?.llm.listConfigurableProviders() ?? [];
+  } catch {
+    return false;
+  }
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.settingsNs !== "llm-pi-ai" || (typeof entry.error === "string" && entry.error.trim())) continue;
+    const profile = configuredProviderProfile(ctx, entry.provider);
+    if (!isRecord(profile) || (Array.isArray(profile.models) && profile.models.length > 0)) continue;
+    let models: Awaited<ReturnType<RouteContext["llm"]["listModels"]>>;
+    try {
+      models = (await ctx?.llm.listModels(entry.provider)) ?? [];
+    } catch {
+      continue;
+    }
+    for (const model of models) {
+      if (!/^(?:gpt-|grok)/iu.test(model.id)) continue;
+      if (resolveCatalogModel(entry.provider, model.id).source === "catalog-model") continue;
+      if (markHostRecognizedModel(ctx, entry.provider, model.id)) changed = true;
+    }
+  }
+  return changed;
 }
 
 function hostRecognizesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown): boolean {
   const owner: unknown = ctx;
   if (owner === null || typeof owner !== "object") return false;
   return hostRecognizedModels.get(owner)?.get(recognitionKey(provider, modelId)) === profileFingerprint(profile);
+}
+
+/**
+ * Providers whose authentication Pi resolves itself and LCX cannot reproduce from one credential reference:
+ * Cloudflare AI Gateway needs the account and gateway ids in the endpoint and sends the key as
+ * `cf-aig-authorization` while removing `Authorization`. DSH serves them, LCX leaves them to DSH.
+ */
+const HOST_AUTH_PROVIDERS: ReadonlySet<string> = new Set(["cloudflare-ai-gateway"]);
+
+function usesHostProviderAuth(provider: unknown): boolean {
+  return HOST_AUTH_PROVIDERS.has(String(provider));
 }
 
 /**
@@ -314,7 +367,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
   const configured = profile;
-  if (profileExcludesModel(configured, model)) return undefined;
+  if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
   // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
   const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
   const builtin = catalog.descriptor;
@@ -350,6 +403,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
     apiKeyEnv,
+    ...(builtin?.headers === undefined ? {} : { catalogHeaders: { ...builtin.headers } }),
     headers: { ...(configured.headers ?? {}) },
     cacheRetention,
     supportsLongCacheRetention,
@@ -367,7 +421,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
 }
 
 /** Why a GPT request could not be resolved to an authenticated Responses route. */
-export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "host-auth" | "api-unresolved" | "api-not-responses" | "incomplete";
 
 /**
  * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
@@ -378,6 +432,7 @@ export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, opt
   const profile = provider.trim() ? configuredProviderProfile(ctx, provider) : undefined;
   if (!isRecord(profile)) return "no-profile";
   if (profileExcludesModel(profile, model)) return "model-not-configured";
+  if (usesHostProviderAuth(provider)) return "host-auth";
   const api = profile.api ?? resolveCatalogModel(provider, model, dshServesModel(ctx, profile, provider, model)).api;
   if (api === undefined) return "api-unresolved";
   return api === "openai-responses" ? "incomplete" : "api-not-responses";
@@ -394,7 +449,7 @@ export function resolveGrokResponsesRouteConfig(
   if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
-  if (profileExcludesModel(configured, model)) return undefined;
+  if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
   const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
   const selectedBuiltin = catalog.descriptor;
   const api = configured.api ?? catalog.api;
@@ -427,6 +482,7 @@ export function resolveGrokResponsesRouteConfig(
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
     apiKeyEnv,
+    ...(selectedBuiltin?.headers === undefined ? {} : { catalogHeaders: { ...selectedBuiltin.headers } }),
     headers: effectiveGrokProfileHeaders(configured.headers),
     cacheRetention,
     supportsLongCacheRetention,
@@ -480,6 +536,14 @@ function setHeaderCaseInsensitive(
   headers[name] = value;
 }
 
+/** Layer header maps, later ones replacing earlier ones whatever the header name's case. */
+function layerHeaders(...layers: Array<HeaderMap | undefined>): HeaderMap {
+  const result: HeaderMap = {};
+  for (const layer of layers)
+    for (const [name, value] of Object.entries(layer ?? {})) setHeaderCaseInsensitive(result, name, value);
+  return result;
+}
+
 /** Apply DSH's case-insensitive attribution reservation at profile resolution. */
 function effectiveGrokProfileHeaders(
   configured: HeaderMap | null | undefined,
@@ -505,16 +569,22 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
     : "openai";
 }
 
-export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined): Promise<HeaderMap> {
+export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}): Promise<HeaderMap> {
   const explicit = { ...(config.headers ?? {}) };
-  const headers: HeaderMap = {
-    ...attributionHeaders(),
-    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  };
   const sid = sessionId ? String(sessionId) : undefined; const format = sessionAffinityFormat(config);
+  // Lowest first, as Pi's client layers them: the catalog model's own headers, DSH attribution, the credential,
+  // the provider's per-request headers (Copilot initiator / vision, OpenCode routing), then the affinity ids.
+  const headers: HeaderMap = layerHeaders(
+    config.catalogHeaders,
+    attributionHeaders(),
+    { authorization: `Bearer ${await resolveApiKey(ctx, config)}` },
+    dynamicHeaders,
+    providerSessionHeaders(config.provider, sid),
+  );
   if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers.session_id = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
   if (requestId !== null && !hasHeader(explicit, "x-client-request-id")) { const correlation = requestId ?? (sid && (format === "openai" || format === "openai-nosession") ? sid : !sid ? randomUUID() : undefined); if (correlation) headers["x-client-request-id"] = correlation; }
-  return { ...headers, ...explicit };
+  // The profile's own headers win over every default.
+  return layerHeaders(headers, explicit);
 }
 
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
@@ -522,12 +592,14 @@ export async function authenticatedGrokHeaders(
   ctx: RouteContext | null | undefined,
   config: ResolvedResponsesRoute,
   sessionId: unknown,
+  dynamicHeaders: HeaderMap = {},
 ): Promise<HeaderMap> {
   const explicit = effectiveGrokProfileHeaders(config.headers);
-  const headers: HeaderMap = {
-    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  };
   const sid = sessionId ? String(sessionId) : undefined;
+  // The catalog model's headers come first, so DSH attribution (applied last, as the host does) replaces them.
+  const headers: HeaderMap = layerHeaders(config.catalogHeaders, {
+    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
+  }, dynamicHeaders, providerSessionHeaders(config.provider, sid));
   const format = sessionAffinityFormat(config);
   if (sid) {
     if (format === "openai") headers.session_id = sid;

@@ -7,7 +7,7 @@ import apply, { Config } from '../lib/index.js'
 import { assertSupportedCheckpointMessage, checkpointStateForMessage, stateFromSummaryEvent } from '../lib/native-checkpoint.js'
 import { baseURLFingerprint, resolveResponsesRouteConfig, routeCompatible } from '../lib/route.js'
 import { buildResponsesBody } from '../lib/responses-request.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 import { queryContext } from './session-query-fixture.mjs'
 
 const selected = { provider: 'fixture', model: 'gpt-fixture', sessionId: 'session-cleanup' }

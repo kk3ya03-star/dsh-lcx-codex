@@ -5,6 +5,8 @@ export { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prom
 export { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 export { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+export { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "@earendil-works/pi-ai/api/github-copilot-headers";
+export { withOpenCodeSessionHeader } from "@earendil-works/pi-ai/providers/opencode-headers";
 export type BundledResponsesProvider = "cloudflare-ai-gateway" | "github-copilot" | "openai" | "opencode" | "opencode-go" | "xai";
 /**
  * Every catalog entry of a bundled provider whatever its wire protocol. DSH resolves the protocol of a

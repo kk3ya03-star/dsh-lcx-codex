@@ -13,7 +13,7 @@ import Agents from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import apply from '../lib/index.js'
 import { installSearchUsage } from '../lib/search-usage.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 // Issue 122: drive DSH's real programmatic-tool-calling path. The registry, the `run_code` transport, the
 // nested dispatch scheduler, the `tool/ptc-dispatch` events and the Agent loop are the real

@@ -250,7 +250,7 @@ test('media dictionaries carry every label the media surface uses in both langua
   }
 })
 
-const PAGE = "<html><body><div data-chat-flow>\n    <div data-chat-group-key='[\"process\",\"tool-3\",null]' data-chat-turn=\"3\" data-step-process></div>\n    <div data-chat-flow-kind=\"assistant-step\" data-chat-group-part=\"response\" data-chat-turn=\"3\"><p>Answer</p></div>\n    <div data-chat-group-key='[\"process\",\"media-3\",null]' data-chat-turn=\"3\" data-step-process><div data-chat-flow-kind=\"lcx-search-media\" data-chat-turn=\"3\"><span id=\"marker\"></span></div></div>\n  </div></body></html>"
+const PAGE = "<html><body><div data-chat-flow><div data-slot=\"conversation.chat.flow\" style=\"display: contents\">\n    <div data-chat-group-key='[\"process\",\"tool-3\",null]' data-chat-turn=\"3\" data-step-process></div>\n    <div data-chat-flow-kind=\"assistant-step\" data-chat-group-part=\"response\" data-chat-turn=\"3\"><p>Answer</p></div>\n    <div data-chat-group-key='[\"process\",\"media-3\",null]' data-chat-turn=\"3\" data-step-process><div data-chat-flow-kind=\"lcx-search-media\" data-chat-turn=\"3\"><span id=\"marker\"></span></div></div>\n  </div></div></body></html>"
 function domExtras(window, document) {
   return { document, MutationObserver: window.MutationObserver, requestAnimationFrame: fn => { queueMicrotask(fn); return 1 }, cancelAnimationFrame() {}, queueMicrotask }
 }

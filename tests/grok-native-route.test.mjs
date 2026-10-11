@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { grokVisibleFunctionTools, grokWireTools } from '../lib/grok-native-search.js'
 import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
 import { functionTools, xaiProfile } from './grok-fixture.mjs'
-import { providerContext } from './dsh02-fixture.mjs'
+import { providerContext } from './provider-context-fixture.mjs'
 
 const policy = {
   timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 100,

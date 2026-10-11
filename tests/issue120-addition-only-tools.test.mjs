@@ -20,6 +20,7 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { loadHostSource, loadSource } from './wp2-source.mjs'
+import { resolveResponsesRouteConfig } from '../lib/route.js'
 
 // Issue #120: native addition-only tool updates on GPT Responses routes. Everything below runs the real DSH
 // agent loop, session, llm runtime and the real llm-pi-ai catalog adapter (which declares
@@ -404,24 +405,61 @@ test('plugin wiring: incrementalToolUpdates is on by default, resolves compat fr
   })
 })
 
-test('a route compat that is silent about additional_tools (a model outside the frozen Pi 0.86 catalog) is still anchored', async () => {
+test('the declaration shape comes from the compat: explicit additional_tools / tool_search anchor, silence sends the complete list (#125)', async () => {
   await withHarness(async ({ root, index, bodies, ctx, raw, state }) => {
     const { handle, ask } = await startAgent(ctx, root, 'i120-silent', 'openai', 'gpt-5.6-sol')
     state.tools = [tool('tool_a')]
     await ask('one')
     state.tools = [tool('tool_a'), tool('tool_b')]
     await ask('two')
+    const post = responsesCompat => postedBody(index, bodies, raw.at(-1), { baseURL, portableReplayMaxChars: 200000, responsesCompat }, ctx)
+    // Silent about both shapes (nothing the bundled catalog or the profile says): no guess, the complete tool list.
     for (const responsesCompat of [undefined, {}, { supportsStrictMode: true }]) {
-      const body = await postedBody(index, bodies, raw.at(-1), { baseURL, portableReplayMaxChars: 200000, responsesCompat }, ctx)
-      assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a'], JSON.stringify(responsesCompat))
-      assert.deepEqual(addedNames(body), ['tool_b'], JSON.stringify(responsesCompat))
+      const body = await post(responsesCompat)
+      assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a', 'tool_b'], JSON.stringify(responsesCompat))
+      assert.equal(additions(body).length, 0, JSON.stringify(responsesCompat))
     }
-    // Only tool_search backed by an explicit true selects the tool_search shape.
-    const search = await postedBody(index, bodies, raw.at(-1), { baseURL, portableReplayMaxChars: 200000, responsesCompat: { supportsToolSearch: true } }, ctx)
+    // An explicit additional_tools declaration anchors the request tools and adds by additional_tools.
+    const additional = await post({ supportsAdditionalTools: true })
+    assert.deepEqual(additional.tools.map(entry => entry.name), ['tool_a'])
+    assert.deepEqual(addedNames(additional), ['tool_b'])
+    // An explicit tool_search declaration selects the tool_search shape.
+    const search = await post({ supportsToolSearch: true })
     assert.equal(additions(search).length, 0)
     assert.ok(search.input.some(item => item.type === 'tool_search_output'))
+    // Both supported: additional_tools wins, as in Pi.
+    const both = await post({ supportsAdditionalTools: true, supportsToolSearch: true })
+    assert.deepEqual(addedNames(both), ['tool_b'])
     await handle.dispose()
   })
+})
+
+test('declarationKind: only a stated shape is used, and a silent or declining compat yields none', async () => {
+  const { declarationKind } = await import('../lib/tool-surface.js')
+  assert.equal(declarationKind(undefined), undefined)
+  assert.equal(declarationKind({}), undefined)
+  assert.equal(declarationKind({ supportsAdditionalTools: false, supportsToolSearch: false }), undefined)
+  assert.equal(declarationKind({ supportsAdditionalTools: true }), 'additional_tools')
+  assert.equal(declarationKind({ supportsToolSearch: true }), 'tool_search')
+  assert.equal(declarationKind({ supportsAdditionalTools: false, supportsToolSearch: true }), 'tool_search')
+  assert.equal(declarationKind({ supportsAdditionalTools: true, supportsToolSearch: true }), 'additional_tools')
+})
+
+test('the compat of a route comes from the bundled catalog or the profile; a model neither describes stays silent (#125)', () => {
+  const profile = compat => ({ openai: { api: 'openai-responses', baseURL, apiKeyEnv: 'K', models: [{ id: 'gpt-9-unknown', ...(compat === undefined ? {} : { compat }) }] } })
+  const context = profiles => ({ llm: { listConfigurableProviders: () => [{ provider: 'openai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'openai'] }] }, settings: { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles } }] } })
+  const resolve = (profiles, model) => resolveResponsesRouteConfig(context(profiles), { provider: 'openai', model }, {}).responsesCompat
+  // Catalog-explicit: a Pi 1.1.0 catalog model states both shapes.
+  const catalog = resolve({ openai: { api: 'openai-responses', baseURL, apiKeyEnv: 'K' } }, 'gpt-6-sol')
+  assert.equal(catalog.supportsAdditionalTools, true)
+  assert.equal(catalog.supportsToolSearch, true)
+  // Profile-explicit (read from the profile as written; DSH itself does not let a profile set these two).
+  assert.equal(resolve(profile({ supportsToolSearch: true }), 'gpt-9-unknown').supportsToolSearch, true)
+  assert.equal(resolve(profile({ supportsAdditionalTools: true }), 'gpt-9-unknown').supportsAdditionalTools, true)
+  // Unknown: no catalog entry and nothing in the profile.
+  const unknown = resolve(profile(), 'gpt-9-unknown')
+  assert.equal(unknown.supportsAdditionalTools, undefined)
+  assert.equal(unknown.supportsToolSearch, undefined)
 })
 
 test('falling back although the host declared addition-only is reported once per session with a fixed reason; deliberate settings are not', async () => {

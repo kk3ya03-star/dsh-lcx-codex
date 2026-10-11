@@ -4,7 +4,7 @@ import { ServiceMutex } from '../lib/service-mutex.js'
 import apply, { compactionPressureBand } from '../lib/index.js'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 const CONTEXT_WINDOW = 262_144
 const OUTPUT_RESERVE = 32_768

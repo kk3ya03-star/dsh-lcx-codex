@@ -22,6 +22,7 @@ import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import apply, { Config } from '../lib/index.js'
 import { resolveRouteModelFacts, routeModelOverride, serializeDshMessages } from '../lib/dsh-responses.js'
 import { resolveGrokResponsesRouteConfig, resolveResponsesRouteConfig } from '../lib/route.js'
+import { providerDynamicHeaders, providerSessionHeaders } from '../lib/provider-headers.js'
 import { resolveCatalogModel } from '../lib/model-catalog.js'
 
 // Issue #123, real path. A provider profile in the shape of the Product Owner's desktop profile names a catalog
@@ -48,7 +49,7 @@ const desktopProfiles = () => ({
   xai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL: 'https://fixture.invalid/xai', models: [entry('grok-4.6', { contextWindow: 500000, maxTokens: 500000 }), entry('grok-4.7', { contextWindow: 500000, maxTokens: 500000 })] },
 })
 
-async function harness(root, profiles, settings = {}) {
+async function harness(root, profiles, settings = {}, prepare = undefined) {
   const ctx = new Context()
   ctx.plugin(Llm)
   const piFiber = ctx.plugin(PiAi, { providers: structuredClone(profiles) })
@@ -94,7 +95,10 @@ async function harness(root, profiles, settings = {}) {
     },
   })
   const configInput = Config({ enabled: true, webSearch: true, advancedHostedSearch: false, maxAttempts: 1, ...settings })
+  prepare?.(ctx)
   apply(host, configInput)
+  // The prewarm asks DSH asynchronously; in a real host plugin start precedes every agent by far more than this.
+  if (prepare) await new Promise(done => setTimeout(done, 100))
   const setting = (key, value) => {
     updateVolatile(configInput[key], Config({ [key]: value })[key])
     handlers.get('loader/volatile-update')()
@@ -107,16 +111,16 @@ async function harness(root, profiles, settings = {}) {
   return { ctx, setting, warnings, forms, setProviders }
 }
 
-async function withHarness(profiles, settings, run) {
+async function withHarness(profiles, settings, run, prepare = undefined) {
   const root = await mkdtemp(resolve('.i123-'))
   const originalFetch = globalThis.fetch
   const requests = []
   globalThis.fetch = async (url, init) => {
-    requests.push({ url: String(url), body: JSON.parse(String(init.body)) })
+    requests.push({ url: String(url), body: JSON.parse(String(init.body)), headers: Object.fromEntries(new Headers(init.headers)) })
     return sse('reply')
   }
   try {
-    const h = await harness(root, profiles, settings)
+    const h = await harness(root, profiles, settings, prepare)
     let counter = 0
     const turn = async (provider, model, text = 'hello') => {
       const handle = await h.ctx.agents.create({ sessionId: SessionId(`i123-${provider}-${model}-${counter += 1}`), meta: { cwd: root }, agentOptions: { provider, model } })
@@ -145,17 +149,26 @@ async function withHarness(profiles, settings, run) {
 
 /**
  * A host newer than the bundled Pi catalog. DSH 0.2.1-alpha.2 runs on the same Pi (1.1.0) that LCX bundles, so no
- * real model is known to the host and not to LCX; this stands in for a later DSH whose own catalog is ahead, and
- * answers the one public lookup LCX has (`llm.resolveModelInfo`) the way DSH would for a model it serves.
+ * real model is known to the host and not to LCX; this stands in for a later DSH whose own catalog is ahead. It
+ * patches the registered dsh-llm-pi-ai adapter, so every public lookup (`listModels`, `resolveModelInfo`,
+ * `prepareCall`, which the agent loop calls) answers the way DSH would for a model it serves.
  */
-function simulateNewerHost(ctx, ids, isServed = () => true) {
-  const original = ctx.llm.resolveModelInfo.bind(ctx.llm)
+function simulateNewerHost(ctx, ids, isServed = () => true, provider = 'openai') {
+  const adapter = ctx.llm.adapters.get(provider).adapter
   const lookups = []
-  ctx.llm.resolveModelInfo = async (provider, model, signal) => {
-    lookups.push(`${provider}/${model}`)
-    return provider === 'openai' && ids.includes(model) && isServed()
-      ? { provider, id: model, name: model, inputModalities: ['text', 'image'], context: { contextWindow: 272000 }, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' }
-      : original(provider, model, signal)
+  const info = (route, model) => ({ provider: route, id: model, name: model, inputModalities: ['text', 'image'], context: { contextWindow: 272000 }, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' })
+  const serves = model => ids.includes(model) && isServed()
+  const original = { resolveModel: adapter.resolveModel.bind(adapter), prepareCall: adapter.prepareCall.bind(adapter), listModels: adapter.listModels.bind(adapter) }
+  adapter.resolveModel = async (route, model, signal) => {
+    lookups.push(`${route}/${model}`)
+    return serves(model) ? info(route, model) : original.resolveModel(route, model, signal)
+  }
+  adapter.prepareCall = async (route, model, signal) => serves(model)
+    ? { model: info(route, model), stream: () => { throw new Error('the real adapter must not be dispatched: LCX owns the request') } }
+    : original.prepareCall(route, model, signal)
+  adapter.listModels = async route => {
+    const base = await original.listModels(route)
+    return isServed() ? [...base, ...ids.map(id => ({ provider: route, id, name: id, inputModalities: ['text', 'image'] }))] : base
   }
   return lookups
 }
@@ -296,7 +309,7 @@ test('gpt-6.1-sol is a bundled catalog model and follows the tool-update mode th
   })
 })
 
-test('a model that a models list leaves out is refused as not configured', async () => {
+test('a model that a models list leaves out is answered by DSH itself (UNKNOWN_MODEL), not by an LCX failure', async () => {
   await withHarness(desktopProfiles(), {}, async ({ ctx, requests }) => {
     const chunks = await collect(ctx.llm.stream({
       provider: 'openai',
@@ -307,8 +320,8 @@ test('a model that a models list leaves out is refused as not configured', async
     const finish = chunks.at(-1)
     assert.equal(finish.type, 'finish')
     assert.equal(finish.reason.kind, 'error')
-    assert.equal(finish.reason.failure.code, 'NO_ADAPTER')
-    assert.match(finish.reason.failure.message, /not configured for this provider/u)
+    assert.equal(finish.reason.failure.code, 'UNKNOWN_MODEL', 'DSH reports its own error')
+    assert.match(finish.reason.failure.message, /no configured model/u)
   })
 })
 
@@ -324,9 +337,12 @@ test('a nonempty models list is authoritative even for a model the bundled catal
     for (const model of ['gpt-6-sol', 'gpt-5.6-sol']) {
       const chunks = await collect(ctx.llm.stream({ provider: 'openai', model, messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] }))
       const failure = chunks.at(-1).reason.failure
-      assert.equal(failure.code, 'NO_ADAPTER', model)
-      assert.match(failure.message, /not configured for this provider/u, model)
+      assert.equal(failure.code, 'UNKNOWN_MODEL', model)
+      assert.match(failure.message, /no configured model/u, model)
     }
+    // Grok follows the same rule: the xai models list leaves grok-4.7 out, DSH answers, LCX sends nothing.
+    const grokChunks = await collect(ctx.llm.stream({ provider: 'xai', model: 'grok-4.7', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] }))
+    assert.equal(grokChunks.at(-1).reason.failure.code, 'UNKNOWN_MODEL')
     assert.equal(requests.length, 0, 'zero network requests')
     assert.equal(lookups, 0, 'no host lookup for a model the profile excludes')
     const routeCtx = { llm: ctx.llm, settings: { describe: () => forms.describe() } }
@@ -451,9 +467,9 @@ test('a live profile change that stops DSH serving a recognized model stops LCX 
     assert.deepEqual(described().models.map(model => model.id), ['gpt-6-sol'], 'LCX reads the live profile')
     // The real DSH now refuses a bundled-catalog model the list omits, and LCX refuses it too ...
     await assert.rejects(ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol'), /no configured model/u)
-    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'UNKNOWN_MODEL')
     // ... and so for the recognized model, whose remembered recognition no longer applies.
-    assert.equal((await streamOnce('gpt-9-future')).at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.equal((await streamOnce('gpt-9-future')).at(-1).reason.failure.code, 'UNKNOWN_MODEL')
     assert.equal(requests.length, 1, 'no request left LCX for the removed models')
     requests.length = 0
     assert.equal((await streamOnce('gpt-6-sol')).at(-1).reason.kind, 'stop', 'the listed model keeps working')
@@ -473,7 +489,124 @@ test('a live profile change that stops DSH serving a recognized model stops LCX 
     assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.kind, 'stop')
     setProviders({ openai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL, models: [entry('gpt-6-luna')] } })
     requests.length = 0
-    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'NO_ADAPTER')
+    assert.equal((await streamOnce('gpt-6.1-sol')).at(-1).reason.failure.code, 'UNKNOWN_MODEL')
     assert.equal(requests.length, 0)
+  })
+})
+
+// A model only a newer DSH catalog describes: tool ownership is decided synchronously while an agent's tools are
+// assembled, so the recognition has to be known before the first request. LCX asks DSH ahead of time.
+test('a host-only model gets the LCX tools on its first request (recognition is prewarmed at start)', async () => {
+  await withHarness(bareProfiles(), {}, async ({ open, requests }) => {
+    const session = await open('openai', 'gpt-9-future')
+    try {
+      const first = await session.ask('first turn')
+      assert.equal(first.url, `${baseURL}/responses`)
+      assert.equal(first.body.model, 'gpt-9-future')
+      assert.ok(names(first.body).includes('web_search'), 'the LCX search tool is on the very first request')
+      assert.equal(requests.length, 1)
+    } finally { await session.dispose() }
+  }, ctx => simulateNewerHost(ctx, ['gpt-9-future']))
+})
+
+test('a session created before DSH knows the model gets the LCX tools once the provider configuration changes', async () => {
+  await withHarness(bareProfiles(), {}, async ({ ctx, open, requests }) => {
+    const session = await open('openai', 'gpt-9-future')
+    try {
+      // The model is unknown to DSH and to LCX when the session starts: nothing of LCX is registered for it.
+      simulateNewerHost(ctx, ['gpt-9-future'])
+      ctx.emit('llm/adapters-updated')
+      await new Promise(done => setTimeout(done, 150))
+      const first = await session.ask('after the host learned the model')
+      assert.ok(names(first.body).includes('web_search'), 'tools were resynchronised by the prewarm, before this request')
+      assert.equal(requests.length, 1)
+    } finally { await session.dispose() }
+  })
+})
+
+// Catalog providers whose requests Pi's own client decorates: LCX builds the Responses request itself, so it
+// has to send what Pi would (model headers, Copilot per-request headers, OpenCode routing header), and to leave
+// to DSH the provider whose authentication it cannot reproduce.
+const providerProfile = provider => ({ [provider]: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL } })
+
+test('github-copilot: the catalog model headers and the Pi Copilot request headers are sent, the profile wins, DSH attribution stays', async () => {
+  await withHarness(providerProfile('github-copilot'), {}, async ({ turn, requests }) => {
+    const request = await turn('github-copilot', 'gpt-6-sol')
+    assert.equal(request.url, `${baseURL}/responses`)
+    assert.equal(request.headers['editor-version'], 'vscode/1.107.0')
+    assert.equal(request.headers['editor-plugin-version'], 'copilot-chat/0.35.0')
+    assert.equal(request.headers['copilot-integration-id'], 'vscode-chat')
+    assert.equal(request.headers['x-initiator'], 'user')
+    assert.equal(request.headers['openai-intent'], 'conversation-edits')
+    assert.equal(request.headers['copilot-vision-request'], undefined)
+    // DSH's attribution replaces the catalog User-Agent, as the host adapter's request headers do.
+    assert.match(request.headers['user-agent'], /^deepseek-harness\//u)
+    assert.match(request.headers.authorization, /^Bearer /u)
+    assert.equal(requests.length, 1)
+  })
+  const profiles = providerProfile('github-copilot')
+  profiles['github-copilot'].headers = { 'editor-version': 'profile/9' }
+  await withHarness(profiles, {}, async ({ turn }) => {
+    const request = await turn('github-copilot', 'gpt-6-sol')
+    assert.equal(request.headers['editor-version'], 'profile/9', 'a profile header wins over the catalog, whatever the case')
+    assert.equal(request.headers['copilot-integration-id'], 'vscode-chat')
+  })
+})
+
+test('github-copilot: the Pi helpers decide the initiator and the vision flag from the request history', () => {
+  const text = { type: 'text', text: 'x' }
+  const image = { type: 'image', attachment: {} }
+  assert.deepEqual(providerDynamicHeaders('github-copilot', [{ role: 'user', content: [text] }]), { 'X-Initiator': 'user', 'Openai-Intent': 'conversation-edits' })
+  assert.equal(providerDynamicHeaders('github-copilot', [{ role: 'user', content: [text] }, { role: 'assistant', content: [text] }, { role: 'tool', content: [text] }])['X-Initiator'], 'agent')
+  assert.equal(providerDynamicHeaders('github-copilot', [{ role: 'user', content: [text, image] }])['Copilot-Vision-Request'], 'true')
+  assert.equal(providerDynamicHeaders('github-copilot', [{ role: 'user', content: [text] }, { role: 'tool', content: [image] }])['Copilot-Vision-Request'], 'true')
+  assert.deepEqual(providerDynamicHeaders('openai', [{ role: 'user', content: [text] }]), {})
+})
+
+test('opencode and opencode-go: the routing header Pi adds is sent with the session id; other providers send none', async () => {
+  for (const provider of ['opencode', 'opencode-go']) {
+    await withHarness(providerProfile(provider), {}, async ({ turn }) => {
+      const request = await turn(provider, provider === 'opencode' ? 'gpt-6-sol' : 'gpt-6-luna')
+      assert.match(request.headers['x-opencode-session'], /^i123-/u, provider)
+      assert.equal(request.headers.session_id, undefined, 'the no-session affinity format sends no session_id')
+      assert.ok(request.headers['x-client-request-id'], provider)
+    })
+  }
+  assert.deepEqual(providerSessionHeaders('opencode', 's1'), { 'x-opencode-session': 's1' })
+  assert.deepEqual(providerSessionHeaders('opencode', undefined), {})
+  assert.deepEqual(providerSessionHeaders('openai', 's1'), {})
+  await withHarness(providerProfile('openai'), {}, async ({ turn }) => {
+    const request = await turn('openai', 'gpt-6-sol')
+    assert.equal(request.headers['x-opencode-session'], undefined)
+    assert.equal(request.headers['editor-version'], undefined)
+  })
+})
+
+test('the Grok route sends the same provider headers (github-copilot and opencode)', async () => {
+  const cases = [
+    ['github-copilot', headers => { assert.equal(headers['editor-version'], 'vscode/1.107.0'); assert.equal(headers['x-initiator'], 'user'); assert.match(headers['user-agent'], /^deepseek-harness\//u) }],
+    ['opencode', headers => assert.match(headers['x-opencode-session'], /^i123-grok/u)],
+  ]
+  for (const [provider, check] of cases) {
+    await withHarness(providerProfile(provider), { grokNativeWebSearch: true }, async ({ ctx, requests }) => {
+      const chunks = await collect(ctx.llm.stream({ provider, model: 'grok-4.7', sessionId: 'i123-grok-session', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] }))
+      assert.equal(chunks.at(-1).type, 'finish')
+      assert.equal(requests.length, 1, provider)
+      check(requests[0].headers)
+    })
+  }
+})
+
+test('cloudflare-ai-gateway is left to DSH: the request is made by the host with the gateway authentication, not by LCX', async () => {
+  await withHarness(providerProfile('cloudflare-ai-gateway'), {}, async ({ ctx, requests }) => {
+    const chunks = await collect(ctx.llm.stream({ provider: 'cloudflare-ai-gateway', model: 'gpt-6-sol', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }] }))
+    assert.equal(chunks.at(-1).type, 'finish')
+    assert.notEqual(chunks.at(-1).reason.failure?.code, 'NO_ADAPTER', 'not an LCX failure')
+    // The only request is the one DSH's adapter made through Pi: the gateway header, no bearer Authorization, the
+    // SDK's own headers. An LCX request would carry `Authorization: Bearer` and no gateway header.
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].headers['cf-aig-authorization'], 'Bearer fixture-only')
+    assert.equal(requests[0].headers.authorization, undefined)
+    assert.ok(requests[0].headers['x-stainless-lang'], 'made by the OpenAI SDK inside Pi')
   })
 })

@@ -70,6 +70,7 @@ type UnresolvedRouteConfig = RoutePolicy & {
     headers?: HeaderMap;
 };
 export type ResolvedResponsesRoute = UnresolvedRouteConfig & {
+    catalogHeaders?: HeaderMap;
     api: "openai-responses";
     cacheRetention: CacheRetention;
     supportsLongCacheRetention: boolean;
@@ -101,14 +102,25 @@ export declare function promptCacheKey(route: Partial<RouteIdentity> | null | un
 /** Grok follows Pi directly: cache/affinity belongs to the selected child session. */
 export declare function grokPromptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">>): string | undefined;
 export declare function promptCacheRetention(config?: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">>): "24h" | undefined;
-/** Record that DSH resolves this exact provider/model under the provider's current profile. */
-export declare function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): void;
+/**
+ * Record that DSH resolves this exact provider/model under the provider's current profile.
+ * @returns whether this changed what is remembered (a new model, or the profile changed since).
+ */
+export declare function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): boolean;
+/**
+ * Ask DSH, ahead of any request, which GPT / Grok models it serves on providers whose profile lists no
+ * `models`, and remember the ones LCX's bundled catalog does not describe. One `listModels` call per such
+ * provider: it returns exactly the models DSH would resolve. A model listed in a profile needs no lookup
+ * (the list itself declares it) and a provider DSH does not serve is skipped.
+ * @returns whether the remembered set changed, so the caller can resynchronise the tools it registers.
+ */
+export declare function warmHostRecognizedModels(ctx: RouteContext | null | undefined): Promise<boolean>;
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & {
     purpose?: string;
 }, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 /** Why a GPT request could not be resolved to an authenticated Responses route. */
-export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "host-auth" | "api-unresolved" | "api-not-responses" | "incomplete";
 /**
  * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
  * change: `api-unresolved` means neither the profile nor the model catalog names a protocol for this model.
@@ -117,9 +129,9 @@ export declare function diagnoseResponsesRoute(ctx: RouteContext | null | undefi
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export declare function resolveGrokResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 export declare function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string>;
-export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined): Promise<HeaderMap>;
+export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders?: HeaderMap): Promise<HeaderMap>;
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
-export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown): Promise<HeaderMap>;
+export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, dynamicHeaders?: HeaderMap): Promise<HeaderMap>;
 export declare function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity;
 export declare function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;
 export declare function generationControlsFromSession(session: RouteSession | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;

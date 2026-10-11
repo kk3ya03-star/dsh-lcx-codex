@@ -59,6 +59,7 @@ import {
 } from "./dsh-compat.js";
 import type { CompactionPatchRecords } from "./dsh-compat.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
+import { providerDynamicHeaders } from "./provider-headers.js";
 import { resolveCatalogModel } from "./model-catalog.js";
 import {
   authenticatedGrokHeaders,
@@ -72,6 +73,7 @@ import {
   resolveGrokResponsesRouteConfig,
   diagnoseResponsesRoute,
   markHostRecognizedModel,
+  warmHostRecognizedModels,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
@@ -1430,6 +1432,7 @@ async function* remoteCompactionStream(
       routeConfig,
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
     );
     const generation = generationControlsFromSession(
       sessionFor(ctx, route.sessionId),
@@ -1866,6 +1869,7 @@ async function* managedResponsesStream(
       routeConfig,
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
     );
     const body = buildResponsesBody({
       model: prepared.model,
@@ -1936,6 +1940,7 @@ async function* managedGrokNativeSearchStream(
       ctx,
       routeConfig,
       cacheSessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
     );
     const model = {
       ...prepared.model,
@@ -2012,25 +2017,16 @@ async function* unavailableManagedRouteStream(
   options: GenerateOptions,
   diagnosis: ResponsesRouteDiagnosis = "incomplete",
 ): AsyncGenerator<StreamChunk> {
-  // Say what to change: the profile's models list leaves the model out, or no protocol can be inferred for it.
-  const notConfigured = diagnosis === "model-not-configured";
+  // DSH names no protocol for a model its catalog lacks and the profile sets no `api`: say what to change.
   const apiUnresolved = diagnosis === "api-unresolved";
   yield managedFailureChunk(
     Object.assign(
       new Error(
-        notConfigured
-          ? "LCX is enabled but the selected model is not configured for this provider: the provider profile lists other models. Add the model to the profile's models list or select a listed model"
-          : apiUnresolved
-            ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
-            : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
+        apiUnresolved
+          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
+          : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
       ),
-      {
-        code: notConfigured
-          ? "LCX_RESPONSES_MODEL_NOT_CONFIGURED"
-          : apiUnresolved
-            ? "LCX_RESPONSES_API_UNRESOLVED"
-            : "LCX_RESPONSES_ROUTE_UNAVAILABLE",
-      },
+      { code: apiUnresolved ? "LCX_RESPONSES_API_UNRESOLVED" : "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
     ),
     options.signal,
   );
@@ -2152,9 +2148,32 @@ function installInjected(
         : baseConfig;
     refreshTools();
   };
+  /**
+   * Tool ownership is decided synchronously when an agent's tools are assembled, but whether DSH serves a model
+   * that LCX's bundled catalog does not describe is only known by asking DSH. So ask ahead of time, at start and
+   * whenever the provider configuration or the provider set changes, and resynchronise the tools when the
+   * remembered answers change; a first request on such a model then already carries the LCX tools.
+   */
+  const prewarmHostModels = () => {
+    void warmHostRecognizedModels(ctx)
+      .then((changed) => {
+        if (changed) refreshTools();
+      })
+      .catch((error) =>
+        ctx.logger?.debug?.(`[lcx-codex] host model prewarm skipped: ${String(error)}`),
+      );
+  };
   syncSettings();
-  ctx.on("loader/volatile-update", syncSettings);
-  ctx.on("settings/document-updated", refreshTools);
+  prewarmHostModels();
+  ctx.on("loader/volatile-update", () => {
+    syncSettings();
+    prewarmHostModels();
+  });
+  ctx.on("settings/document-updated", () => {
+    refreshTools();
+    prewarmHostModels();
+  });
+  ctx.on("llm/adapters-updated", prewarmHostModels);
   ctx.inject(["compaction"], (compactionCtx: HostContext) => {
     patchCompactionPressureService(
       resolveContextService(compactionCtx, "compaction"),
@@ -2167,7 +2186,7 @@ function installInjected(
 
   /**
    * LCX instrumentation is optional capability, never a creation precondition.
-   * DSH 0.1.6 awaits `agent/created` serially, so an escaping failure would make
+   * DSH awaits `agent/created` serially, so an escaping failure would make
    * an otherwise valid Agent uncreatable; `agent/status` stays a contained emit.
    * Both edges therefore fail closed locally: the Agent runs uninstrumented and
    * the reason is logged, rather than propagating into the host lifecycle.
@@ -2193,7 +2212,7 @@ function installInjected(
       );
     }
   };
-  /** DSH 0.1.6 lifecycle source, recorded for diagnostics only. */
+  /** DSH lifecycle source, recorded for diagnostics only. */
   const startSource = (value: unknown) =>
     typeof value === "string" && /^[a-z]+$/u.test(value) ? value : "unknown";
 
@@ -2257,6 +2276,13 @@ function installInjected(
         options,
         runtimeConfig,
       );
+      if (!routeConfig) {
+        const diagnosis = diagnoseResponsesRoute(ctx, options);
+        // DSH owns these calls: a model the provider's models list leaves out (DSH serves only the listed
+        // models and answers UNKNOWN_MODEL, nothing is sent) and a provider whose authentication only Pi's own
+        // client can perform (see HOST_AUTH_PROVIDERS). LCX does not own a route it cannot serve like DSH.
+        if (diagnosis === "model-not-configured" || diagnosis === "host-auth") return next();
+      }
       // The profile names no api and LCX's catalog does not describe the model: DSH's own catalog may still
       // resolve it, which only a lookup tells (once per failing request; resolving routes never pay it).
       if (!routeConfig && diagnoseResponsesRoute(ctx, options) === "api-unresolved")

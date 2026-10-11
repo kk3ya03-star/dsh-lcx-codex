@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import apply from '../lib/index.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { portableMessagesForCheckpoint } from '../lib/native-checkpoint.js'
 import { managedFailureChunk } from '../lib/responses-stream.js'

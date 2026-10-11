@@ -5,7 +5,7 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { auxiliaryUsageOf } from '../lib/search-accounting.js'
 import { runAgent, runCode, hostedResponse, hostedUsage } from './issue122-ptc-fixture.mjs'
-import { createAssembly } from './issue122-conversation-fixture.mjs'
+import { createAssembly, createSharedEngine } from './issue122-conversation-fixture.mjs'
 
 // Issue 122 item 1: DSH 0.2.1 records a tool called from inside `run_code` (programmatic tool calling) as
 // `tool/ptc-dispatch`, carrying the nested tool's `name`, `subCallId`, `rootCallId` and presentation `meta`,
@@ -205,4 +205,30 @@ test('client: a nested settlement whose root call was never seen is ignored, not
     { type: 'turn/end', seq: 3, time: 0, data: { turn: 1, reason: { kind: 'completed' } } },
   ]))
   assert.deepEqual(assembly.nodes(), [])
+})
+
+// Issue 125 item 2. LCX's Definitions are registered once on the shared event registry while each Session has its
+// own assembler, and a nested settlement names only its root call. Call ids can repeat across Sessions, so a root
+// call remembered in one Session must not turn another Session's settlement into a node of the wrong turn.
+test('client: root calls are scoped to their Session feed; colliding call ids never cross a Session switch (#125)', () => {
+  const shared = createSharedEngine()
+  const sessionA = createAssembly({ shared })
+  const sessionB = createAssembly({ shared })
+  const sessionC = createAssembly({ shared })
+  const record = { requestId: 'r', provider: 'p', model: 'm', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  const dispatch = seq => ({ type: 'tool/ptc-dispatch', seq, time: 0, data: { rootCallId: 'call_dup', parentCallId: 'call_dup', subCallId: 'call_dup:ptc:1', name: 'web_search', arguments: {}, isError: false, content: [], meta: { auxiliaryUsage: [record] } } })
+  const call = (seq, number) => ({ type: 'tool/call', seq, time: 0, data: { turn: number, step: 1, callId: 'call_dup', name: 'run_code', arguments: '{}' } })
+  const start = (seq, number) => ({ type: 'turn/start', seq, time: 0, data: { turn: number } })
+  const end = (seq, number) => ({ type: 'turn/end', seq, time: 0, data: { turn: number, reason: { kind: 'completed' } } })
+  const records = (assembly, number) => Array.from(assembly.turnUsage(number) ?? [], item => item.usage.totalTokens)
+  // Session A: the call and its nested search belong to turn 3; its feed ends at a high seq.
+  sessionA.replace([start(1, 3), call(2, 3), dispatch(3), end(4, 3), start(5, 4), end(6, 4)])
+  assert.deepEqual(records(sessionA, 3), [7], 'A: the nested search is billed to turn 3 of session A')
+  // Session B reuses the call id, but its window starts after the root call (older history was not loaded). The
+  // settlement cannot be placed, and must not inherit turn 3 of session A for a turn that does exist in B.
+  sessionB.replace([start(1, 3), dispatch(2), end(3, 3)])
+  assert.deepEqual(records(sessionB, 3), [], 'B: nothing is attributed through a root call remembered from A')
+  // Session C has its own call with the same id, and learns its own turn.
+  sessionC.replace([start(1, 7), call(2, 7), dispatch(3), end(4, 7)])
+  assert.deepEqual(records(sessionC, 7), [7], 'C: a colliding id resolves to the turn of session C itself')
 })

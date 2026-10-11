@@ -233,21 +233,34 @@ test('the catalog fills the endpoint of a model it ships; a model it does not sh
   assert.equal(route.resolveResponsesRouteConfig(context, { provider: 'declared', model: 'gpt-6-sol' }, policy), undefined)
 })
 
-test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is owned by a credential-only profile, as a catalog hit', () => {
+// Cloudflare AI Gateway authenticates through Pi's own client (account and gateway ids in the endpoint, the key as
+// cf-aig-authorization with Authorization removed), which LCX cannot reproduce from one credential reference: DSH
+// serves those pairs, LCX does not claim them.
+const HOST_AUTH = ['cloudflare-ai-gateway']
+
+test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is owned by a credential-only profile, as a catalog hit, except host-authenticated providers', () => {
   const computed = Object.fromEntries(bundledProviders.map(provider => [provider,
     getBuiltinModels(provider).filter(model => model.api === 'openai-responses' && /^(?:gpt-|grok)/iu.test(model.id)).map(model => model.id).sort()]))
   assert.deepEqual(computed, OWNED_PAIRS)
   assert.equal(Object.values(OWNED_PAIRS).flat().length, 111)
   const context = fixture('omitted', Object.fromEntries(bundledProviders.map(provider => [provider, { apiKeyEnv: 'SYNTHETIC_KEY' }])))
+  let owned = 0
   for (const [provider, ids] of Object.entries(OWNED_PAIRS)) for (const model of ids) {
     const pair = `${provider}/${model}`
     const resolved = model.startsWith('gpt-')
       ? route.resolveResponsesRouteConfig(context, { provider, model }, policy)
       : route.resolveGrokResponsesRouteConfig(context, { provider, model }, policy)
+    if (HOST_AUTH.includes(provider)) {
+      assert.equal(resolved, undefined, `${pair} is left to DSH`)
+      assert.equal(route.diagnoseResponsesRoute(context, { provider, model }), 'host-auth', pair)
+      continue
+    }
     assert.ok(resolved, pair)
     assert.equal(resolved.api, 'openai-responses', pair)
     assert.equal(resolveCatalogModel(provider, model).source, 'catalog-model', pair)
+    owned += 1
   }
+  assert.equal(owned, 111 - OWNED_PAIRS['cloudflare-ai-gateway'].length)
   // Nothing outside the set is owned: a pair the provider's catalog lacks, a GPT model on a Grok provider, and so on.
   for (const [provider, model] of [['xai', 'gpt-5.6-sol'], ['openai', 'grok-4.7'], ['openai', 'gpt-9-unlisted'], ['xai', 'grok-9-unlisted']]) {
     assert.equal(route.resolveResponsesRouteConfig(context, { provider, model }, policy), undefined, `${provider}/${model}`)
@@ -257,6 +270,9 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
   const sol61 = resolveCatalogModel('openai', 'gpt-6.1-sol')
   assert.equal(sol61.source, 'catalog-model')
   assert.equal(sol61.descriptor.compat.supportsAdditionalTools, true)
+  // An explicit profile does not change who authenticates: the provider is still left to DSH.
+  const explicit = fixture('explicit', { 'cloudflare-ai-gateway': { api: 'openai-responses', baseURL: 'https://gw.example/v1', apiKeyEnv: 'K' } })
+  assert.equal(route.resolveResponsesRouteConfig(explicit, { provider: 'cloudflare-ai-gateway', model: 'gpt-6-sol' }, policy), undefined)
 })
 
 test('Pi 1.1.0 catalog: no bundled Responses model sets sampling parameters, which the LCX body builder does not merge', () => {

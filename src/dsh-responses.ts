@@ -84,7 +84,7 @@ type SerializeOptions = Partial<ImageOptions> & {
   /**
    * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
    * serialization: a non-leading `system` message is then a real instruction update and is emitted in
-   * its history position with the model's instruction role. Any other value keeps the DSH 0.1.5-style
+   * its history position with the model's instruction role. Any other value keeps the plain
    * mapping (later `system` messages are ordinary user context).
    */
   systemPromptUpdate?: unknown;

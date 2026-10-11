@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import apply from '../lib/index.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 import {
   hostedMediaPresentationMeta,
   parseHostedSearchResponse,

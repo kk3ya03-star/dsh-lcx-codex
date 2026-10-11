@@ -28,7 +28,7 @@ import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
 import { authenticatedHeaders, promptCacheKey, promptCacheRetention, promptCacheSessionId, resolveResponsesRouteConfig } from '../lib/route.js'
 import { buildResponsesBody } from '../lib/responses-request.js'
-import { providerContext } from './dsh02-fixture.mjs'
+import { providerContext } from './provider-context-fixture.mjs'
 
 const credentials = { credentials: { resolve: async () => ({ value: 'redacted-test-value' }) } }
 
@@ -204,7 +204,7 @@ test('DSH provider profiles are the sole route authority; old plugin fields cann
   )
 })
 
-test('legal host custom-provider profile uses Pi 0.85.1 long cache semantics for GPT-5.6 routes', () => {
+test('legal host custom-provider profile uses the Pi long cache semantics for GPT-5.6 routes', () => {
   const profile = { api: 'openai-responses', baseURL: 'https://api.lcxbot.com/v1', apiKeyEnv: 'LCX_API_KEY' }
   const { ctx, fallback } = responsesRouteFixture({ lcx: profile }, { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true })
   for (const model of ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']) {

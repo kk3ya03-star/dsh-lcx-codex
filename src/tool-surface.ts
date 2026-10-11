@@ -43,19 +43,20 @@ export type ToolSurface = {
 /** Reason used when the route compat explicitly declines both declaration kinds; a deliberate configuration. */
 export const COMPAT_OPT_OUT = "route compat opts out of additional_tools and tool_search";
 
+/** Reason used when the route compat names no supported declaration shape at all; LCX does not guess one. */
+export const COMPAT_SILENT = "route compat does not say whether the model supports additional_tools or tool_search";
+
 /**
- * Which declaration item carries a mid-session addition. DSH declares `toolUpdate: "addition-only"` only for
- * models whose host catalog supports `additional_tools` or `tool_search`, so a route compat that says nothing
- * (LCX's frozen Pi 0.86 catalog does not know newer models such as gpt-6-sol) is not evidence against it. Only
- * an explicit `false` on a declaration kind that is not backed by an explicit `true` opts the route out.
+ * Which declaration item carries a mid-session addition, from what the route compat states: `additional_tools`
+ * wins over `tool_search` when both are supported, as in Pi. A shape is never guessed: a compat that is silent
+ * about both (a model neither the bundled Pi catalog nor the profile describes) or that declines both yields
+ * no shape, and the request carries the complete tool list instead. DSH declares addition-only for models whose
+ * own catalog supports one of the two, but only the compat says which.
  */
 export function declarationKind(compat: ToolSurfaceCompat | undefined): "additional_tools" | "tool_search" | undefined {
-  const additional = compat?.supportsAdditionalTools;
-  const search = compat?.supportsToolSearch;
-  if (additional === true) return "additional_tools";
-  if (search === true) return "tool_search";
-  if (additional === false || search === false) return undefined;
-  return "additional_tools";
+  if (compat?.supportsAdditionalTools === true) return "additional_tools";
+  if (compat?.supportsToolSearch === true) return "tool_search";
+  return undefined;
 }
 
 /** Remove the activation marker; the wire never carries it. */
@@ -88,8 +89,8 @@ function full(
  *
  * Addition-only is used only when every condition holds, otherwise the full current list is sent:
  * the policy is on, DSH reports `toolUpdate: "addition-only"` with an in-history system prompt, the route
- * compat does not explicitly opt out of `additional_tools`/`tool_search` (silence is accepted: the host
- * declares addition-only only for models that support them), and DSH supplied its tool history. The host
+ * compat names a supported declaration shape (`additional_tools` or `tool_search`; silence is not guessed
+ * at, see `declarationKind`), and DSH supplied its tool history. The host
  * projection is then re-verified (LCX-owned self check); any inconsistency falls back to the full list.
  * Removals and same-name redefinitions need no extra handling: the host history fold already yields a
  * shrunken or fully redeclared baseline for them (one-time cache loss), which this function passes through.
@@ -117,7 +118,10 @@ export function planToolSurface(input: {
   if (facts.toolUpdate !== "addition-only") return fallback("route does not declare addition-only tool updates");
   if (facts.systemPromptUpdate !== "in-history") return fallback("route is not in-history");
   const kind = declarationKind(compat);
-  if (kind === undefined) return fallback(COMPAT_OPT_OUT);
+  if (kind === undefined)
+    return fallback(
+      compat?.supportsAdditionalTools === false || compat?.supportsToolSearch === false ? COMPAT_OPT_OUT : COMPAT_SILENT,
+    );
   if (toolHistory === undefined) return fallback("no DSH tool history");
 
   const projected = projectToolUpdates(messages, tools, "addition-only", toolHistory);

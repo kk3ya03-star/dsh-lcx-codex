@@ -34,7 +34,7 @@ async function collect(iterable) {
   return chunks
 }
 
-test('standard request builder follows Pi 0.85.1 cache fields by route capability', () => {
+test('standard request builder follows the Pi cache fields by route capability', () => {
   const long = buildResponsesBody({
     model: model({ compat: { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true } }),
     input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
