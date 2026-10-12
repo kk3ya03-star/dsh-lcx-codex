@@ -2,20 +2,20 @@ version: 0.5.2
 state: APPROVED_STABLE
 approval:
   product_owner: private-issue-126-po-approved-2026-10-11
-  controller_review: PENDING_TECHNICAL_LEAD_RE_REVIEW_AFTER_POST_APPROVAL_CHANGES
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-12
   reference: docs/qa/issue-126/PRODUCT-OWNER-APPROVAL.md
   final_irreversible_confirmation: REQUIRED_BEFORE_PUBLIC_TAG
 readiness:
   state: READY_FOR_FINAL_CONFIRMATION
   reference: docs/qa/issue-126/RELEASE-READINESS.md
-  policy: The Product Owner approved shipping a stable bug-fix release for DSH 0.2.0-rc.2 that fixes the NO_ADAPTER failure on provider profiles without api (private Issue #123). The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead engineering review passed on 2026-10-11 for the previously reviewed product commit 03b39ce; two later fixes (profile models list authoritative, corrected third-party notice) need a Technical Lead re-review.
+  policy: The Product Owner approved shipping a stable bug-fix release for DSH 0.2.0-rc.2 that fixes the NO_ADAPTER failure on provider profiles without api (private Issue #123). The public tag, npm latest publication and GitHub Release stay blocked until the Product Owner gives the final irreversible confirmation after the Release Readiness Report. The Technical Lead engineering review passed on 2026-10-12 for the final product commit 1f60793 (it had first passed on 2026-10-11 for 03b39ce, before the authoritative models list fix and the corrected third-party notice were added).
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
   engineering_issues: [123, 126]
   product_commit: 1f607937b37a321b600e144697c7d435912eec1f
   product_tree: 3d19518e7f8a344101543a7070e46d924d555079
   runtime_qa_build_commit: ec2af93170fd2e53497fdafd2eb7bda441a99d8a
-  tl_reviewed_product_commit: 03b39cee65ec0bb4adf7e313210c70e978ae95b2
+  tl_reviewed_product_commit: 1f607937b37a321b600e144697c7d435912eec1f
   base_release: 0.5.1
   base_commit: b489af86c25bdf93fb15559e9804db3ef9f002d4
   frozen_tag: frozen/v0.5.2
@@ -99,7 +99,7 @@ runtime_basis:
   host_pi: 0.87.1
   plugin_pi: 0.87.1
   qualification: ENGINEERING_PASS with real-runtime QA evidence for the exact baseline plugin 0.5.2 x DSH 0.2.0-rc.2 x host Pi 0.87.1 x plugin Pi 0.87.1. Not VERIFIED until the stable artifact is published and post-release verified; publication alone does not promote the assessment. Stable publication does not widen the claim to other DSH builds in the install range.
-  remaining: Only the Technical Lead re-review of the post-approval changes, the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
+  remaining: Only the Product Owner final irreversible confirmation and post-publication verification remain. Issue #62 remains an upstream typed-provenance seam and #105 an upstream CSS-cleanup tracker; neither is a release blocker.
 publication:
   state: APPROVED_PENDING_PUBLISH
   policy: Release approval is recorded, but the final irreversible Product Owner confirmation is still REQUIRED_BEFORE_PUBLIC_TAG. Until it is recorded, the public tag, npm latest publication and GitHub Release are blocked even though this record is in the publishable state shape. Publication, once confirmed, moves latest from 0.5.1 to 0.5.2 and leaves prelatest on 0.6.0-pre.1. This stable release must be published before 0.6.0-pre.2.
