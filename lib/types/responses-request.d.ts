@@ -1,4 +1,3 @@
-/** @typedef {'none' | 'short' | 'long'} CacheRetention */
 type UnknownRecord = Record<string, unknown>;
 type CacheRetention = "none" | "short" | "long";
 type ResponsesCompat = {
@@ -39,7 +38,6 @@ type ResponsesWireBody = UnknownRecord & {
 };
 /**
  * Pi-parity generation controls for OpenAI Responses.
- * @param {GenerationControls & { model?: PiResponsesModel | string, includeDefaultReasoning?: boolean }} [controls]
  */
 export declare function responsesGenerationEnvelope({ model, reasoningEffort, temperature, maxTokens, includeDefaultReasoning, }?: GenerationControls & {
     model?: PiResponsesModel | string;
@@ -48,12 +46,10 @@ export declare function responsesGenerationEnvelope({ model, reasoningEffort, te
 /**
  * Build the shared LCX-owned request envelope while retaining Pi 0.86.0 Responses semantics.
  * Production LCX ordinary/compact/replay construction places the DSH system prompt in canonical input.
- * @param {BuildResponsesBodyOptions} options
  */
 export declare function buildResponsesBody({ model, input, tools, sessionId, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, samplingParams, }: BuildResponsesBodyOptions): ResponsesWireBody;
 /**
  * Compact is the standard request plus the one opaque-history transition patch.
- * @param {BuildResponsesBodyOptions} options
  */
 export declare function buildCompactionResponsesBody(options: BuildResponsesBodyOptions): ResponsesWireBody;
 export {};

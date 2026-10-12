@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ALPHA_ACTIONS, ALPHA_PROBE_VERSION, ALPHA_SEARCH_PARAMETERS } from "./web-search-alpha.js";
 import { JsonStore } from "./json-store.js";
+import { isRecord } from "./util.js";
 
 const VERSION = 1;
 const CLASSIFICATIONS = new Set(["native", "command-capable", "emulated-search-only", "unsupported", "unknown"] as const);
@@ -8,7 +9,6 @@ const ACTION_STATES = new Set(["supported", "unsupported", "unknown"] as const);
 type Classification = "native" | "command-capable" | "emulated-search-only" | "unsupported" | "unknown";
 type ActionState = "supported" | "unsupported" | "unknown";
 type Provenance = "trusted-native" | "unavailable";
-type RecordValue = Record<string, unknown>;
 
 export interface AlphaCapabilityRecord {
   classification: Classification;
@@ -20,9 +20,6 @@ export interface AlphaCapabilityRecord {
 }
 interface CapabilityData { version: typeof VERSION; capabilities: Record<string, AlphaCapabilityRecord> }
 
-function isRecord(value: unknown): value is RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 function isClassification(value: unknown): value is Classification { return typeof value === "string" && CLASSIFICATIONS.has(value as Classification); }
 function isActionState(value: unknown): value is ActionState { return typeof value === "string" && ACTION_STATES.has(value as ActionState); }
 function isProvenance(value: unknown): value is Provenance { return value === "trusted-native" || value === "unavailable"; }

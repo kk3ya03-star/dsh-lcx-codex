@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { getBuiltinModels as getAllModels, getBuiltinProviders as getAllProviders } from '@earendil-works/pi-ai/providers/all'
-import { getBuiltinModels, getBuiltinProviders } from '../src/pi-responses-runtime.ts'
+import { getCatalogModels } from '../src/pi-responses-runtime.ts'
 
 const root = new URL('../', import.meta.url)
 const readJson = path => JSON.parse(readFileSync(new URL(path, root), 'utf8'))
@@ -13,26 +13,21 @@ function plain(value) {
 
 test('bounded Pi catalog preserves every public Responses descriptor previously reachable', () => {
   const bundled = ['cloudflare-ai-gateway', 'github-copilot', 'openai', 'opencode', 'opencode-go', 'xai']
-  assert.deepEqual([...getBuiltinProviders()].sort(), bundled, 'Responses bundle provider scope changed')
-  const expected = Object.fromEntries(bundled.flatMap(provider => {
-    const models = getAllModels(provider).filter(model => model.api === 'openai-responses')
-    return models.length ? [[provider, plain(models)]] : []
-  }))
-  assert.deepEqual([...getBuiltinProviders()].sort(), Object.keys(expected).sort())
-  assert.ok(getAllProviders().includes('meta'), 'Pi 0.87.1 catalog shape changed; review bundle scope')
-  for (const provider of getBuiltinProviders())
-    assert.deepEqual(plain(getBuiltinModels(provider)), expected[provider], provider)
-  assert.deepEqual(getBuiltinModels('unrelated-provider'), [])
+  const expected = Object.fromEntries(bundled.map(provider => [provider, plain(getAllModels(provider).filter(model => model.api === 'openai-responses'))]))
+  assert.ok(getAllProviders().includes('meta'), 'Pi 1.1.0 catalog shape changed; review bundle scope')
+  for (const provider of bundled)
+    assert.deepEqual(plain(getCatalogModels(provider).filter(model => model.api === 'openai-responses')), expected[provider], provider)
+  assert.deepEqual(getCatalogModels('unrelated-provider'), [])
 })
 
 test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
-  assert.equal(pkg.version, '0.6.0-pre.1')
+  assert.equal(pkg.version, '0.6.0-pre.2')
   assert.equal(pkg.dependencies, undefined)
   assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.1-alpha.2')
-  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.1-alpha.2', verifiedDsh: '0.2.1-alpha.2', verifiedHostPi: '1.1.0', verifiedPluginPi: '0.87.1' })
-  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.87.1')
+  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.1-alpha.2', verifiedDsh: '0.2.1-alpha.2', verifiedHostPi: '1.1.0', verifiedPluginPi: '1.1.0' })
+  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '1.1.0')
   for (const [name, version] of Object.entries(pkg.peerDependencies))
     if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, pkg.lcxCompatibility.dshInstallRange, name)
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-settings'], pkg.lcxCompatibility.dshInstallRange)
@@ -66,4 +61,6 @@ test('bundle audit is output-contribution based and preserves both exact MIT not
   assert.match(notices, /Copyright \(c\) 2025 Mario Zechner/u)
   assert.match(notices, /Copyright \(c\) 2023 Promplate Dev Team/u)
   assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 2)
+  // The shipped notice names the Pi version that is actually bundled.
+  assert.ok(notices.includes(`## @earendil-works/pi-ai ${readJson('package.json').devDependencies['@earendil-works/pi-ai']}\n`))
 })

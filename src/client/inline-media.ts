@@ -196,11 +196,11 @@ function inlineMediaAnswer(marker: HTMLElement): HTMLElement | null {
   const ElementClass = marker.ownerDocument.defaultView?.HTMLElement;
   if (!ElementClass || !row || !row.dataset.chatTurn) return null;
   const group = row.closest<HTMLElement>('[data-chat-group-key][data-step-process]');
-  // The flow items are the group's own siblings. DSH 0.2.1 renders them inside the display:contents
-  // anchor of its ChatFlow slot, so the real chat column may sit one level above that single, explicitly
-  // named wrapper (DSH 0.2.0 had the items directly in the column). Any other wrapper fails closed.
+  // The flow items are the group's own siblings. DSH renders them inside the display:contents anchor of its
+  // ChatFlow slot, so the real chat column sits one level above that single, explicitly named wrapper. Any
+  // other structure (including a column holding the items directly, as DSH 0.2.0 did) fails closed.
   const siblings = group?.parentElement;
-  const column = siblings?.dataset.slot === CHAT_FLOW_SLOT ? siblings.parentElement : siblings;
+  const column = siblings?.dataset.slot === CHAT_FLOW_SLOT ? siblings.parentElement : null;
   if (!group || !(siblings instanceof ElementClass) || !(column instanceof ElementClass) || !column.hasAttribute('data-chat-flow') ||
       group.dataset.chatTurn !== row.dataset.chatTurn) return null;
   // The group may follow several steps of one Turn. The last preceding response

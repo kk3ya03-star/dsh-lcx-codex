@@ -198,6 +198,3 @@ export function outputPdfRefs(blocks: WebRunBlock[]): string[] {
   return refs;
 }
 
-export function blockPlainText(block: Pick<WebRunBlock, "lines">): string {
-  return block.lines.map((line) => line.text).filter(Boolean).join(" ");
-}

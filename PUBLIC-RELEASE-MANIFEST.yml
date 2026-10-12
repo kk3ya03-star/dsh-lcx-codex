@@ -1,31 +1,32 @@
-version: 0.6.0-pre.1
+version: 0.6.0-pre.2
 state: APPROVED_PRERELEASE
 approval:
-  product_owner: private-issue-124-po-approved-2026-10-11
-  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-11
-  reference: docs/qa/issue-124/PRODUCT-OWNER-APPROVAL.md
-  final_irreversible_confirmation: RECORDED_2026-10-11
-  final_confirmation_reference: docs/qa/issue-124/PO-FINAL-CONFIRMATION.md
+  product_owner: private-issue-127-po-approved-2026-10-11
+  controller_review: TL_ACCEPTED_ENGINEERING_REVIEW_2026-10-12
+  tl_reviewed_product_commit: e97ab741774c0b59d2a755a231019984187b44ed
+  reference: docs/qa/issue-127/PRODUCT-OWNER-APPROVAL.md
+  final_irreversible_confirmation: RECORDED_2026-10-12
+  final_confirmation_reference: docs/qa/issue-127/PO-FINAL-CONFIRMATION.md
 readiness:
   state: FINAL_CONFIRMATION_RECORDED
-  reference: docs/qa/issue-124/RELEASE-READINESS.md
-  policy: The Product Owner gave the final irreversible confirmation on 2026-10-11 after the Release Readiness Report and the Technical Lead engineering review (private Issue #124). This exact candidate is authorized for publication.
+  reference: docs/qa/issue-127/RELEASE-READINESS.md
+  policy: The Product Owner gave the final irreversible confirmation on 2026-10-12 after the Release Readiness Report and the Technical Lead engineering re-review 5 (private Issue #127). This exact candidate is authorized for publication after stable 0.5.2, which is now published as npm latest.
 source:
   repository: kk3ya03-star/dsh-lcx-codex-private
-  engineering_issue: 124
-  engineering_issues: [117, 119, 120, 122]
-  product_commit: fbe6145e89f18cb96430f84ed8e7081bf37af4c3
-  runtime_qa_build_commit: 6b0e61fe4cb74ddb79aeaaf754922b0d678c6d10
-  frozen_tag: frozen/v0.6.0-pre.1
+  engineering_issue: 123
+  engineering_issues: [123]
+  product_commit: e97ab741774c0b59d2a755a231019984187b44ed
+  runtime_qa_build_commit: e97ab741774c0b59d2a755a231019984187b44ed
+  frozen_tag: frozen/v0.6.0-pre.2
   frozen_tag_state: NOT_CREATED_UNTIL_FINAL_CONFIRMATION
-  policy: Product/runtime source is the private engineering commit above (the version bump on top of the integration build 6b0e61f that carried the #120 live A/B; src, lib and cordis.patch.yml are byte-identical between the two, only the package version, its lock entry, the package-contract version assertion and the changelog differ; the later branch commits change only governance records and QA documentation). Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.6.0-pre.1 tag is created only after the Product Owner final confirmation.
+  policy: Product/runtime source is the private engineering commit above, which carries the version bump, the Technical Lead review and re-review follow-ups, the bundled Pi 1.1.0 change, the audit cleanup, the host model pre-warm, the provider headers, the remaining plugin-side items and the fixes for the three P2 findings of the last Technical Lead re-review, and is itself the build the latest real DSH 0.2.1-alpha.2 runtime evidence ran on (lib byte-identical install; earlier builds 4cf1d5f, d2f917e, bbfed46, 3d55b61 and 5345d81 were also exercised, and the changes after them are covered by the later evidence sets). The later branch commits change only governance records, the changelog wording and QA documentation. Later merge/release-control commits on the branch do not replace the product source. The frozen/v0.6.0-pre.2 tag is created only after the Product Owner final confirmation.
 public_target:
   repository: kk3ya03-star/dsh-lcx-codex
   branch: main
-  tag: v0.6.0-pre.1
-  qualification: Product Owner approved shipping Issues #117, #119, #120 and #122 as a prerelease. Public tag creation remains operationally blocked until the final irreversible confirmation recorded in private Issue #124.
+  tag: v0.6.0-pre.2
+  qualification: Product Owner approved shipping the Issue #123 fix as a prerelease. Public tag creation remains operationally blocked until the final irreversible confirmation recorded in private Issue #127.
   npm_dist_tag: prelatest
-  stable_latest_must_remain: 0.5.1
+  stable_latest_must_remain: 0.5.2
 public_export:
   from_private_release_source:
     - .gitattributes
@@ -46,12 +47,8 @@ public_export:
   from_release_control_overlay:
     - PUBLIC-RELEASE-MANIFEST.yml
   public_test_support_from_private_release_source:
-    - data/model-scope-086-matrix.json
-    - data/pi086-responses-descriptors.json
-    - data/pi086-responses-models.json
-    - data/step0c-route-086.json
     - qa/issue-62/adapter-off.mjs
-  public_test_support_policy: Deterministic fixtures and one reversible QA helper referenced by the public tests, exported byte-identical from the private release source. They are never npm payload (package.json files remains the runtime allowlist). The single qa/issue-62/adapter-off.mjs allowlist overrides the general qa/** exclusion for that file only; no other qa/** path is exported.
+  public_test_support_policy: One reversible QA helper referenced by the public tests, exported byte-identical from the private release source. It is never npm payload (package.json files remains the runtime allowlist). The single qa/issue-62/adapter-off.mjs allowlist overrides the general qa/** exclusion for that file only; no other qa/** path is exported. The Pi 0.86 data fixtures of earlier candidates no longer exist.
   preserve_or_update_on_public_surface:
     - .github/workflows/publish.yml
     - .github/workflows/verify.yml
@@ -63,12 +60,11 @@ public_export:
     - CONTRIBUTING.md
     - assets/settings-card.png
   distribution_overlays_reviewed:
-    - README.md (public zh; DSH 0.2.1-alpha.2 and later install 0.6.0-pre.1 via @prelatest with the lower-bound-only range and verification scope stated, DSH 0.2.0-rc.2 installs stable 0.5.1 via @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its pinned-prerelease guidance)
+    - README.md (public zh; DSH 0.2.1-alpha.2 and later install 0.6.0-pre.2 via @prelatest with the lower-bound-only range and verification scope stated, DSH 0.2.0-rc.2 installs stable 0.5.2 via @latest, DSH 0.1.5 pins 0.4.3, DSH 0.1.6 keeps its pinned-prerelease guidance)
     - README_EN.md (same install-matrix change)
-    - CHANGELOG.md (0.6.0-pre.1 release-candidate section on top of 0.5.1-pre.1, folding the never-published 0.5.1-pre.2; no private issue numbers)
-    - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count and runtime-evidence sentence updated for 0.6.0-pre.1)
-    - assets/settings-card.png (recaptured from an isolated install of the exact public tarball on DSH 0.2.1-alpha.2; badge v0.6.0-pre.1)
-    - .github/workflows/verify.yml and publish.yml (DSH runtime fixture runtime-dsh02 -> runtime-dsh021)
+    - CHANGELOG.md (0.6.0-pre.2 release-candidate section on top of 0.6.0-pre.1; no private issue numbers)
+    - ARCHITECTURE.md (DSH 0.2.1-alpha.2 / host Pi 1.1.0 wording; candidate test count, generated-file count, package file count and runtime-evidence sentence updated for 0.6.0-pre.2)
+    - assets/settings-card.png (badge v0.6.0-pre.2, 1600x2000, PNG SHA-256 e733b119fe1e805ba26a7bf9045a53d14a79591403704a1af677532c024b3d00; first captured from an isolated DSH 0.2.1-alpha.2 install of an earlier 0.6.0-pre.2 tarball and verified byte-identical against the later final tarballs, the last being the final tarball (SHA-256 b2ce73455b6f84f74b13ef2052e5f0bc746c028a92228e1c69228b0c6cc78fc9, all 42 files byte-identical after install, same capture script and viewport), so the image was kept; the image is not part of the npm package)
     - .github/ISSUE_TEMPLATE/bug.yml (version placeholder)
   public_readme_policy: Update the reviewed public README and README_EN install matrix for the prerelease line; do not export the private control-plane README.
   exclude_from_private_export:
@@ -92,22 +88,22 @@ public_export:
     - .github/**
 verification:
   state: READY_FOR_FINAL_CONFIRMATION
-  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the isolated install smoke are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime evidence is recorded in the Worker-session comments of Issues #117, #119, #120 and #122 (isolated home; the #120 live A/B ran on build 6b0e61f, the #122 PTC and Plugin Manager card checks on 8fb3615, the #117/#119 sessions on earlier builds of the same line); the DSH 0.2.1-alpha.2 retarget itself was runtime-QA'd for 0.5.1-pre.1 (docs/qa/issue-115/RUNTIME-QA.md). No public tag, npm publication, dist-tag change or GitHub Release has occurred.
+  policy: Parity against the private release source, the full engineering gate set on the exact public tree, the package boundary and the tarball identity are recorded in the Release Readiness Report. Real DSH 0.2.1-alpha.2 runtime evidence for the Issue #123 fix, the Technical Lead review follow-ups, the bundled Pi 1.1.0, the audit cleanup and the remaining plugin-side items is recorded in the Issue #123 Worker-session comments (6109224424 on build 4cf1d5f, 6110048211 on d2f917e, 6110372654 on bbfed46, 6111110429 on 3d55b61, 6112535019 on 5345d81, 6126784483 on the product commit e97ab74) and docs/qa/issue-127/RUNTIME-QA.md (isolated home, lib byte-identical installs); the DSH 0.2.1-alpha.2 retarget itself was runtime-QA'd for 0.5.1-pre.1 (docs/qa/issue-115/RUNTIME-QA.md) and the 0.6.0-pre.1 features on the same baseline. No public tag, npm publication, dist-tag change or GitHub Release has occurred for 0.6.0-pre.2.
 runtime_basis:
   dsh: 0.2.1-alpha.2
   host_pi: 1.1.0
-  plugin_pi: 0.87.1
-  qualification: ENGINEERING_PASS with real-runtime evidence for the exact baseline plugin 0.6.0-pre.1 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 0.87.1. Not VERIFIED; publication does not by itself promote this assessment.
+  plugin_pi: 1.1.0
+  qualification: ENGINEERING_PASS with real-runtime evidence for the exact baseline plugin 0.6.0-pre.2 x DSH 0.2.1-alpha.2 x host Pi 1.1.0 x plugin Pi 1.1.0. Not VERIFIED; publication does not by itself promote this assessment.
   install_range: ">=0.2.1-alpha.2 (lower bound only, no ceiling; Product Owner decision 2026-10-10). Newer DSH versions can install but are unverified."
-  remaining: Only post-publication verification remains. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search.
+  remaining: Only post-publication verification remains. Not exercisable live and covered by real-class tests only - in-stream failure classification, the aggregate request image bound, the incomplete tool group, hosted usage edge cases and the SSE stall cancel. Not covered by runtime QA - natural pressure-band Native V2 trigger and Alpha search. A model whose protocol is unknown to DSH, the profile and the bundled Pi 1.1.0 catalog fails closed by design.
 publication:
   state: APPROVED_PENDING_PUBLISH
-  policy: Product Owner approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.6.0-pre.1, npm prelatest publication and the GitHub Release are authorized for this exact candidate only; npm latest must remain 0.5.1, which is published first.
+  policy: Product Owner approval and final irreversible confirmation are recorded for this exact candidate. Public tag v0.6.0-pre.2, npm prelatest publication and the GitHub prerelease are authorized for this exact candidate only; npm latest must remain 0.5.2, which was published first.
 previous_release:
-  version: 0.5.0
-  tag: v0.5.0
-  policy: Existing stable artifact, public tag and registry version are immutable and must not be reused. Stable 0.5.1 (stable/0.5.x line, Issue #121) is published before this prerelease and then is the npm latest that must not move (stable_latest_must_remain); it is not part of this tree.
+  version: 0.5.1
+  tag: v0.5.1
+  policy: Existing stable artifact, public tag and registry version are immutable and must not be reused. Stable 0.5.2 (stable/0.5.x line, Issue #126) is published before this prerelease and then is the npm latest that must not move (stable_latest_must_remain); it is not part of this tree.
 previous_prerelease:
-  version: 0.5.1-pre.1
-  tag: v0.5.1-pre.1
-  policy: Existing published artifact, public tag and registry version are immutable and must not be reused; superseded on prelatest only after the confirmed 0.6.0-pre.1 publication. The never-published 0.5.1-pre.2 is superseded by 0.6.0-pre.1 and its tag and version are not used.
+  version: 0.6.0-pre.1
+  tag: v0.6.0-pre.1
+  policy: Existing published artifact, public tag and registry version are immutable and must not be reused; superseded on prelatest only after the confirmed 0.6.0-pre.2 publication.

@@ -14,22 +14,17 @@ import {
   installCompactionPatch,
   patchCompactionConfig,
   patchToolResultPruner,
-  patchVisibleWebSearchTimeout,
   readAgentRouteState,
-  readWebSearchProvider,
-  refreshVisibleWebSearchTimeouts,
   resolveAgentService,
   resolveContextService,
   resolveScopedService,
   restoreCompactionConfig,
   restoreCompactionPatches,
   restoreToolResultPruner,
-  restoreVisibleWebSearchTimeouts,
   scopedToolRuntime,
   sessionFor,
   sessionsService,
   toolResultPrunerState,
-  writeWebSearchProvider,
 } from '../lib/dsh-compat.js'
 
 test('scoped tool registration preserves the DSH service receiver and disposer', () => {
@@ -91,19 +86,6 @@ test('agent service resolution uses the official AgentPresets service resolver',
   const unavailable = { rootOnly: ctx.rootOnly, get: () => { throw new Error('context unavailable') } }
   assert.throws(() => contextService(unavailable, 'rootOnly'), /context unavailable/u)
   assert.equal(resolveContextService(unavailable, 'rootOnly'), undefined)
-})
-
-test('web provider selection is reversible and fails closed on inaccessible host state', () => {
-  const ctx = { web: { searchProviderId: 'original' } }
-  assert.equal(readWebSearchProvider(ctx), 'original')
-  assert.equal(writeWebSearchProvider(ctx, 'lcx-responses'), true)
-  assert.equal(readWebSearchProvider(ctx), 'lcx-responses')
-  assert.equal(writeWebSearchProvider(ctx, 'original'), true)
-
-  const denied = { web: new Proxy({}, { get() { throw new Error('denied') }, set() { return false } }) }
-  assert.equal(readWebSearchProvider(denied), undefined)
-  assert.equal(writeWebSearchProvider(denied, 'lcx-responses'), false)
-  assert.equal(writeWebSearchProvider({}, 'lcx-responses'), false)
 })
 
 test('compaction patches deduplicate by concrete identity and restore only their own wrapper', async () => {
@@ -319,13 +301,6 @@ test('compatibility patch points fail safe when optional host writes are rejecte
   }
   assert.equal(patchCompactionConfig(compactionConfigState(rejectedConfig), value => ({ ...value, thresholdRatio: 0.9 })), undefined)
   assert.equal(rejectedConfig.config, config)
-
-  const rejectedDefinition = {}
-  Object.defineProperty(rejectedDefinition, 'timeoutMs', { get: () => 5_000, set: () => { throw new Error('timeout write rejected') }, configurable: true })
-  const agent = { ctx: { tools: { get: () => rejectedDefinition } } }
-  const definitions = new Map()
-  assert.doesNotThrow(() => patchVisibleWebSearchTimeout(agent, () => 240_000, definitions))
-  assert.doesNotThrow(() => restoreVisibleWebSearchTimeouts(definitions))
 })
 
 test('temporary pruner and compaction config mutations restore by identity', () => {
@@ -351,31 +326,3 @@ test('temporary pruner and compaction config mutations restore by identity', () 
   assert.equal(pruner.pruneSession, externalPrune)
 })
 
-test('visible web_search timeout patch tracks, refreshes, and restores the original definition', () => {
-  const existing = { timeoutMs: 5_000 }
-  const added = {}
-  let definition = existing
-  const agent = { ctx: { tools: { get: (name) => name === 'web_search' ? definition : undefined } } }
-  const records = new Map()
-
-  patchVisibleWebSearchTimeout(agent, () => 240_000, records)
-  assert.equal(existing.timeoutMs, 240_000)
-  refreshVisibleWebSearchTimeouts(records, undefined)
-  assert.equal(existing.timeoutMs, 5_000)
-
-  definition = added
-  patchVisibleWebSearchTimeout(agent, () => 120_000, records)
-  assert.equal(added.timeoutMs, 120_000)
-  refreshVisibleWebSearchTimeouts(records, undefined)
-  assert.equal(Object.prototype.hasOwnProperty.call(added, 'timeoutMs'), true)
-  assert.equal(added.timeoutMs, undefined)
-  restoreVisibleWebSearchTimeouts(records)
-  assert.equal(existing.timeoutMs, 5_000)
-  assert.equal(Object.prototype.hasOwnProperty.call(added, 'timeoutMs'), false)
-  assert.equal(records.size, 0)
-
-  definition = undefined
-  let computed = false
-  patchVisibleWebSearchTimeout(agent, () => { computed = true; return 240_000 }, records)
-  assert.equal(computed, false)
-})

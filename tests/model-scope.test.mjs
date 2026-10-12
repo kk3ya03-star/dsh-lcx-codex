@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import apply from '../lib/index.js'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 const gptProfile = {
   api: 'openai-responses',

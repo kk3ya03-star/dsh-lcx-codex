@@ -5,7 +5,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import apply from '../lib/index.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 // Issue 77 — the first-call ordering artifact, and the seam it was hiding.
 //

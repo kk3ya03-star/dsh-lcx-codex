@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { consumeSse, fetchJsonWithRetry, fetchSseWithRetry } from '../lib/transport.js'
+import { consumeSse, fetchJsonWithRetry, fetchSseWithRetry, readSseEvents } from '../lib/transport.js'
 
 for (const [name, transport, status, limit] of [
   ['JSON success', fetchJsonWithRetry, 200, 4],
@@ -155,4 +155,43 @@ test('single-attempt transports preserve bounded provider retry guidance', async
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+// The one SSE reader behind consumeSse (alpha / compaction) and the Responses stream.
+const sseErrors = { noBody: () => new Error('no body'), malformed: cause => Object.assign(new Error('malformed'), { cause }), tooLarge: max => new Error('too large ' + max) }
+const sseBody = (...chunks) => new Response(new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk)); controller.close() } }))
+const collectEvents = async (response, options = {}) => { const out = []; for await (const event of readSseEvents(response, { errors: sseErrors, ...options })) out.push(event); return out }
+const NL = String.fromCharCode(10)
+const CR = String.fromCharCode(13)
+
+test('the shared SSE reader parses data lines, comments, CRLF, multi-line data and [DONE] across chunk boundaries', async () => {
+  const events = await collectEvents(sseBody(': keep-alive' + NL + NL + 'data: {"a":1}' + CR + NL + CR + NL + 'da', 'ta: {"b":' + NL + 'data: 2}' + NL + NL + 'data: [DONE]' + NL + NL, 'data: {"tail":true}'))
+  assert.deepEqual(events, [{ a: 1 }, { b: 2 }, { tail: true }])
+})
+
+test('the shared SSE reader reports each caller its own errors: no body, malformed JSON, byte limit', async () => {
+  await assert.rejects(() => collectEvents({ body: null }), /no body/u)
+  await assert.rejects(() => collectEvents(sseBody('data: {oops' + NL + NL)), error => error.message === 'malformed' && error.cause instanceof SyntaxError)
+  await assert.rejects(() => collectEvents(sseBody('data: {"a":1}' + NL + NL, 'data: {"b":2}' + NL + NL), { maxBytes: 20 }), /too large 20/u)
+})
+
+test('the shared SSE reader settles an abort on a read that never ends, cancels the body and releases it when the consumer stops early', async () => {
+  let cancelled = 0
+  const hanging = new Response(new ReadableStream({ start() {}, cancel() { cancelled += 1 } }))
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(new Error('user cancel')), 30)
+  const outcome = await Promise.race([
+    collectEvents(hanging, { signal: controller.signal }).then(() => 'resolved', error => error),
+    new Promise(resolve => setTimeout(() => resolve('pending'), 1500)),
+  ])
+  assert.match(String(outcome?.message), /user cancel/u)
+  assert.ok(cancelled >= 1)
+  // A consumer that stops after the first event releases the body.
+  let closed = false
+  const source = new Response(new ReadableStream({
+    start(streamController) { streamController.enqueue(new TextEncoder().encode('data: {"n":1}' + NL + NL + 'data: {"n":2}' + NL + NL)) },
+    cancel() { closed = true },
+  }))
+  for await (const event of readSseEvents(source, { errors: sseErrors })) { assert.deepEqual(event, { n: 1 }); break }
+  assert.equal(closed, true)
 })

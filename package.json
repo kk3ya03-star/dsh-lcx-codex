@@ -1,6 +1,6 @@
 {
   "name": "dsh-lcx-codex",
-  "version": "0.6.0-pre.1",
+  "version": "0.6.0-pre.2",
   "description": "Model-scoped DSH plugin: GPT Responses lifecycle, Native V2 compaction and Hosted/Alpha Search; Grok native Web/X Search",
   "icon": "./icon.svg",
   "keywords": [
@@ -67,7 +67,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.1-alpha.2",
-    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-ai": "1.1.0",
     "@deepseek-ai/schemastery": "~3.18.5-alpha.1",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
@@ -187,6 +187,6 @@
     "dshInstallRange": ">=0.2.1-alpha.2",
     "verifiedDsh": "0.2.1-alpha.2",
     "verifiedHostPi": "1.1.0",
-    "verifiedPluginPi": "0.87.1"
+    "verifiedPluginPi": "1.1.0"
   }
 }

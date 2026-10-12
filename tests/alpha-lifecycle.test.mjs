@@ -10,7 +10,7 @@ import { ALPHA_PROBE_VERSION, ALPHA_SCHEMA_FINGERPRINT } from '../lib/web-search
 import { AlphaCapabilityStore, alphaCapabilityFingerprint } from '../lib/web-search-capability.js'
 import { AlphaRefStore } from '../lib/web-search-ref-store.js'
 import { routeFingerprint } from '../lib/route.js'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 test('registered Alpha tool conforms to DSH output schema while persisting private refs', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-lcx-alpha-lifecycle-'))

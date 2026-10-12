@@ -21,7 +21,7 @@ const result = await build({
   metafile: true,
   treeShaking: true,
   banner: {
-    js: '// Generated from public @earendil-works/pi-ai@0.87.1 by scripts/build-pi-runtime.mjs. Do not edit.',
+    js: '// Generated from public @earendil-works/pi-ai@1.1.0 by scripts/build-pi-runtime.mjs. Do not edit.',
   },
 })
 
@@ -40,9 +40,12 @@ const packageOf = path => {
 }
 const bundledPackages = [...new Set(contributing.map(packageOf).filter(Boolean))].sort()
 assert.deepEqual(bundledPackages, [...allowedPackages].sort(), 'Unexpected third-party package entered Pi bundle')
+// Provider helper modules that are not catalogs (the OpenCode routing header Pi adds before dispatch).
+const providerHelpers = new Set(['opencode-headers'])
 const catalogInputs = contributing.flatMap(path => {
   const match = path.match(/\/providers\/(?:data\/)?([^/]+)\.(?:js|json)$/u)
-  return match ? [match[1].replace(/\.models$/u, '')] : []
+  const name = match?.[1].replace(/\.models$/u, '')
+  return name && !providerHelpers.has(name) ? [name] : []
 })
 assert.deepEqual([...new Set(catalogInputs)].sort(), [...allowedCatalogs].sort(), 'Responses provider catalog scope drifted')
 assert.ok(emittedOutput.bytes < 512 * 1024, `Pi runtime bundle exceeded 512 KiB: ${emittedOutput.bytes}`)

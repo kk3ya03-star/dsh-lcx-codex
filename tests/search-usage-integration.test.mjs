@@ -11,7 +11,7 @@ import BasicCompaction from '@deepseek-ai/dsh-compaction-basic';
 import {LlmAdapter,createMessage,createUserMessage,createToolResultMessage,ToolCallId} from '@deepseek-ai/dsh-llm';
 import {deriveTurnTokenUsage} from '@deepseek-ai/dsh-token-meter/client';
 import {installSearchUsage,installSearchMeasurement} from '../lib/search-usage.js';
-import {aggregateContextOf,auxiliaryUsageOf,addTurnUsage,mergeBuckets} from '../lib/search-accounting.js';
+import {aggregateContextOf,auxiliaryUsageOf,mergeBuckets} from '../lib/search-accounting.js';
 import adapterOff,{disableSearchMeasurement} from '../qa/issue-62/adapter-off.mjs';
 
 import Agents from '@deepseek-ai/dsh-agent';
@@ -309,13 +309,11 @@ test('usage readers reject foreign tools, invalid sums and unknown scope version
  assert.deepEqual(auxiliaryUsageOf(invalid,'web_search'),[]);
  assert.equal(aggregateContextOf({type:'assistant/message',data:{usage:u,stream:[{type:'chunk',chunk:{type:'finish',replayState:{response:{lcxUsage:{version:99,inputTokenScope:'aggregate'}}}}}]}}),false);
 });
-test('per-turn merge adds search once while respecting missing main-call disclosures',()=>{
+test('per-turn derivation counts the main call once and keeps the search tool event out of the base total',()=>{
  const events=[{type:'turn/start',data:{turn:1}},{type:'step/start',data:{turn:1,step:1}},
  {type:'assistant/message',data:{turn:1,step:1,usage:u,stream:[],message:{source:{provider:'relay',model:'gpt-main'}}}},
  toolEvent(),{type:'step/end',data:{turn:1,step:1}},{type:'turn/end',data:{turn:1}}];
  const base=deriveTurnTokenUsage(events);assert.equal(base.totalTokens,335010);
- const result=addTurnUsage(base,auxiliaryUsageOf(toolEvent(),'web_search'));assert.equal(result.totalTokens,335120);assert.equal(result.cacheReadTokens,330080);assert.equal(result.routes.length,2);
- assert.equal(addTurnUsage(undefined,[record]),undefined);
 });
 
 const compiled=await build({entryPoints:[new URL('../src/client/search-usage-ui.ts',import.meta.url).pathname.replace(/^\/(\w:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'});

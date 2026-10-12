@@ -387,7 +387,3 @@ export function extractDirectMediaLinks(text: string): readonly SearchMediaItem[
   return result;
 }
 
-/** Direct video files only (see `extractDirectMediaLinks`). */
-export function extractDirectVideoLinks(text: string): readonly SearchMediaItem[] {
-  return extractDirectMediaLinks(text).filter((item) => item.kind === "video");
-}

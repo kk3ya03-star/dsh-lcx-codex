@@ -28,10 +28,9 @@ import {
   convertResponsesMessages,
   convertResponsesTools,
   createGrammarToolInputProperties,
-  getBuiltinModels,
   normalizeContext,
 } from "./pi-responses-runtime.js";
-import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
+import { resolveCatalogModel } from "./model-catalog.js";
 import { withoutDeferLoading } from "./tool-surface.js";
 import type {
   AssistantMessage as PiAssistantMessage,
@@ -42,9 +41,8 @@ import type {
   ThinkingContent as PiThinkingContent,
   Tool as PiToolValue,
   ToolCall as PiToolCall,
-  ToolResultMessage as PiToolResultMessage,
-  UserMessage as PiUserMessage,
 } from "@earendil-works/pi-ai";
+import { isRecord, codedError, positiveSafeInteger } from "./util.js";
 
 const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024;
 const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048;
@@ -86,7 +84,7 @@ type SerializeOptions = Partial<ImageOptions> & {
   /**
    * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
    * serialization: a non-leading `system` message is then a real instruction update and is emitted in
-   * its history position with the model's instruction role. Any other value keeps the DSH 0.1.5-style
+   * its history position with the model's instruction role. Any other value keeps the plain
    * mapping (later `system` messages are ordinary user context).
    */
   systemPromptUpdate?: unknown;
@@ -111,12 +109,9 @@ type ReplayResponse = WireRecord & {
   stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
 };
 
-function isObject(value: unknown): value is WireRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isResponseInputItem(value: unknown): value is ResponseInputItem {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   if (value.type === "compaction")
     return typeof value.encrypted_content === "string";
   if (value.type === "message" || value.type === undefined)
@@ -140,7 +135,7 @@ function isResponseInputItem(value: unknown): value is ResponseInputItem {
 
 export function responseInputItems(value: unknown): ResponseInputItem[] {
   if (!Array.isArray(value) || !value.every(isResponseInputItem))
-    throw error(
+    throw codedError(
       "native checkpoint contains an unsupported Responses input item",
       "LCX_COMPACT_INVALID_RESPONSE",
     );
@@ -155,20 +150,8 @@ function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function positiveSafeInteger(value: unknown, fallback: number): number {
-  return Number.isSafeInteger(value) && (value as number) > 0
-    ? (value as number)
-    : fallback;
-}
-
-function error(message: string | undefined, code: string): Error & { code: string } {
-  const value = new Error(message) as Error & { code: string };
-  value.code = code;
-  return value;
-}
-
 function errorCode(value: unknown): string | undefined {
-  return isObject(value) && typeof value.code === "string" ? value.code : undefined;
+  return isRecord(value) && typeof value.code === "string" ? value.code : undefined;
 }
 
 function errorMessage(value: unknown): string {
@@ -187,7 +170,7 @@ function attachmentServices(
 }
 
 function hasImageAttachment(value: unknown): value is ImageAttachmentRef {
-  return isObject(value) && typeof value.attachmentId === "string" && typeof value.bytes === "number";
+  return isRecord(value) && typeof value.attachmentId === "string" && typeof value.bytes === "number";
 }
 
 function imageAccess(
@@ -218,10 +201,12 @@ export async function resolveRouteModelFacts(
   toolUpdate: "in-history" | "addition-only" | undefined;
   /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
   reasoning: { efforts: string[] } | undefined;
+  /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
+  contextWindow: number | undefined;
   resolved: boolean;
 }> {
   const llm = ctx?.llm;
-  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -240,21 +225,33 @@ export async function resolveRouteModelFacts(
       reasoning: info.reasoning === undefined
         ? undefined
         : { efforts: info.reasoning.efforts.map((effort) => String(effort.id)) },
+      contextWindow: positiveSafeInteger(info.context?.contextWindow, 0) || undefined,
       resolved: true,
     };
   } catch {
     // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
     // to downgrade history that only an in-history route may legitimately contain.
-    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, resolved: false };
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
   }
 }
 
-export async function resolveModelImageSupport(
-  ctx: DshContext | undefined,
-  route: { provider?: unknown; model?: unknown },
-  signal?: AbortSignal,
-): Promise<ImageSupport> {
-  return (await resolveRouteModelFacts(ctx, route, signal)).imageSupport;
+/**
+ * The model facts a route serializes and sends with, laid over the bundled catalog descriptor. What DSH
+ * reported for the exact routed model (context window; on a GPT route also the reasoning capability) wins
+ * over the catalog entry, and on a GPT route a profile's declared `reasoningEfforts` (wire mapping, or `false`
+ * for a non-reasoning model) wins over both. A GPT model with no catalog entry follows what DSH itself
+ * resolved for it instead of being assumed to reason. A Grok route carries its reasoning projection
+ * separately (`modelDefaults` / `modelControls`), so only the context window is applied there.
+ */
+export function routeModelOverride(
+  routeConfig: { modelControls?: object },
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">,
+  grok: boolean,
+): Record<string, unknown> | undefined {
+  const contextWindow = facts.resolved && facts.contextWindow !== undefined ? { contextWindow: facts.contextWindow } : {};
+  if (grok) return Object.keys(contextWindow).length > 0 ? contextWindow : undefined;
+  if (!facts.resolved) return routeConfig.modelControls === undefined ? undefined : { ...routeConfig.modelControls };
+  return { reasoning: facts.reasoning !== undefined, ...contextWindow, ...routeConfig.modelControls };
 }
 
 function attachmentResolver(
@@ -265,7 +262,7 @@ function attachmentResolver(
   const attachments = attachmentServices(ctx?.attachments);
   return async (block: { attachment: ImageAttachmentRef }, signal?: AbortSignal) => {
     if (attachments === undefined)
-      throw error(
+      throw codedError(
         "LCX requires the DSH request-image attachment API",
         "LCX_COMPACT_IMAGE_API_UNAVAILABLE",
       );
@@ -277,13 +274,13 @@ function attachmentResolver(
         )
       : requestImages.get(String(block.attachment.attachmentId));
     if (request === undefined)
-      throw error("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
+      throw codedError("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
     const data = request.data;
     const mediaType = request.mediaType ?? block.attachment.mediaType;
     if (!(data instanceof Uint8Array) && !Buffer.isBuffer(data))
-      throw error("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
+      throw codedError("DSH attachment returned no request-image bytes", "LCX_COMPACT_IMAGE_UNAVAILABLE");
     if (typeof mediaType !== "string" || !mediaType.startsWith("image/"))
-      throw error("DSH attachment returned an invalid request-image media type", "LCX_COMPACT_IMAGE_UNAVAILABLE");
+      throw codedError("DSH attachment returned an invalid request-image media type", "LCX_COMPACT_IMAGE_UNAVAILABLE");
     return {
       data: Buffer.from(data),
       mediaType,
@@ -305,7 +302,7 @@ async function imagePart(
     return { type: "input_text", text: "[image omitted because the target model does not support image input]" };
   const image = await attachmentResolver(ctx, options, requestImages)(block, options.signal);
   if (Math.ceil(image.data.byteLength / 3) * 4 > options.maxRequestImageBytes)
-    throw error("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
+    throw codedError("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
   const imageUrl = `data:${image.mediaType};base64,${image.data.toString("base64")}`;
   imageMap.set(imageUrl, structuredClone(image.ref));
   return { type: "input_image", detail: "auto", image_url: imageUrl };
@@ -322,7 +319,7 @@ async function piImageParts(
     return [{ type: "text", text: "[image omitted because the target model does not support image input]" }];
   const image = await attachmentResolver(ctx, options, requestImages)(block, options.signal);
   if (Math.ceil(image.data.byteLength / 3) * 4 > options.maxRequestImageBytes)
-    throw error("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
+    throw codedError("one image exceeds the configured LCX request image bound", "LCX_COMPACT_IMAGE_TOO_LARGE");
   const data = image.data.toString("base64");
   imageMap.set(`data:${image.mediaType};base64,${data}`, structuredClone(image.ref));
   return [
@@ -332,11 +329,11 @@ async function piImageParts(
 }
 
 function parseArguments(value: unknown): PiToolCall["arguments"] {
-  if (isObject(value)) return structuredClone(value) as PiToolCall["arguments"];
+  if (isRecord(value)) return structuredClone(value) as PiToolCall["arguments"];
   if (typeof value !== "string") return {};
   try {
     const parsed: unknown = JSON.parse(value);
-    return isObject(parsed) ? parsed as PiToolCall["arguments"] : {};
+    return isRecord(parsed) ? parsed as PiToolCall["arguments"] : {};
   } catch {
     return {};
   }
@@ -347,11 +344,11 @@ function emptyUsage() {
 }
 
 function invalidReplay(message: string) {
-  return error(`invalid pi-ai replay state: ${message}`, "LCX_COMPACT_INVALID_REPLAY_STATE");
+  return codedError(`invalid pi-ai replay state: ${message}`, "LCX_COMPACT_INVALID_REPLAY_STATE");
 }
 
 function unsupportedContent(type: unknown) {
-  return error(`LCX Compact cannot safely serialize DSH message content type: ${String(type)}`, "LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT");
+  return codedError(`LCX Compact cannot safely serialize DSH message content type: ${String(type)}`, "LCX_CHECKPOINT_PORTABLE_UNSUPPORTED_CONTENT");
 }
 
 function replayBlockType(type: unknown): ReplayBlock["type"] | undefined {
@@ -362,7 +359,7 @@ function replayTextPhase(signature: unknown): "commentary" | "final_answer" | un
   if (typeof signature !== "string" || !signature.startsWith("{")) return undefined;
   try {
     const parsed: unknown = JSON.parse(signature);
-    if (!isObject(parsed) || parsed.v !== 1 || typeof parsed.id !== "string") return undefined;
+    if (!isRecord(parsed) || parsed.v !== 1 || typeof parsed.id !== "string") return undefined;
     return parsed.phase === "commentary" || parsed.phase === "final_answer"
       ? parsed.phase
       : undefined;
@@ -396,12 +393,12 @@ function restorePortableAssistantPhases(
   const output = structuredClone(input) as unknown[];
   let slotIndex = 0;
   for (const [index, candidate] of output.entries()) {
-    if (!isObject(candidate) || candidate.type !== "message" || candidate.role !== "assistant" ||
+    if (!isRecord(candidate) || candidate.type !== "message" || candidate.role !== "assistant" ||
         !Array.isArray(candidate.content)) continue;
     const slot = slots[slotIndex++];
     if (slot?.phase === undefined) continue;
     const text = candidate.content
-      .map((part) => isObject(part) && part.type === "output_text" ? String(part.text ?? "") : "")
+      .map((part) => isRecord(part) && part.type === "output_text" ? String(part.text ?? "") : "")
       .join("");
     if (text === slot.text) output[index] = { ...candidate, phase: slot.phase };
   }
@@ -409,9 +406,9 @@ function restorePortableAssistantPhases(
 }
 
 export function readDshPiReplayState(value: unknown): { response: ReplayResponse; blocks: ReplayBlock[] } {
-  if (!isObject(value)) throw invalidReplay("expected a replay envelope");
+  if (!isRecord(value)) throw invalidReplay("expected a replay envelope");
   const responseValue = value.response;
-  if (!isObject(responseValue) || responseValue.kind !== "pi-ai" || responseValue.version !== 2)
+  if (!isRecord(responseValue) || responseValue.kind !== "pi-ai" || responseValue.version !== 2)
     throw invalidReplay("expected a pi-ai version 2 response object");
   const required = ["api", "provider", "model"] as const;
   for (const key of required)
@@ -423,7 +420,7 @@ export function readDshPiReplayState(value: unknown): { response: ReplayResponse
   if (responseValue.responseId !== undefined && typeof responseValue.responseId !== "string") throw invalidReplay("responseId must be a string");
   if (!Array.isArray(value.blocks)) throw invalidReplay("blocks must be an array");
   const blocks = value.blocks.map((block, index): ReplayBlock => {
-    if (!isObject(block) || replayBlockType(block.type) === undefined) throw invalidReplay(`block ${index} has an unknown type`);
+    if (!isRecord(block) || replayBlockType(block.type) === undefined) throw invalidReplay(`block ${index} has an unknown type`);
     for (const signature of ["textSignature", "thinkingSignature", "thoughtSignature", "namespace"])
       if (block[signature] !== undefined && typeof block[signature] !== "string") throw invalidReplay(`block ${index} ${signature} must be a string`);
     if (block.redacted !== undefined && typeof block.redacted !== "boolean") throw invalidReplay(`block ${index} redacted must be boolean`);
@@ -607,7 +604,7 @@ async function dshToPiMessages(
         if (block.type !== "tool-addition") throw unsupportedContent(block.type);
         const tool = options.anchoredTools.find((candidate) => candidate.name === block.toolName);
         if (tool === undefined)
-          throw error(`LCX tool update references undeclared tool "${block.toolName}"`, "LCX_RESPONSES_INVALID_INPUT");
+          throw codedError(`LCX tool update references undeclared tool "${block.toolName}"`, "LCX_RESPONSES_INVALID_INPUT");
         toolsAdded.push(tool);
       }
       if (toolsAdded.length > 0) result.push({ role: "system", content: [], toolsAdded, timestamp: 0 } as unknown as PiMessage);
@@ -644,23 +641,18 @@ async function dshToPiMessages(
 }
 
 function builtinResponsesModel(provider: string, modelId: string) {
-  // Keep descriptor and wire capabilities within the same frozen catalog scope as route ownership.
-  if (!wasPi086ResponsesModel(provider, modelId)) return undefined;
-  try {
-    return getBuiltinModels(provider as Parameters<typeof getBuiltinModels>[0]).find((model) => model.id === modelId && model.api === "openai-responses");
-  } catch {
-    return undefined;
-  }
+  // The exact bundled catalog entry (see `resolveCatalogModel`): the same descriptor the route resolution reads.
+  return resolveCatalogModel(provider, modelId).descriptor;
 }
 
 export function resolvePiResponsesModel(options: { imageSupport: unknown; route?: unknown; model?: unknown; responsesCompat?: unknown }) {
-  const route = isObject(options.route) ? options.route : {};
-  const explicit = isObject(options.model) ? options.model : {};
+  const route = isRecord(options.route) ? options.route : {};
+  const explicit = isRecord(options.model) ? options.model : {};
   const provider = stringValue(explicit.provider, stringValue(route.provider, "dsh-lcx-codex"));
   const id = stringValue(explicit.id, stringValue(route.model, "unknown"));
   const builtin = builtinResponsesModel(provider, id);
-  const builtinRecord: WireRecord = isObject(builtin) ? builtin : {};
-  const compat = { ...(isObject(builtinRecord.compat) ? builtinRecord.compat : {}), ...(isObject(options.responsesCompat) ? options.responsesCompat : {}), ...(isObject(explicit.compat) ? explicit.compat : {}) };
+  const builtinRecord: WireRecord = isRecord(builtin) ? builtin : {};
+  const compat = { ...(isRecord(builtinRecord.compat) ? builtinRecord.compat : {}), ...(isRecord(options.responsesCompat) ? options.responsesCompat : {}), ...(isRecord(explicit.compat) ? explicit.compat : {}) };
   const imageSupport = options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown";
   const input = imageSupport === "supported" ? ["text", "image"] : imageSupport === "unsupported" ? ["text"] : Array.isArray(explicit.input) ? explicit.input : Array.isArray(builtinRecord.input) ? builtinRecord.input : ["text"];
   return { ...builtinRecord, ...explicit, id, name: stringValue(explicit.name, stringValue(builtinRecord.name, id)), api: "openai-responses", provider, baseUrl: stringValue(explicit.baseUrl, stringValue(route.baseURL, stringValue(builtinRecord.baseUrl))), reasoning: typeof explicit.reasoning === "boolean" ? explicit.reasoning : typeof builtinRecord.reasoning === "boolean" ? builtinRecord.reasoning : true, input, cost: explicit.cost ?? builtinRecord.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: positiveSafeInteger(explicit.contextWindow ?? builtinRecord.contextWindow, 262144), maxTokens: positiveSafeInteger(explicit.maxTokens ?? builtinRecord.maxTokens, 32768), ...(Object.keys(compat).length > 0 ? { compat } : {}) };
@@ -669,7 +661,7 @@ export function resolvePiResponsesModel(options: { imageSupport: unknown; route?
 export async function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options: SerializeOptions = {}) {
   const anchored = options.toolUpdate === "addition-only";
   if (anchored && options.systemPromptUpdate !== "in-history")
-    throw error("LCX addition-only tool updates require an in-history route", "LCX_RESPONSES_INVALID_INPUT");
+    throw codedError("LCX addition-only tool updates require an in-history route", "LCX_RESPONSES_INVALID_INPUT");
   for (const message of messages) {
     if (message.role === "developer" && !anchored) throw unsupportedContent("developer message");
     for (const block of message.content)
@@ -734,7 +726,7 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   );
   const model = resolvePiResponsesModel(normalized);
   const dshContext: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap, requestImages), tools: [...normalized.tools] };
-  const compat = isObject(model.compat) ? model.compat : {};
+  const compat = isRecord(model.compat) ? model.compat : {};
   const supportsStrictMode = compat.supportsStrictMode === true;
   const supportsOpenAIGrammarTools = compat.supportsOpenAIGrammarTools === true;
   const supportsAdditionalTools = compat.supportsAdditionalTools === true;
@@ -765,8 +757,8 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     if (normalized.snapshotMarker !== undefined && isMarkerItem(item, normalized.snapshotMarker)) {
       markersFound += 1;
       const rendered = convertedInput[position + 1] as unknown;
-      if (!isObject(rendered) || (rendered.role !== "developer" && rendered.role !== "system"))
-        throw error("LCX could not trace a rendered system prompt snapshot", "LCX_RESPONSES_INVALID_INPUT");
+      if (!isRecord(rendered) || (rendered.role !== "developer" && rendered.role !== "system"))
+        throw codedError("LCX could not trace a rendered system prompt snapshot", "LCX_RESPONSES_INVALID_INPUT");
       supersededInstructionItems.push(unmarkedInput.length);
       continue;
     }
@@ -781,7 +773,7 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     ).length;
     const nonce = normalized.snapshotMarker.slice(normalized.snapshotMarker.lastIndexOf(":") + 1);
     if (markersFound !== inserted || JSON.stringify(unmarkedInput).includes(nonce))
-      throw error("LCX could not remove a system prompt snapshot marker", "LCX_RESPONSES_INVALID_INPUT");
+      throw codedError("LCX could not remove a system prompt snapshot marker", "LCX_RESPONSES_INVALID_INPUT");
   }
   const input = restorePortableAssistantPhases(unmarkedInput, dshContext.messages, { provider: model.provider, id: model.id, api: model.api });
   const tools = options.tools === undefined ? undefined : convertResponsesTools([...immediateTools.values()], toolOptions);
@@ -789,25 +781,25 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
 }
 
 function isMarkerItem(item: unknown, marker: string): boolean {
-  if (!isObject(item) || item.role !== "user" || !Array.isArray(item.content)) return false;
-  return item.content.length === 1 && isObject(item.content[0]) && item.content[0].text === marker;
+  if (!isRecord(item) || item.role !== "user" || !Array.isArray(item.content)) return false;
+  return item.content.length === 1 && isRecord(item.content[0]) && item.content[0].text === marker;
 }
 
 export function responsesTools(tools: readonly PiTool[] | undefined) {
   if (tools === undefined) return undefined;
-  if (!Array.isArray(tools)) throw error("LCX Responses tools must be an array", "LCX_COMPACT_INVALID_TOOLS");
-  if (tools.every((tool) => isObject(tool) && typeof tool.type === "string")) return structuredClone(tools);
-  for (const tool of tools) if (!isObject(tool) || typeof tool.name !== "string" || !tool.name) throw error("LCX Responses tool has no name", "LCX_COMPACT_INVALID_TOOLS");
+  if (!Array.isArray(tools)) throw codedError("LCX Responses tools must be an array", "LCX_COMPACT_INVALID_TOOLS");
+  if (tools.every((tool) => isRecord(tool) && typeof tool.type === "string")) return structuredClone(tools);
+  for (const tool of tools) if (!isRecord(tool) || typeof tool.name !== "string" || !tool.name) throw codedError("LCX Responses tool has no name", "LCX_COMPACT_INVALID_TOOLS");
   return convertResponsesTools(tools, { supportsStrictMode: false, supportsOpenAIGrammarTools: false });
 }
 
 function isResponsesMessageItem(item: unknown): item is NativeItem & { role: string } {
-  return isObject(item) && typeof item.role === "string" && (item.type === undefined || item.type === "message");
+  return isRecord(item) && typeof item.role === "string" && (item.type === undefined || item.type === "message");
 }
 
 function mapImageParts(value: readonly unknown[], mapper: (part: WireRecord) => WireRecord): unknown[] {
   return value.map((part): unknown => {
-    if (!isObject(part)) return structuredClone(part);
+    if (!isRecord(part)) return structuredClone(part);
     if (part.type === "input_image" || part.type === "dsh_image_attachment") return mapper(part);
     if (part.type === "function_call_output" && Array.isArray(part.output)) return { ...structuredClone(part), output: mapImageParts(part.output, mapper) };
     return structuredClone(part);
@@ -816,14 +808,14 @@ function mapImageParts(value: readonly unknown[], mapper: (part: WireRecord) => 
 
 export function persistNativeImageReferences(output: readonly unknown[], imageMap: ReadonlyMap<string, ImageAttachmentRef>) {
   const persist = (part: WireRecord): WireRecord => {
-    if (part.type === "dsh_image_attachment" && isObject(part.attachment)) return structuredClone(part);
-    if (part.type !== "input_image" || typeof part.image_url !== "string") throw error("native compact returned an invalid image item", "LCX_COMPACT_INVALID_RESPONSE");
+    if (part.type === "dsh_image_attachment" && isRecord(part.attachment)) return structuredClone(part);
+    if (part.type !== "input_image" || typeof part.image_url !== "string") throw codedError("native compact returned an invalid image item", "LCX_COMPACT_INVALID_RESPONSE");
     const ref = imageMap.get(part.image_url);
-    if (ref === undefined) throw error("native compact returned an untracked image item", "LCX_COMPACT_INVALID_RESPONSE");
+    if (ref === undefined) throw codedError("native compact returned an untracked image item", "LCX_COMPACT_INVALID_RESPONSE");
     return { type: "dsh_image_attachment", attachment: structuredClone(ref) };
   };
   return output.map((item): unknown => {
-    if (!isObject(item)) return structuredClone(item);
+    if (!isRecord(item)) return structuredClone(item);
     if (isResponsesMessageItem(item) && Array.isArray(item.content)) return { ...structuredClone(item), content: mapImageParts(item.content, persist) };
     if (item.type === "function_call_output" && Array.isArray(item.output)) return { ...structuredClone(item), output: mapImageParts(item.output, persist) };
     return structuredClone(item);
@@ -831,9 +823,9 @@ export function persistNativeImageReferences(output: readonly unknown[], imageMa
 }
 
 async function hydratePart(part: unknown, ctx: DshContext | undefined, options: ImageOptions & { imageMap: Map<string, ImageAttachmentRef> }): Promise<unknown> {
-  if (!isObject(part) || part.type !== "dsh_image_attachment") return structuredClone(part);
+  if (!isRecord(part) || part.type !== "dsh_image_attachment") return structuredClone(part);
   const attachment = part.attachment;
-  if (!hasImageAttachment(attachment)) throw error("native compact returned an invalid image attachment", "LCX_COMPACT_INVALID_RESPONSE");
+  if (!hasImageAttachment(attachment)) throw codedError("native compact returned an invalid image attachment", "LCX_COMPACT_INVALID_RESPONSE");
   if (options.imageSupport === "unsupported") return { type: "input_text", text: "[image omitted because the target model does not support image input]" };
   return imagePart({ attachment }, ctx, options, options.imageMap);
 }
@@ -846,7 +838,7 @@ export function inputImageBase64Lengths(input: unknown): number[] {
       for (const child of value) visit(child);
       return;
     }
-    if (!isObject(value)) return;
+    if (!isRecord(value)) return;
     if (value.type === "input_image" && typeof value.image_url === "string") {
       const url = value.image_url;
       const comma = url.indexOf(",");
@@ -887,7 +879,7 @@ export function assertAggregateImageBudget(options: { maxBytes: number; fixedByt
       { offloadImages: count },
     );
   }
-  throw error(
+  throw codedError(
     `Images retained in the compaction checkpoint (${options.fixedBytes} base64 bytes) leave no room within the ${options.maxBytes}-byte request image bound, and offloading new images cannot recover it; start a new session or raise maxRequestImageBytes`,
     "LCX_CHECKPOINT_IMAGE_BUDGET",
   );
@@ -904,7 +896,7 @@ export async function hydrateNativeImageReferences(output: unknown, ctx: DshCont
   };
   const result: unknown[] = [];
   for (const item of asArray(output)) {
-    if (!isObject(item)) { result.push(structuredClone(item)); continue; }
+    if (!isRecord(item)) { result.push(structuredClone(item)); continue; }
     if (isResponsesMessageItem(item) && Array.isArray(item.content)) {
       const content: unknown[] = [];
       for (const part of item.content) content.push(await hydratePart(part, ctx, normalized));

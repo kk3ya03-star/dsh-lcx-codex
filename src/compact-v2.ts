@@ -3,6 +3,7 @@ import {
   buildCompactionResponsesBody,
   responsesGenerationEnvelope as standardGenerationEnvelope,
 } from "./responses-request.js";
+import { isRecord, codedError } from "./util.js";
 
 type UnknownRecord = Record<string, unknown>;
 type HeaderMap = Record<string, string>;
@@ -68,37 +69,18 @@ type NativeCompactionResult = {
 
 export const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
 
-/**
- * @param {unknown} value
- * @returns {value is UnknownRecord}
- */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-/**
- * @param {string} message
- * @param {string} [code]
- * @returns {LcxError}
- */
 function fail(
   message: string,
   code = "LCX_COMPACT_INVALID_RESPONSE",
 ): LcxError {
-  const e: LcxError = new Error(message);
-  e.code = code;
-  return e;
+  return codedError(message, code);
 }
-/** @param {unknown} value */
 function safeMachineField(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0 || value.length > 96)
     return undefined;
   return /^[A-Za-z0-9_.:\[\]-]+$/u.test(value) ? value : undefined;
 }
 
-/**
- * @param {HeaderMap} [headers]
- * @returns {HeaderMap}
- */
 export function mergeFeatureHeader(headers: HeaderMap = {}): HeaderMap {
   const result = { ...headers };
   const key = Object.keys(result).find(
@@ -114,10 +96,6 @@ export function mergeFeatureHeader(headers: HeaderMap = {}): HeaderMap {
   return result;
 }
 
-/**
- * @param {GenerationControls} [controls]
- * @returns {GenerationEnvelope}
- */
 export function responsesGenerationEnvelope(
   controls: GenerationControls = {},
 ): GenerationEnvelope {
@@ -129,10 +107,6 @@ export function responsesGenerationEnvelope(
   }) as GenerationEnvelope;
 }
 
-/**
- * @param {NativeCompactionBodyOptions} options
- * @returns {NativeCompactionBody}
- */
 export function buildNativeCompactionBody({
   model,
   modelDescriptor,
@@ -164,16 +138,14 @@ export function buildNativeCompactionBody({
 
 /**
  * Provider usage stays unknown until the object guard and numeric normalization.
- * @param {unknown} raw
- * @returns {CanonicalUsage | undefined}
  */
 function usageFrom(raw: unknown): CanonicalUsage | undefined {
-  if (!isObject(raw)) return undefined;
+  if (!isRecord(raw)) return undefined;
   const inputTotal = Number(raw.input_tokens ?? 0);
   const output = Number(raw.output_tokens ?? 0);
   const detailsValue =
     raw.input_tokens_details ?? raw.input_token_details ?? raw.prompt_tokens_details;
-  const details = isObject(detailsValue) ? detailsValue : {};
+  const details = isRecord(detailsValue) ? detailsValue : {};
   const cacheRead = Number(details.cached_tokens ?? 0);
   const cacheWrite = Number(details.cache_write_tokens ?? 0);
   const result: CanonicalUsage = {
@@ -191,9 +163,9 @@ function usageFrom(raw: unknown): CanonicalUsage | undefined {
     result.cacheReadTokens = cacheRead;
   if (Number.isFinite(cacheWrite) && cacheWrite > 0)
     result.cacheWriteTokens = cacheWrite;
-  const outputDetails = isObject(raw.output_tokens_details)
+  const outputDetails = isRecord(raw.output_tokens_details)
     ? raw.output_tokens_details
-    : isObject(raw.output_token_details)
+    : isRecord(raw.output_token_details)
       ? raw.output_token_details
       : {};
   const reasoning = Number(outputDetails.reasoning_tokens ?? 0);
@@ -202,10 +174,6 @@ function usageFrom(raw: unknown): CanonicalUsage | undefined {
   return Object.values(result).some((v) => Number(v) > 0) ? result : undefined;
 }
 
-/**
- * @param {unknown} output
- * @returns {{ output: ValidatedOutputItem[], compaction: CompactionItem }}
- */
 function validateOutput(output: unknown): {
   output: ValidatedOutputItem[];
   compaction: CompactionItem;
@@ -213,7 +181,7 @@ function validateOutput(output: unknown): {
   if (!Array.isArray(output) || output.length === 0)
     throw fail("native compaction output is empty");
   const compactions = output.filter(
-    (item) => isObject(item) && item.type === "compaction",
+    (item) => isRecord(item) && item.type === "compaction",
   );
   if (compactions.length !== 1)
     throw fail(
@@ -225,12 +193,10 @@ function validateOutput(output: unknown): {
     compact.encrypted_content.length === 0
   )
     throw fail("native compaction item has no encrypted_content");
-  /** @type {Set<string>} */
   const calls = new Set();
-  /** @type {Set<string>} */
   const results = new Set();
   for (const item of output) {
-    if (!isObject(item) || typeof item.type !== "string")
+    if (!isRecord(item) || typeof item.type !== "string")
       throw fail("native compaction output contains a malformed item");
     if (item.type === "function_call") {
       if (
@@ -270,9 +236,6 @@ function validateOutput(output: unknown): {
 
 /**
  * Provider SSE events enter as unknown; response.completed remains authoritative.
- * @param {Response} response
- * @param {SseParseOptions} [options]
- * @returns {Promise<NativeCompactionResult>}
  */
 export async function parseNativeCompactionSse(
   response: Response,
@@ -282,7 +245,7 @@ export async function parseNativeCompactionSse(
   const byId = new Map<string, UnknownRecord>();
   let terminal: UnknownRecord | undefined;
   const mergeItem = (event: UnknownRecord) => {
-    if (!isObject(event.item)) return;
+    if (!isRecord(event.item)) return;
     const index = Number.isInteger(event.output_index)
       ? Number(event.output_index)
       : undefined;
@@ -309,7 +272,7 @@ export async function parseNativeCompactionSse(
   await consumeSse(
     response,
     (event: unknown) => {
-      if (!isObject(event)) return;
+      if (!isRecord(event)) return;
       if (
         event.type === "error" ||
         event.type === "response.failed" ||
@@ -317,11 +280,11 @@ export async function parseNativeCompactionSse(
       ) {
         const upstreamValue =
           event.type === "response.failed"
-            ? isObject(event.response)
+            ? isRecord(event.response)
               ? event.response.error
               : undefined
             : event.error;
-        const upstream = isObject(upstreamValue) ? upstreamValue : {};
+        const upstream = isRecord(upstreamValue) ? upstreamValue : {};
         const providerCode = safeMachineField(upstream.code);
         const providerType = safeMachineField(upstream.type);
         const providerParam = safeMachineField(upstream.param);
@@ -338,11 +301,11 @@ export async function parseNativeCompactionSse(
         );
         if (
           Number.isInteger(
-            upstream.status ?? (isObject(event.error) ? event.error.status : undefined),
+            upstream.status ?? (isRecord(event.error) ? event.error.status : undefined),
           )
         )
           e.status = Number(
-            upstream.status ?? (isObject(event.error) ? event.error.status : undefined),
+            upstream.status ?? (isRecord(event.error) ? event.error.status : undefined),
           );
         if (providerCode) e.providerCode = providerCode;
         if (providerType) e.providerType = providerType;
@@ -355,11 +318,11 @@ export async function parseNativeCompactionSse(
       )
         mergeItem(event);
       if (event.type === "response.completed")
-        terminal = isObject(event.response) ? event.response : undefined;
+        terminal = isRecord(event.response) ? event.response : undefined;
     },
     options,
   );
-  if (!isObject(terminal))
+  if (!isRecord(terminal))
     throw fail(
       "native compaction stream ended without response.completed",
       "LCX_COMPACT_INCOMPLETE_SSE",
@@ -383,9 +346,6 @@ export async function parseNativeCompactionSse(
   };
 }
 
-/**
- * @param {NativeCompactionRequestOptions} options
- */
 export async function requestNativeCompaction({
   baseURL,
   model,

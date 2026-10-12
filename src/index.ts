@@ -9,7 +9,6 @@ import type { ToolHistory } from "@deepseek-ai/dsh-llm";
 import type {
   ContentBlock,
   GenerateOptions,
-  LlmRuntime,
   Message,
   StreamChunk,
 } from "@deepseek-ai/dsh-llm";
@@ -39,7 +38,6 @@ import {
   agentUsesSession,
   compactionConfigState,
   compactionPatchCandidate,
-  contextService,
   installCompactionPatch,
   patchCompactionConfig,
   patchToolResultPruner,
@@ -54,7 +52,6 @@ import {
   restoreToolResultPruner,
   sessionFor,
   sessionFromAgent,
-  sessionsService,
   scopedToolRuntime,
   onScopedToolExecute,
   tokenMeterTotal,
@@ -62,6 +59,8 @@ import {
 } from "./dsh-compat.js";
 import type { CompactionPatchRecords } from "./dsh-compat.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
+import { providerDynamicHeaders } from "./provider-headers.js";
+import { resolveCatalogModel } from "./model-catalog.js";
 import {
   authenticatedGrokHeaders,
   authenticatedHeaders,
@@ -72,10 +71,13 @@ import {
   promptCacheRetention,
   promptCacheSessionId,
   resolveGrokResponsesRouteConfig,
+  diagnoseResponsesRoute,
+  markHostRecognizedModel,
+  warmHostRecognizedModels,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
-import type { ResolvedResponsesRoute, RouteContext } from "./route.js";
+import type { ResolvedResponsesRoute, ResponsesRouteDiagnosis, RouteContext } from "./route.js";
 import {
   DEFAULT_MAX_REQUEST_IMAGE_BYTES,
   DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET,
@@ -84,6 +86,7 @@ import {
   hydrateNativeImageReferences,
   inputImageBase64Lengths,
   resolveRouteModelFacts,
+  routeModelOverride,
   hasMidHistoryPromptSnapshot,
   responseInputItems,
   serializeDshMessages,
@@ -148,6 +151,7 @@ import {
   type GrokNativeReplayRoute,
   type GrokNativeSearchState,
 } from "./grok-native-search.js";
+import { DEFAULTS } from "./defaults.js";
 
 export const name = "lcx-codex";
 export const inject = ["llm", "web", "sessions", "tools", "settings", "credentials", "attachments", "fs"];
@@ -317,10 +321,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-function asAbortSignal(value: unknown): AbortSignal | undefined {
-  return value instanceof AbortSignal ? value : undefined;
-}
-
 function errorDetails(value: unknown): {
   name?: unknown;
   code?: unknown;
@@ -367,21 +367,21 @@ export const Config = z.object({
   alphaRefPath: z.string().default(""),
   alphaProfile: z.string().default(""),
   alphaGroup: z.string().default(""),
-  alphaMaxOutputTokens: z.number().default(2500),
-  webSearchProvider: z.string().default("lcx-responses"),
-  webMaxResults: z.number().default(8),
-  timeoutMs: z.number().default(300000),
-  maxResponseBytes: z.number().default(8 * 1024 * 1024),
-  maxAttempts: z.number().default(3),
+  alphaMaxOutputTokens: z.number().default(DEFAULTS.alphaMaxOutputTokens),
+  webSearchProvider: z.string().default(DEFAULTS.webSearchProvider),
+  webMaxResults: z.number().default(DEFAULTS.webMaxResults),
+  timeoutMs: z.number().default(DEFAULTS.requestTimeoutMs),
+  maxResponseBytes: z.number().default(DEFAULTS.maxResponseBytes),
+  maxAttempts: z.number().default(DEFAULTS.maxAttempts),
   maxRequestImageBytes: z.number().default(DEFAULT_MAX_REQUEST_IMAGE_BYTES),
   requestImagePixelBudget: z
     .number()
     .default(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
   requestImageMaxBytes: z.number().default(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
-  portableReplayMaxChars: z.number().default(80_000),
-  nativeRetentionTokenBudget: z.number().default(64_000),
-  assistantRetentionTokenReserve: z.number().default(24_000),
-  assistantRetentionPerMessageTokenCap: z.number().default(3_000),
+  portableReplayMaxChars: z.number().default(DEFAULTS.portableReplayMaxChars),
+  nativeRetentionTokenBudget: z.number().default(DEFAULTS.nativeRetentionTokenBudget),
+  assistantRetentionTokenReserve: z.number().default(DEFAULTS.assistantRetentionTokenReserve),
+  assistantRetentionPerMessageTokenCap: z.number().default(DEFAULTS.assistantRetentionPerMessageTokenCap),
 });
 
 function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
@@ -396,12 +396,12 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
     alphaRefPath: stringValue(input.alphaRefPath, defaultAlphaRefPath()),
     alphaProfile: String(input.alphaProfile ?? ""),
     alphaGroup: String(input.alphaGroup ?? ""),
-    alphaMaxOutputTokens: positiveInteger(input.alphaMaxOutputTokens, 2500, 32_000),
-    webSearchProvider: stringValue(input.webSearchProvider, "lcx-responses"),
-    webMaxResults: positiveInteger(input.webMaxResults, 8),
-    timeoutMs: positiveInteger(input.timeoutMs, 300000),
-    maxResponseBytes: positiveInteger(input.maxResponseBytes, 8 * 1024 * 1024),
-    maxAttempts: positiveInteger(input.maxAttempts, 3, 6),
+    alphaMaxOutputTokens: positiveInteger(input.alphaMaxOutputTokens, DEFAULTS.alphaMaxOutputTokens, DEFAULTS.alphaMaxOutputTokensCap),
+    webSearchProvider: stringValue(input.webSearchProvider, DEFAULTS.webSearchProvider),
+    webMaxResults: positiveInteger(input.webMaxResults, DEFAULTS.webMaxResults),
+    timeoutMs: positiveInteger(input.timeoutMs, DEFAULTS.requestTimeoutMs),
+    maxResponseBytes: positiveInteger(input.maxResponseBytes, DEFAULTS.maxResponseBytes),
+    maxAttempts: positiveInteger(input.maxAttempts, DEFAULTS.maxAttempts, DEFAULTS.maxAttemptsCap),
     maxRequestImageBytes: positiveInteger(
       input.maxRequestImageBytes,
       DEFAULT_MAX_REQUEST_IMAGE_BYTES,
@@ -414,20 +414,20 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
       input.requestImageMaxBytes,
       DEFAULT_REQUEST_IMAGE_MAX_BYTES,
     ),
-    portableReplayMaxChars: positiveInteger(input.portableReplayMaxChars, 80_000),
+    portableReplayMaxChars: positiveInteger(input.portableReplayMaxChars, DEFAULTS.portableReplayMaxChars),
     nativeRetentionTokenBudget: positiveInteger(
       input.nativeRetentionTokenBudget,
-      64_000,
+      DEFAULTS.nativeRetentionTokenBudget,
     ),
     assistantRetentionTokenReserve:
       typeof input.assistantRetentionTokenReserve === "number" &&
       Number.isSafeInteger(input.assistantRetentionTokenReserve) &&
       input.assistantRetentionTokenReserve >= 0
         ? input.assistantRetentionTokenReserve
-        : 24_000,
+        : DEFAULTS.assistantRetentionTokenReserve,
     assistantRetentionPerMessageTokenCap: positiveInteger(
       input.assistantRetentionPerMessageTokenCap,
-      3_000,
+      DEFAULTS.assistantRetentionPerMessageTokenCap,
     ),
     toolUpdates: DEFAULT_TOOL_UPDATES,
   };
@@ -571,10 +571,12 @@ class LcxResponsesSearchProvider {
     const active = hostedSearchRouteContext.getStore();
     if (!active) return false;
     const config = this.getConfig();
+    // Tool-assembly question, answered before DSH can be asked: see `assumeHostServes` in route.ts.
     const route = resolveResponsesRouteConfig(
       this.ctx,
       active,
       config,
+      true,
     );
     return this.enabled() && Boolean(route);
   }
@@ -740,7 +742,9 @@ function syncGptToolsForAgent(
 ) {
   const config = getConfig();
   const active = selectedAgentRoute(agent);
-  const route = resolveResponsesRouteConfig(ctx, active, config);
+  // Registering the tools cannot wait for DSH's answer about a model only its own catalog knows: the optimistic
+  // answer is exact (see `assumeHostServes` in route.ts), and the stream awaits DSH before LCX takes the request.
+  const route = resolveResponsesRouteConfig(ctx, active, config, true);
   const webSearch = state.enabled && state.webSearch && Boolean(route);
   const advanced = webSearch && state.advancedHostedSearch;
   if (!webSearch && !advanced) {
@@ -1118,21 +1122,6 @@ function locateSupersededItems(
   return located;
 }
 
-/**
- * The reasoning projection a GPT route serializes and sends with. A profile's declared
- * `reasoningEfforts` wins (wire mapping, or `false` for a non-reasoning model); otherwise the catalog
- * entry stands, and a model with no catalog entry follows what DSH itself resolved for it instead of
- * being assumed to reason.
- */
-function gptModelOverride(
-  routeConfig: Pick<ResponsesRouteConfig, "modelControls">,
-  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
-): Record<string, unknown> | undefined {
-  if (routeConfig.modelControls !== undefined) return { ...routeConfig.modelControls };
-  if (!facts.resolved) return undefined;
-  return { reasoning: facts.reasoning !== undefined };
-}
-
 /** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
 function assertSupportedReasoningEffort(
   effort: unknown,
@@ -1160,13 +1149,31 @@ function reportToolSurfaceFallback(
   surface: { fallbackReason?: string; fallbackUnexpected?: boolean },
 ) {
   const reason = surface.fallbackReason ?? "unknown";
-  const key = `${route.sessionId} ${reason}`;
+  const key = `${route.sessionId}\u001f${reason}`;
   if (reportedToolSurfaceFallbacks.has(key)) return;
   if (reportedToolSurfaceFallbacks.size >= 256) reportedToolSurfaceFallbacks.clear();
   reportedToolSurfaceFallbacks.add(key);
   const message = `[lcx-codex] tool updates: sending the complete tool list on ${route.provider}/${route.model} (${reason})`;
   if (surface.fallbackUnexpected === true) ctx.logger?.warn?.(message);
   else ctx.logger?.debug?.(message);
+}
+
+const reportedCatalogGaps = new Set<string>();
+
+/**
+ * Say once per route model that LCX's bundled Pi catalog does not describe it, so its wire capabilities
+ * (strict tools, grammar tools, cache mode) come from the profile and from what DSH declares instead.
+ */
+function reportCatalogGap(ctx: HostContext, route: { provider: string; model: string }) {
+  const source = resolveCatalogModel(route.provider, route.model, true).source;
+  if (source !== "catalog-provider-default") return;
+  const key = `${route.provider}/${route.model}`;
+  if (reportedCatalogGaps.has(key)) return;
+  if (reportedCatalogGaps.size >= 256) reportedCatalogGaps.clear();
+  reportedCatalogGaps.add(key);
+  ctx.logger?.debug?.(
+    `[lcx-codex] ${key} is not described by LCX's bundled model catalog; its wire capabilities follow the profile and what DSH declares for the model`,
+  );
 }
 
 async function serializeNativeAware(
@@ -1188,10 +1195,9 @@ async function serializeNativeAware(
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
   const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
+  if (options.grokNativeReplayRoute === undefined) reportCatalogGap(ctx, route);
   const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
-  const modelOverride = options.grokNativeReplayRoute === undefined
-    ? gptModelOverride(routeConfig, modelFacts)
-    : undefined;
+  const modelOverride = routeModelOverride(routeConfig, modelFacts, options.grokNativeReplayRoute !== undefined);
   let messages: readonly RequestMessage[] = rawMessages;
   let tools = options.tools;
   let anchoredTools = false;
@@ -1430,6 +1436,8 @@ async function* remoteCompactionStream(
       routeConfig,
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const generation = generationControlsFromSession(
       sessionFor(ctx, route.sessionId),
@@ -1866,6 +1874,8 @@ async function* managedResponsesStream(
       routeConfig,
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const body = buildResponsesBody({
       model: prepared.model,
@@ -1936,6 +1946,8 @@ async function* managedGrokNativeSearchStream(
       ctx,
       routeConfig,
       cacheSessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const model = {
       ...prepared.model,
@@ -2010,16 +2022,61 @@ function isGptLifecycleTarget(options: Pick<GenerateOptions, "model">): boolean 
 
 async function* unavailableManagedRouteStream(
   options: GenerateOptions,
+  diagnosis: ResponsesRouteDiagnosis = "incomplete",
 ): AsyncGenerator<StreamChunk> {
+  // DSH names no protocol for a model its catalog lacks and the profile sets no `api`: say what to change.
+  const apiUnresolved = diagnosis === "api-unresolved";
   yield managedFailureChunk(
     Object.assign(
       new Error(
-        "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
+        apiUnresolved
+          ? "LCX could not determine the wire protocol of the selected GPT route: the provider profile sets no api and LCX could not infer one for this model. Add api: openai-responses to the provider profile, or select another model"
+          : "LCX is enabled but the selected DSH route cannot be resolved as an authenticated OpenAI Responses wire route",
       ),
-      { code: "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
+      { code: apiUnresolved ? "LCX_RESPONSES_API_UNRESOLVED" : "LCX_RESPONSES_ROUTE_UNAVAILABLE" },
     ),
     options.signal,
   );
+}
+
+/**
+ * Re-resolve a route whose protocol LCX could not infer after asking DSH whether it resolves the exact model.
+ * DSH resolving it counts as the profile declaring it: the provider-wide protocol then applies, as in DSH.
+ */
+async function* hostRecognizedRouteStream(
+  options: GenerateOptions,
+  ctx: HostContext,
+  policy: () => NormalizedConfig,
+  next: () => AsyncIterable<StreamChunk>,
+): AsyncGenerator<StreamChunk> {
+  const facts = await resolveRouteModelFacts(ctx, options, options.signal);
+  if (facts.resolved) markHostRecognizedModel(ctx, options.provider, options.model);
+  const routeConfig = facts.resolved
+    ? resolveResponsesRouteConfig(ctx, options, policy())
+    : undefined;
+  if (!routeConfig) {
+    yield* unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
+    return;
+  }
+  yield* options.purpose === "compaction"
+    ? remoteCompactionStream(options, routeWithPolicies(routeConfig, policy()), ctx, next)
+    : managedResponsesStream(options, routeWithPolicies(routeConfig, policy()), ctx);
+}
+
+/** The Grok counterpart of `hostRecognizedRouteStream`: DSH not resolving the model is DSH's to report. */
+async function* hostRecognizedGrokStream(
+  options: GenerateOptions,
+  ctx: HostContext,
+  policy: () => NormalizedConfig,
+  nativeSearch: GrokNativeSearchState,
+  next: () => AsyncIterable<StreamChunk>,
+): AsyncGenerator<StreamChunk> {
+  const facts = await resolveRouteModelFacts(ctx, options, options.signal);
+  if (facts.resolved) markHostRecognizedModel(ctx, options.provider, options.model);
+  const grokRoute = facts.resolved ? resolveGrokResponsesRouteConfig(ctx, options, policy()) : undefined;
+  yield* grokRoute
+    ? managedGrokNativeSearchStream(options, routeWithPolicies(grokRoute, policy()), nativeSearch, ctx)
+    : next();
 }
 
 function installInjected(
@@ -2114,9 +2171,32 @@ function installInjected(
         : baseConfig;
     refreshTools();
   };
+  /**
+   * Tool ownership is decided synchronously when an agent's tools are assembled, but whether DSH serves a model
+   * that LCX's bundled catalog does not describe is only known by asking DSH. So ask ahead of time, at start and
+   * whenever the provider configuration or the provider set changes, and resynchronise the tools when the
+   * remembered answers change; a first request on such a model then already carries the LCX tools.
+   */
+  const prewarmHostModels = () => {
+    void warmHostRecognizedModels(ctx)
+      .then((changed) => {
+        if (changed) refreshTools();
+      })
+      .catch((error) =>
+        ctx.logger?.debug?.(`[lcx-codex] host model prewarm skipped: ${String(error)}`),
+      );
+  };
   syncSettings();
-  ctx.on("loader/volatile-update", syncSettings);
-  ctx.on("settings/document-updated", refreshTools);
+  prewarmHostModels();
+  ctx.on("loader/volatile-update", () => {
+    syncSettings();
+    prewarmHostModels();
+  });
+  ctx.on("settings/document-updated", () => {
+    refreshTools();
+    prewarmHostModels();
+  });
+  ctx.on("llm/adapters-updated", prewarmHostModels);
   ctx.inject(["compaction"], (compactionCtx: HostContext) => {
     patchCompactionPressureService(
       resolveContextService(compactionCtx, "compaction"),
@@ -2129,7 +2209,7 @@ function installInjected(
 
   /**
    * LCX instrumentation is optional capability, never a creation precondition.
-   * DSH 0.1.6 awaits `agent/created` serially, so an escaping failure would make
+   * DSH awaits `agent/created` serially, so an escaping failure would make
    * an otherwise valid Agent uncreatable; `agent/status` stays a contained emit.
    * Both edges therefore fail closed locally: the Agent runs uninstrumented and
    * the reason is logged, rather than propagating into the host lifecycle.
@@ -2155,7 +2235,7 @@ function installInjected(
       );
     }
   };
-  /** DSH 0.1.6 lifecycle source, recorded for diagnostics only. */
+  /** DSH lifecycle source, recorded for diagnostics only. */
   const startSource = (value: unknown) =>
     typeof value === "string" && /^[a-z]+$/u.test(value) ? value : "unknown";
 
@@ -2212,6 +2292,9 @@ function installInjected(
             grokNativeSearch,
             ctx,
           );
+        // A Grok model only DSH's own catalog may know: ask DSH now, so the first request is not left to a race.
+        if (/^grok/iu.test(String(options.model ?? "")) && diagnoseResponsesRoute(ctx, options) === "api-unresolved")
+          return hostRecognizedGrokStream(options, ctx, () => runtimeConfig, grokNativeSearch, next);
       }
       if (!state.enabled || !isGptLifecycleTarget(options)) return next();
       const routeConfig = resolveResponsesRouteConfig(
@@ -2219,8 +2302,19 @@ function installInjected(
         options,
         runtimeConfig,
       );
+      if (!routeConfig) {
+        const diagnosis = diagnoseResponsesRoute(ctx, options);
+        // DSH owns these calls: a model the provider's models list leaves out (DSH serves only the listed
+        // models and answers UNKNOWN_MODEL, nothing is sent) and a provider whose authentication only Pi's own
+        // client can perform (see HOST_AUTH_PROVIDERS). LCX does not own a route it cannot serve like DSH.
+        if (diagnosis === "model-not-configured" || diagnosis === "host-auth") return next();
+      }
+      // The profile names no api and LCX's catalog does not describe the model: DSH's own catalog may still
+      // resolve it, which only a lookup tells (once per failing request; resolving routes never pay it).
+      if (!routeConfig && diagnoseResponsesRoute(ctx, options) === "api-unresolved")
+        return hostRecognizedRouteStream(options, ctx, () => runtimeConfig, next);
       if (options.purpose === "compaction") {
-        if (!routeConfig) return unavailableManagedRouteStream(options);
+        if (!routeConfig) return unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
         return remoteCompactionStream(
           options,
           routeWithPolicies(routeConfig, runtimeConfig),
@@ -2228,7 +2322,7 @@ function installInjected(
           next,
         );
       }
-      if (!routeConfig) return unavailableManagedRouteStream(options);
+      if (!routeConfig) return unavailableManagedRouteStream(options, diagnoseResponsesRoute(ctx, options));
       return managedResponsesStream(
         options,
         routeWithPolicies(routeConfig, runtimeConfig),

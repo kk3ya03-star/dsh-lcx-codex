@@ -1,7 +1,8 @@
 import { abortError } from "./abort-error.js";
+import { DEFAULTS } from "./defaults.js";
 
-const DEFAULT_TIMEOUT_MS = 300_000;
-const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = DEFAULTS.requestTimeoutMs;
+const DEFAULT_MAX_BYTES = DEFAULTS.maxResponseBytes;
 const MAX_ERROR_BYTES = 512 * 1024;
 
 type AbortLike = Pick<AbortSignal, "aborted" | "reason" | "addEventListener" | "removeEventListener">;
@@ -127,118 +128,23 @@ async function readLimited(response: Response, maxBytes = DEFAULT_MAX_BYTES) {
   }
 }
 
-export async function fetchJsonWithRetry(
+/**
+ * The shared request core: POST with bounded retries. A non-2xx answer becomes a classified error (quota,
+ * retryable status, other) with its retry-after delay, a transport failure is retried with backoff, and a
+ * 2xx answer is handed to `onOk`, whose failures are classified like any other.
+ */
+async function postWithRetry<T>(
   url: string | URL | Request,
-  body: JsonRequestBody,
-  headers: HeadersInit = {},
+  body: Record<string, unknown>,
+  headers: HeadersInit,
+  accept: string,
   signal: AbortSignal | undefined,
-  timeoutMs: number | undefined = DEFAULT_TIMEOUT_MS,
-  options: RetryOptions = {},
-) {
-  const maxAttempts = Math.max(
-    1,
-    Math.min(6, Number(options.maxAttempts ?? 3)),
-  );
-  const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_BYTES;
-  let last;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    abortIfNeeded(signal);
-    try {
-      const requestSignal = combinedSignal(signal, timeoutMs);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json",
-          ...headers,
-        },
-        body: JSON.stringify(body),
-        signal: requestSignal,
-        redirect: "error",
-      });
-      const text = await readLimited(
-        response,
-        response.ok ? maxResponseBytes : Math.min(maxResponseBytes, MAX_ERROR_BYTES),
-      );
-      if (!response.ok) {
-        const quota = isQuotaError(text);
-        const retryable = !quota && retryableStatus(response.status);
-        const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
-        const error = makeError(
-          `HTTP ${response.status}`,
-          quota ? "LCX_INSUFFICIENT_QUOTA" : retryable ? "LCX_HTTP_RETRYABLE" : "LCX_HTTP_ERROR",
-          {
-            status: response.status,
-            retryable,
-            requestId:
-              response.headers.get("x-request-id") ??
-              response.headers.get("request-id") ??
-              undefined,
-            ...(providerRetryAfterMs === undefined
-              ? {}
-              : { providerRetryAfterMs }),
-          },
-        );
-        if (!error.retryable || attempt >= maxAttempts) throw error;
-        last = error;
-        await sleep(delayFromHeaders(response.headers, attempt), signal);
-        continue;
-      }
-      let parsed;
-      try {
-        parsed = text ? JSON.parse(text) : {};
-      } catch (cause) {
-        throw makeError(
-          `invalid JSON response from ${url}`,
-          "LCX_INVALID_JSON",
-          { status: response.status, cause },
-        );
-      }
-      return parsed;
-    } catch (error) {
-      if (signal?.aborted) throw abortError(signal, error);
-      const details = errorFacts(error);
-      const retryable =
-        details.retryable === true ||
-        details.code === "LCX_HTTP_RETRYABLE" ||
-        error instanceof TypeError ||
-        [
-          "ECONNRESET",
-          "ECONNREFUSED",
-          "ETIMEDOUT",
-          "EAI_AGAIN",
-          "UND_ERR_CONNECT_TIMEOUT",
-        ].includes(details.code ?? "");
-      if (!retryable || attempt >= maxAttempts) {
-        if (attempt >= maxAttempts && retryable)
-          throw makeError(
-            `request failed after ${maxAttempts} attempts`,
-            "LCX_RETRY_EXHAUSTED",
-            { cause: error, retryable: true },
-          );
-        throw error;
-      }
-      last = error;
-      await sleep(Math.min(10_000, 500 * 2 ** (attempt - 1)), signal);
-    }
-  }
-  throw last ?? makeError("request failed", "LCX_REQUEST_FAILED");
-}
-
-export async function fetchSseWithRetry<T = Response>(
-  url: string | URL | Request,
-  body: SseRequestBody,
-  headers: HeadersInit = {},
-  signal: AbortSignal | undefined,
-  timeoutMs: number | undefined,
-  options: SseRetryOptions<T> = {},
+  requestTimeoutMs: number | undefined,
+  maxAttemptsOption: unknown,
+  maxErrorBytes: number,
+  onOk: (response: Response, requestSignal: AbortSignal | undefined) => Promise<T>,
 ): Promise<T> {
-  const requestTimeoutMs = timeoutMs ??
-    (options.applyDefaultTimeout === false ? undefined : DEFAULT_TIMEOUT_MS);
-  const maxAttempts = Math.max(
-    1,
-    Math.min(6, Number(options.maxAttempts ?? 3)),
-  );
+  const maxAttempts = Math.max(1, Math.min(DEFAULTS.maxAttemptsCap, Number(maxAttemptsOption ?? DEFAULTS.maxAttempts)));
   let last;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     abortIfNeeded(signal);
@@ -248,7 +154,7 @@ export async function fetchSseWithRetry<T = Response>(
         method: "POST",
         headers: {
           "content-type": "application/json",
-          accept: "text/event-stream",
+          accept,
           ...headers,
         },
         body: JSON.stringify(body),
@@ -256,10 +162,7 @@ export async function fetchSseWithRetry<T = Response>(
         redirect: "error",
       });
       if (!response.ok) {
-        const text = await readLimited(
-          response,
-          Math.min(options.maxResponseBytes ?? DEFAULT_MAX_BYTES, MAX_ERROR_BYTES),
-        );
+        const text = await readLimited(response, maxErrorBytes);
         const quota = isQuotaError(text);
         const retryable = !quota && retryableStatus(response.status);
         const providerRetryAfterMs = retryAfterFromHeaders(response.headers);
@@ -283,9 +186,7 @@ export async function fetchSseWithRetry<T = Response>(
         await sleep(delayFromHeaders(response.headers, attempt), signal);
         continue;
       }
-      if (typeof options.consume === "function")
-        return await options.consume(response, { requestSignal });
-      return response as T;
+      return await onOk(response, requestSignal);
     } catch (error) {
       if (signal?.aborted) throw abortError(signal, error);
       const details = errorFacts(error);
@@ -316,66 +217,149 @@ export async function fetchSseWithRetry<T = Response>(
   throw last ?? makeError("request failed", "LCX_REQUEST_FAILED");
 }
 
-export async function consumeSse(
-  response: Response,
-  onEvent: (event: unknown) => void,
-  options: { signal?: AbortSignal; maxResponseBytes?: number } = {},
+export async function fetchJsonWithRetry(
+  url: string | URL | Request,
+  body: JsonRequestBody,
+  headers: HeadersInit = {},
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined = DEFAULT_TIMEOUT_MS,
+  options: RetryOptions = {},
 ) {
-  if (!response.body)
-    throw makeError("SSE response has no body", "LCX_INVALID_SSE");
-  const maxBytes = options.maxResponseBytes ?? DEFAULT_MAX_BYTES;
+  const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_BYTES;
+  return postWithRetry(
+    url,
+    body,
+    headers,
+    "application/json",
+    signal,
+    timeoutMs,
+    options.maxAttempts,
+    Math.min(maxResponseBytes, MAX_ERROR_BYTES),
+    async (response) => {
+      const text = await readLimited(response, maxResponseBytes);
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch (cause) {
+        throw makeError(
+          `invalid JSON response from ${url}`,
+          "LCX_INVALID_JSON",
+          { status: response.status, cause },
+        );
+      }
+    },
+  );
+}
+
+export async function fetchSseWithRetry<T = Response>(
+  url: string | URL | Request,
+  body: SseRequestBody,
+  headers: HeadersInit = {},
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+  options: SseRetryOptions<T> = {},
+): Promise<T> {
+  const requestTimeoutMs = timeoutMs ??
+    (options.applyDefaultTimeout === false ? undefined : DEFAULT_TIMEOUT_MS);
+  return postWithRetry<T>(
+    url,
+    body,
+    headers,
+    "text/event-stream",
+    signal,
+    requestTimeoutMs,
+    options.maxAttempts,
+    Math.min(options.maxResponseBytes ?? DEFAULT_MAX_BYTES, MAX_ERROR_BYTES),
+    async (response, requestSignal) =>
+      typeof options.consume === "function"
+        ? options.consume(response, { requestSignal })
+        : (response as T),
+  );
+}
+
+/** The errors one SSE consumer reports; each caller keeps its own wording and codes. */
+export type SseReadErrors = {
+  noBody(response: Response): Error;
+  malformed(cause: unknown): Error;
+  tooLarge(maxBytes: number): Error;
+};
+
+/** `reader.read()` that settles with the abort as soon as `signal` aborts, whatever the stream does. */
+async function readWithSignal(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read();
+  if (signal.aborted) throw abortError(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+/**
+ * The one SSE event reader: yields each parsed JSON `data:` event (`[DONE]` yields nothing) with a byte limit.
+ * An abort interrupts a read that never settles in two ways: the pending read is rejected with the abort, and
+ * the underlying reader is cancelled so the connection is released; the abort is also re-checked around every
+ * read. The reader is always cancelled and released when the generator ends, however it ends.
+ */
+export async function* readSseEvents(
+  response: Response,
+  options: { signal?: AbortSignal; maxBytes?: number; errors: SseReadErrors },
+): AsyncGenerator<unknown> {
+  const { signal, errors } = options;
+  if (!response?.body) throw errors.noBody(response);
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let pending = "";
   let dataLines: string[] = [];
   let bytes = 0;
-  const dispatch = () => {
-    if (dataLines.length === 0) return;
+  const decode = () => {
+    if (dataLines.length === 0) return undefined;
     const data = dataLines.join("\n");
     dataLines = [];
-    if (data === "[DONE]") return;
-    let event;
+    if (data === "[DONE]") return undefined;
     try {
-      event = JSON.parse(data);
+      return JSON.parse(data);
     } catch (cause) {
-      throw makeError("malformed SSE JSON", "LCX_INVALID_SSE", { cause });
+      throw errors.malformed(cause);
     }
-    onEvent(event);
   };
-  // An abort must interrupt a read that never settles, not only be noticed between reads. Cancelling
-  // the reader settles the pending read as done, so the abort is re-checked right after every read.
   const onAbort = () => {
-    reader.cancel(options.signal?.reason).catch(() => {});
+    reader.cancel(signal?.reason).catch(() => {});
   };
-  options.signal?.addEventListener("abort", onAbort, { once: true });
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
-      abortIfNeeded(options.signal);
-      const { done, value } = await reader.read();
-      abortIfNeeded(options.signal);
+      abortIfNeeded(signal);
+      const { done, value } = await readWithSignal(reader, signal);
+      abortIfNeeded(signal);
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > maxBytes)
-        throw makeError(
-          `SSE response exceeds ${maxBytes} bytes`,
-          "LCX_RESPONSE_TOO_LARGE",
-        );
+      if (bytes > maxBytes) throw errors.tooLarge(maxBytes);
       pending += decoder.decode(value, { stream: true });
       let newline;
       while ((newline = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
-        if (line === "") dispatch();
-        else if (!line.startsWith(":") && line.startsWith("data:"))
+        if (line === "") {
+          const event = decode();
+          if (event !== undefined) yield event;
+        } else if (!line.startsWith(":") && line.startsWith("data:")) {
           dataLines.push(line.slice(5).replace(/^ /u, ""));
+        }
       }
     }
     pending += decoder.decode();
     if (pending.startsWith("data:"))
       dataLines.push(pending.slice(5).replace(/^ /u, ""));
-    dispatch();
+    const event = decode();
+    if (event !== undefined) yield event;
   } finally {
-    options.signal?.removeEventListener("abort", onAbort);
+    signal?.removeEventListener("abort", onAbort);
     try {
       await reader.cancel();
     } catch {
@@ -387,4 +371,22 @@ export async function consumeSse(
       // The acquired reader owns no further work after settlement.
     }
   }
+}
+
+export async function consumeSse(
+  response: Response,
+  onEvent: (event: unknown) => void,
+  options: { signal?: AbortSignal; maxResponseBytes?: number } = {},
+) {
+  for await (const event of readSseEvents(response, {
+    signal: options.signal,
+    maxBytes: options.maxResponseBytes,
+    errors: {
+      noBody: () => makeError("SSE response has no body", "LCX_INVALID_SSE"),
+      malformed: (cause) => makeError("malformed SSE JSON", "LCX_INVALID_SSE", { cause }),
+      tooLarge: (maxBytes) =>
+        makeError(`SSE response exceeds ${maxBytes} bytes`, "LCX_RESPONSE_TOO_LARGE"),
+    },
+  }))
+    onEvent(event);
 }

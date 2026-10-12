@@ -14,7 +14,7 @@ import {
   type StructuredMediaTool,
 } from "./search-media.js";
 import { installInlineMedia, inlineMediaCss, nativeMarkdownImageCss, type InlineMediaHost, type MediaLabels } from "./inline-media.js";
-import { installUsageSlots, searchUsageDefinition } from "./search-usage-ui.js";
+import { createSearchUsageDefinition, installUsageSlots } from "./search-usage-ui.js";
 import { createCallTurns } from "./nested-calls.js";
 import { NESTED_SETTLE_EVENT } from "../search-accounting.js";
 
@@ -137,8 +137,6 @@ type Slots = {
     inject?: () => unknown;
   }, component: (props: Props) => unknown): unknown;
 };
-
-type Require = (specifier: string) => unknown;
 
 declare global {
   interface Window {
@@ -304,6 +302,9 @@ window.__ModuleLoader__.load({
       kind: SEARCH_MEDIA_KIND,
       target: "chat",
       match(event) {
+        if (event.type !== "assistant/live-chunk") callTurns.observe(event.seq);
+        if (event.type === "turn/start") callTurns.openTurn(event.data.turn);
+        if (event.type === "turn/end") callTurns.closeTurn(event.data.turn);
         if (event.type === "turn/start")
           return { id: String(event.data.turn), role: "start" };
         if (event.type === "tool/call")
@@ -775,15 +776,26 @@ window.__ModuleLoader__.load({
         uiConversation =
           ctx.uiConversation ?? ctx.get("uiConversation");
       if (!slots || !svc || !locale || !uiConversation) return;
-      ctx.effect(() => uiConversation.events.register(searchUsageDefinition), 'lcx search billing data');
+      ctx.effect(() => {
+        // The Definition is shared by every Session's assembler: its remembered root calls end with it.
+        const usageTurns = createCallTurns();
+        const unregister = uiConversation.events.register(createSearchUsageDefinition(usageTurns));
+        return () => {
+          if (typeof unregister === "function") unregister();
+          usageTurns.clear();
+        };
+      }, 'lcx search billing data');
       ctx.effect(() => installUsageSlots(slots as Parameters<typeof installUsageSlots>[0], React.createElement), 'lcx search billing slots');
       ctx.effect(mountCss, "lcx-codex styles");
       for (const language of ["zh", "en"] as const)
         ctx.effect(() => locale.register(NAMESPACE, language, copy[language]), `lcx-codex ${language} dictionary`);
-      ctx.effect(
-        () => uiConversation.events.register(searchMediaDefinition),
-        "lcx-codex search media definition",
-      );
+      ctx.effect(() => {
+        const unregister = uiConversation.events.register(searchMediaDefinition);
+        return () => {
+          if (typeof unregister === "function") unregister();
+          callTurns.clear();
+        };
+      }, "lcx-codex search media definition");
       const installSlot = (
         name: string,
         label: string,

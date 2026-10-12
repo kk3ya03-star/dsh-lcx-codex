@@ -1,5 +1,3 @@
-// @ts-check
-
 import { isCompactCheckpointSource } from "@deepseek-ai/dsh-compaction";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
 import type { Context } from "@deepseek-ai/cordis";
@@ -25,6 +23,8 @@ import {
   portableBudgetError,
   portableTokenCeiling,
 } from "./token-budget.js";
+import { isRecord } from "./util.js";
+import { DEFAULTS } from "./defaults.js";
 
 type UnknownRecord = Record<string, unknown>;
 type CompactionItem = { type: "compaction"; encrypted_content: string };
@@ -137,88 +137,33 @@ async function observeEvents(ctx: SessionQueryContext, session: Session) {
   }
 }
 /**
- * @typedef {object} NativeCheckpointBase
- * @property {string} compactionId
- * @property {string} provider
- * @property {string} model
- * @property {string} baseURLFingerprint
- * @property {string} sourceSessionId
- * @property {NativeOutputItem[]} nativeOutput
- * @property {CompactionItem} [nativeCompaction]
- * @property {number} [retainedInputCount]
- * @property {number} [retainedClientCount]
- * @property {number} [retainedAssistantCount]
- * @property {number} [retainedEstimatedTokens]
- * @property {number} [createdAt]
- */
-/** @typedef {NativeCheckpointBase & { type: 'lcx-native-compaction-v5', version: 5, retentionPolicy?: 'conversation-fidelity-v1' }} NativeCheckpointV5 */
-/** @typedef {NativeCheckpointV5} NativeCheckpointBlock */
-/**
  * Minimal validated candidate shape. DSH rawOutput is unknown until the existing
  * version, field, count, and compaction validation below has completed.
- * @typedef {object} NativeCheckpointCandidate
- * @property {typeof NATIVE_BLOCK_TYPE} type
- * @property {typeof NATIVE_BLOCK_VERSION} version
- * @property {unknown} [compactionId]
- * @property {unknown} [nativeOutput]
- * @property {unknown} [provider]
- * @property {unknown} [model]
- * @property {unknown} [baseURLFingerprint]
- * @property {unknown} [sourceSessionId]
- * @property {unknown} [retainedInputCount]
- * @property {unknown} [retainedClientCount]
- * @property {unknown} [retainedAssistantCount]
  */
-/** @typedef {{ compaction: CompactionItem }} NativeCompactionResult */
-/** @typedef {{ session: Session, route: RouteIdentity, result: NativeCompactionResult, input?: unknown[], ephemeralPreludeItemCount?: number, imageMap?: unknown, retentionOptions?: RetentionOptions }} CreateCheckpointOptions */
-/** @typedef {Error & { code?: string }} LcxError */
 
 export const NATIVE_BLOCK_TYPE = "lcx-native-compaction-v5";
 const MIGRATED_NATIVE_BLOCK_PREFIX = "plugin:lcx-native-compaction-";
 export const NATIVE_BLOCK_VERSION = 5;
 
-export const RETAINED_MESSAGE_TOKEN_BUDGET = 64_000;
-export const ASSISTANT_RETENTION_TOKEN_RESERVE = 24_000;
-export const ASSISTANT_RETENTION_PER_MESSAGE_TOKEN_CAP = 3_000;
+export const RETAINED_MESSAGE_TOKEN_BUDGET = DEFAULTS.nativeRetentionTokenBudget;
+export const ASSISTANT_RETENTION_TOKEN_RESERVE = DEFAULTS.assistantRetentionTokenReserve;
+export const ASSISTANT_RETENTION_PER_MESSAGE_TOKEN_CAP = DEFAULTS.assistantRetentionPerMessageTokenCap;
 
-/**
- * @param {unknown} value
- * @returns {value is UnknownRecord}
- */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-/** @param {Message | null | undefined} message */
-function textOf(message: Message | null | undefined): string {
-  return (message?.content ?? [])
-    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-}
-/** @param {unknown} item */
 function estimatedItemTokens(item: unknown) {
   return estimateBudgetItem(item);
 }
-/**
- * @param {unknown} item
- * @returns {item is UnknownRecord}
- */
 function isRetainedClientItem(item: unknown): item is RetainedClientItem {
-  if (!isObject(item) || (item.type !== undefined && item.type !== "message"))
+  if (!isRecord(item) || (item.type !== undefined && item.type !== "message"))
     return false;
   return (
     item.role === "user" || item.role === "developer" || item.role === "system"
   );
 }
-/**
- * @param {unknown} item
- * @returns {{ type: 'output_text', text: string }[]}
- */
 type RetainedAssistantPart = { type: "output_text"; text: string };
 
 function assistantTextParts(item: unknown): RetainedAssistantPart[] {
   if (
-    !isObject(item) ||
+    !isRecord(item) ||
     item.type !== "message" ||
     item.role !== "assistant" ||
     !Array.isArray(item.content)
@@ -226,43 +171,33 @@ function assistantTextParts(item: unknown): RetainedAssistantPart[] {
     return [];
   return item.content.filter(
     (part): part is RetainedAssistantPart =>
-      isObject(part) &&
+      isRecord(part) &&
       part.type === "output_text" &&
       typeof part.text === "string" &&
       part.text.length > 0,
   );
 }
-/** @param {unknown} item */
 function isRetainedAssistantItem(item: unknown): boolean {
   return assistantTextParts(item).length > 0;
 }
-/** @param {unknown} item */
 function assistantText(item: unknown): string {
   return assistantTextParts(item)
     .map((part) => part.text)
     .join("");
 }
-/** @param {unknown} item */
 function retainedAssistantPhase(item: unknown): "commentary" | "final_answer" | undefined {
-  const phase = isObject(item) ? item.phase : undefined;
+  const phase = isRecord(item) ? item.phase : undefined;
   return phase === "commentary" || phase === "final_answer" ? phase : undefined;
 }
-/** @param {unknown} value */
 function containsBudgetImage(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsBudgetImage);
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   return value.image === true || Object.values(value).some(containsBudgetImage);
 }
-/** @param {unknown} item */
 function isImageBudgetItem(item: unknown) {
   return containsBudgetImage(modelVisibleBudgetView(item));
 }
 
-/**
- * @param {unknown} item
- * @param {number} [maxTokens]
- * @returns {UnknownRecord | undefined}
- */
 function truncateVisibleAssistantItem(
   item: unknown,
   maxTokens = ASSISTANT_RETENTION_PER_MESSAGE_TOKEN_CAP,
@@ -271,10 +206,9 @@ function truncateVisibleAssistantItem(
   if (!text) return undefined;
   const phase = retainedAssistantPhase(item);
   const providerId =
-    isObject(item) && typeof item.id === "string" && item.id
+    isRecord(item) && typeof item.id === "string" && item.id
       ? item.id
       : undefined;
-  /** @param {string} retained @param {boolean} preserveProviderId */
   const candidate = (retained: string, preserveProviderId: boolean) => ({
     type: "message",
     role: "assistant",
@@ -285,7 +219,6 @@ function truncateVisibleAssistantItem(
   const full = candidate(text, true);
   if ((estimatedItemTokens(full) ?? Infinity) <= maxTokens) return full;
   const marker = "\n…[LCX retained answer truncated]…\n";
-  /** @param {number} count */
   const shortened = (count: number) => {
     const available = Math.max(0, count - marker.length);
     const head = Math.floor(available * 0.72);
@@ -309,13 +242,6 @@ function truncateVisibleAssistantItem(
   return best;
 }
 
-/**
- * @param {IndexedItem[]} candidates
- * @param {number} budget
- * @param {(value: IndexedItem) => unknown} [transform]
- * @param {boolean} [stopOnImageOverflow]
- * @returns {Selection}
- */
 function selectNewest(
   candidates: readonly IndexedItem[],
   budget: number,
@@ -323,7 +249,6 @@ function selectNewest(
     structuredClone(value.item),
   stopOnImageOverflow = false,
 ): Selection {
-  /** @type {SelectedItem[]} */
   const selected = [];
   let used = 0;
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
@@ -346,35 +271,6 @@ function selectNewest(
   return { selected, used };
 }
 
-/**
- * @param {unknown[] | null | undefined} input
- * @param {RetentionOptions} [options]
- * @returns {unknown[]}
- */
-export function retainedCompactionInput(
-  input: readonly unknown[] | null | undefined,
-  options: RetentionOptions = {},
-): unknown[] {
-  const configuredBudget = options.tokenBudget;
-  const budget =
-    typeof configuredBudget === "number" &&
-    Number.isSafeInteger(configuredBudget) &&
-    configuredBudget > 0
-      ? configuredBudget
-      : RETAINED_MESSAGE_TOKEN_BUDGET;
-  const candidates = (input ?? [])
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => isRetainedClientItem(item));
-  return selectNewest(candidates, budget)
-    .selected.sort((a, b) => a.index - b.index)
-    .map(({ item }) => item);
-}
-
-/**
- * @param {unknown[] | null | undefined} input
- * @param {RetentionOptions} [options]
- * @returns {RetentionPlan}
- */
 export function retainedConversationPlan(
   input: readonly unknown[] | null | undefined,
   options: RetentionOptions = {},
@@ -427,25 +323,6 @@ export function retainedConversationPlan(
     assistantEstimatedTokens: assistant.used,
   };
 }
-/**
- * @param {unknown[] | null | undefined} input
- * @param {RetentionOptions} [options]
- */
-export function retainedConversationInput<T>(
-  input: readonly T[] | null | undefined,
-  options: RetentionOptions = {},
-): T[] {
-  return retainedConversationPlan(input, options).items as T[];
-}
-/** @param {unknown[] | null | undefined} items */
-export function hasRetainedCompactionInput(
-  items: readonly unknown[] | null | undefined,
-): boolean {
-  return (items ?? []).some(
-    (item) => isRetainedClientItem(item) || isRetainedAssistantItem(item),
-  );
-}
-/** @param {Message | null | undefined} message */
 function hasCompactionId(
   source: Message["source"],
 ): source is Message["source"] & { compactionId: string } {
@@ -484,7 +361,7 @@ export function assertSupportedCheckpointMessage(message: RequestMessage): void 
 /** The active transaction is read from one immutable query observation. */
 export async function activeCompactionId(ctx: SessionQueryContext, session: Session | null | undefined) {
   if (!session) return undefined;
-  /** @type {Set<string>} */ const ended = new Set();
+  const ended = new Set();
   const lease = await observeEvents(ctx, session);
   try {
     const events = lease.events;
@@ -533,10 +410,6 @@ function dropSupersededItems(
   return input.slice(preludeCount).filter((_, offset) => !drop.has(preludeCount + offset));
 }
 
-/**
- * @param {CreateCheckpointOptions} options
- * @returns {Promise<NativeCheckpointV5>}
- */
 export async function createNativeCheckpointBlock({
   ctx,
   session,
@@ -570,7 +443,6 @@ export async function createNativeCheckpointBlock({
     dropSupersededItems(input, ephemeralPreludeItemCount, supersededItemIndices),
     retentionOptions,
   );
-  /** @type {NativeOutputItem[]} */
   const nativeOutput = persistNativeImageReferences(
     [...retention.items, structuredClone(result.compaction)],
     imageMap ?? new Map<string, ImageAttachmentRef>(),
@@ -594,11 +466,6 @@ export async function createNativeCheckpointBlock({
   };
 }
 
-/**
- * @param {NativeCheckpointBlock} block
- * @param {unknown} usage
- * @returns {UnknownRecord[]}
- */
 export function nativeCheckpointChunks(
   block: NativeCheckpointBlock,
   usage: TokenUsage | undefined,
@@ -615,11 +482,6 @@ export function nativeCheckpointChunks(
   ];
 }
 
-/**
- * @param {Session | null | undefined} session
- * @param {string | null | undefined} compactionId
- * @returns {Promise<CompactionSummaryEvent | undefined>}
- */
 export async function compactionSummaryEvent(
   ctx: SessionQueryContext,
   session: Session | null | undefined,
@@ -644,13 +506,11 @@ export async function compactionSummaryEvent(
 }
 /**
  * rawOutput elements remain untrusted until stateFromSummaryEvent validates them.
- * @param {CompactionSummaryEvent | null | undefined} event
- * @returns {NativeCheckpointCandidate | undefined}
  */
 function isNativeCheckpointCandidate(
   value: unknown,
 ): value is NativeCheckpointCandidate {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   return (
     value.type === NATIVE_BLOCK_TYPE && value.version === NATIVE_BLOCK_VERSION
   );
@@ -668,23 +528,18 @@ function nativeBlockFromSummary(
   return undefined;
 }
 function assertNoMigratedNativeBlock(raw: readonly unknown[] | undefined): void {
-  if (raw?.some(value => isObject(value) && typeof value.type === "string" &&
+  if (raw?.some(value => isRecord(value) && typeof value.type === "string" &&
     value.type.startsWith(MIGRATED_NATIVE_BLOCK_PREFIX)))
     throw Object.assign(new Error("Unsupported LCX checkpoint format; start a new session"), {
       code: "LCX_CHECKPOINT_UNSUPPORTED",
     });
 }
-/** @param {unknown} value */
 function validateCount(value: unknown): value is number | undefined {
   return (
     value === undefined ||
     (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
   );
 }
-/**
- * @param {CompactionSummaryEvent | null | undefined} event
- * @returns {NativeCheckpointBlock | undefined}
- */
 export function stateFromSummaryEvent(
   event: CompactionSummaryEvent | null | undefined,
 ) {
@@ -717,13 +572,13 @@ export function stateFromSummaryEvent(
   }
   const compactions = block.nativeOutput.filter(
     (item): item is CompactionItem =>
-      isObject(item) &&
+      isRecord(item) &&
       item.type === "compaction" &&
       typeof item.encrypted_content === "string",
   );
   if (compactions.length !== 1 || compactions[0].encrypted_content.trim().length === 0) return undefined;
   const compactionIndex = block.nativeOutput.findIndex(
-    (item) => isObject(item) && item.type === "compaction",
+    (item) => isRecord(item) && item.type === "compaction",
   );
   const prefix =
     compactionIndex >= 0 ? block.nativeOutput.slice(0, compactionIndex) : [];
@@ -769,10 +624,6 @@ export function stateFromSummaryEvent(
   };
   return { ...base, type: NATIVE_BLOCK_TYPE, version: NATIVE_BLOCK_VERSION };
 }
-/**
- * @param {Session} session
- * @param {Message} message
- */
 export function checkpointStateForMessage(ctx: SessionQueryContext, session: Session, message: Message) {
   assertSupportedCheckpointMessage(message);
   const id = compactCheckpointId(message);
@@ -784,7 +635,7 @@ async function checkpointStateForMessageAsync(ctx: SessionQueryContext, session:
   const event = await compactionSummaryEvent(ctx, session, id);
   const state = stateFromSummaryEvent(event);
   const hasNativeBlock = event?.data.rawOutput?.some(value =>
-    isObject(value) && typeof value.type === "string" &&
+    isRecord(value) && typeof value.type === "string" &&
       (value.type.startsWith("lcx-native-compaction-") || value.type.startsWith(MIGRATED_NATIVE_BLOCK_PREFIX)),
   );
   if (hasNativeBlock && !state) throw Object.assign(
@@ -793,11 +644,6 @@ async function checkpointStateForMessageAsync(ctx: SessionQueryContext, session:
   );
   return state;
 }
-/**
- * @param {NativeCheckpointBlock} state
- * @param {RouteIdentity} route
- * @param {unknown} ctx
- */
 export function stateRouteCompatible(
   state: CheckpointRouteRecord | null | undefined,
   route: RouteIdentity,
@@ -810,11 +656,10 @@ const DSH_PROJECTION_UNAVAILABLE_SUFFIX =
   '" was removed or replaced; restore the session with its owning plugin';
 
 /**
- * DSH 0.1.6 attaches no error code or subclass to this failure and exposes no
+ * DSH attaches no error code or subclass to this failure and exposes no
  * public inventory of required or active projections, so message shape is the
  * only available signal. Both classes fail closed, so a misclassification
  * costs precision in the error code, not correctness.
- * @param {unknown} cause
  */
 function isMissingOrReplacedProjectionError(cause: unknown): cause is Error {
   if (!(cause instanceof Error)) return false;
@@ -841,15 +686,12 @@ function checkpointHistoryReadError(cause: unknown) {
 }
 
 /**
- * DSH 0.1.6 derives a message only while every `SessionMessageProjection` the
+ * DSH derives a message only while every `SessionMessageProjection` the
  * durable log committed is still registered; an absent or replaced owner throws
  * instead of yielding pre-projection content. Reconstructing the shadowed
  * transcript without that owner would resurrect content a durable decision
  * (for example `image/offload`) removed, so this is a checkpoint
  * incompatibility rather than a recoverable read.
- * @param {Session} session
- * @param {number} seq
- * @returns {Message | undefined}
  */
 function eventMessage(session: Session, events: readonly SessionEvent[], seq: number) {
   if (!Number.isSafeInteger(seq) || seq < 0)
@@ -873,7 +715,6 @@ function eventMessage(session: Session, events: readonly SessionEvent[], seq: nu
     throw checkpointHistoryReadError(cause);
   }
 }
-/** @param {Message} message */
 function estimateChars(message: Message) {
   try {
     const encoded = JSON.stringify(message);
@@ -882,11 +723,6 @@ function estimateChars(message: Message) {
     return undefined;
   }
 }
-/**
- * @param {Session} session
- * @param {string} compactionId
- * @returns {Promise<Message[]>}
- */
 async function expandedCheckpointMessages(
   ctx: SessionQueryContext,
   session: Session,
@@ -931,11 +767,6 @@ async function expandedCheckpointMessages(
     lease[Symbol.dispose]();
   }
 }
-/**
- * @param {Session} session
- * @param {string} compactionId
- * @returns {Promise<Message[]>}
- */
 export async function shadowedMessagesForCheckpoint(
   ctx: SessionQueryContext,
   session: Session,
@@ -943,12 +774,7 @@ export async function shadowedMessagesForCheckpoint(
 ) {
   return expandedCheckpointMessages(ctx, session, compactionId);
 }
-/**
- * @param {readonly Message[]} messages
- * @returns {Message[][]}
- */
 function groupMessages(messages: readonly Message[]): Message[][] {
-  /** @type {Message[][]} */
   const groups = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -1006,12 +832,6 @@ export function withoutSupersededPromptSnapshots(messages: readonly Message[]): 
     (message) => !(message.role === "system" && message.source?.kind === "system-prompt"),
   );
 }
-/**
- * @param {Session} session
- * @param {string} compactionId
- * @param {{ maxChars?: number }} [options]
- * @returns {Promise<Message[]>}
- */
 export async function portableMessagesForCheckpoint(
   ctx: SessionQueryContext,
   session: Session,
@@ -1024,7 +844,7 @@ export async function portableMessagesForCheckpoint(
     Number.isSafeInteger(configuredMaxChars) &&
     configuredMaxChars > 0
       ? configuredMaxChars
-      : 80_000;
+      : DEFAULTS.portableReplayMaxChars;
   const maxTokens = portableTokenCeiling(maxChars) ?? 1;
   // Superseded prompt snapshots are removed before grouping so they never consume the replay budget.
   const expanded = withoutSupersededPromptSnapshots(

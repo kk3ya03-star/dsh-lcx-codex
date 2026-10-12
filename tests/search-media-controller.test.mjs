@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractDirectMediaLinks, extractDirectVideoLinks, mergeSearchMedia, SEARCH_MEDIA_LIMIT, structuredSearchMedia } from '../src/client/search-media.ts';
+import { extractDirectMediaLinks, mergeSearchMedia, SEARCH_MEDIA_LIMIT, structuredSearchMedia } from '../src/client/search-media.ts';
 const img='https://example.com/a.jpg', vid='https://example.com/b.mp4';
+const extractDirectVideoLinks=text=>extractDirectMediaLinks(text).filter(item=>item.kind==='video');
 const urls=text=>extractDirectVideoLinks(text).map(item=>item.url);
 const tick=String.fromCharCode(96), fence=tick.repeat(3);
 

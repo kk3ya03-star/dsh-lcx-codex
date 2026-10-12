@@ -34,7 +34,7 @@ async function collect(iterable) {
   return chunks
 }
 
-test('standard request builder follows Pi 0.85.1 cache fields by route capability', () => {
+test('standard request builder follows the Pi cache fields by route capability', () => {
   const long = buildResponsesBody({
     model: model({ compat: { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true } }),
     input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
@@ -359,8 +359,11 @@ test('managed failure taxonomy keeps DSH retry ownership precise', () => {
   assert.equal(managedFailure(Object.assign(new Error('route'), { code: 'LCX_RESPONSES_ROUTE_UNAVAILABLE' })).code, 'NO_ADAPTER')
   assert.equal(managedFailure(Object.assign(new Error('stop'), { code: 'LCX_RESPONSES_UNSUPPORTED_OPTION' })).code, 'UNSUPPORTED_OPTION')
   assert.equal(managedFailure(Object.assign(new Error('credential'), { code: 'LCX_CREDENTIAL_UNAVAILABLE' })).code, 'AUTH')
+  assert.equal(managedFailure(Object.assign(new Error('key'), { code: 'INVALID_CREDENTIAL' })).code, 'AUTH')
   assert.equal(managedFailure(Object.assign(new Error("This model's maximum context length is 128000 tokens"), { status: 400 })).code, 'CONTEXT_WINDOW_EXCEEDED')
   assert.equal(managedFailure(Object.assign(new Error('request failed'), { status: 400, code: 'context_length_exceeded' })).code, 'CONTEXT_WINDOW_EXCEEDED')
+  // DSH's overflow predicate recognises wording the LCX phrases do not (an HTTP 400 would otherwise be an invalid request).
+  assert.equal(managedFailure(Object.assign(new Error('The input is too long for this model'), { status: 400 })).code, 'CONTEXT_WINDOW_EXCEEDED')
 })
 
 test('managed failure distinguishes provider deadlines from user cancellation', () => {

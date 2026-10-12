@@ -5,7 +5,6 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import Sessions, { Session, SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
 import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -19,7 +18,7 @@ import Agents from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
-import { loadHostSource } from './wp2-source.mjs'
+import { loadHostSource, loadSource } from './wp2-source.mjs'
 import { queryContext } from './session-query-fixture.mjs'
 
 const [checkpoint, routeHelpers] = await Promise.all([loadHostSource('native-checkpoint'), loadHostSource('route')])
@@ -31,12 +30,7 @@ const oldCwd = '/issue90-fixture/cwd'
 const oldCwdDir = '--issue90-fixture-cwd--'
 const baseURL = 'https://fixture.invalid/v1'
 
-async function indexSource() {
-  const path = resolve(`.wp5-index-${process.pid}.mjs`)
-  const built = await build({ entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external', format: 'esm', platform: 'node', target: 'node24', write: false, footer: { js: '\nexport { managedResponsesStream, serializeNativeAware };' } })
-  await writeFile(path, built.outputFiles[0].contents)
-  try { return await import(pathToFileURL(path).href) } finally { await rm(path) }
-}
+const indexSource = () => loadSource('index', 'managedResponsesStream, serializeNativeAware')
 const index = await indexSource()
 
 async function persistence(root) {

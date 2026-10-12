@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
@@ -20,7 +19,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
-import { loadHostSource } from './wp2-source.mjs'
+import { loadHostSource, loadSource } from './wp2-source.mjs'
 import { queryContext } from './session-query-fixture.mjs'
 
 // Issue #115 (I-09 / I-10). DSH 0.2.1-alpha.2 declares systemPromptUpdate "in-history" and toolUpdate
@@ -38,12 +37,7 @@ const instructionTexts = (input, role) => input.filter(item => item.role === rol
 const [checkpoint] = await Promise.all([loadHostSource('native-checkpoint')])
 const toolCallOn = { remaining: 0 }
 
-async function loadIndexInternals() {
-  const output = resolve(`.i115-index-${process.pid}.mjs`)
-  const result = await build({ entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external', format: 'esm', platform: 'node', target: 'node24', write: false, footer: { js: '\nexport { serializeNativeAware, managedResponsesStream };' } })
-  await writeFile(output, result.outputFiles[0].contents)
-  try { return await import(pathToFileURL(output).href) } finally { await rm(output) }
-}
+const loadIndexInternals = () => loadSource('index', 'serializeNativeAware, managedResponsesStream')
 
 async function harness(root, index) {
   const ctx = new Context()

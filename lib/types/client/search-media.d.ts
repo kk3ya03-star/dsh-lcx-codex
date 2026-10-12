@@ -21,5 +21,3 @@ export declare function mergeSearchMedia(structured: readonly SearchMediaItem[],
  * files are LCX's; everything else (pages, video sites) stays an ordinary link.
  */
 export declare function extractDirectMediaLinks(text: string): readonly SearchMediaItem[];
-/** Direct video files only (see `extractDirectMediaLinks`). */
-export declare function extractDirectVideoLinks(text: string): readonly SearchMediaItem[];

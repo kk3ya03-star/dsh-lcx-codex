@@ -1,6 +1,6 @@
 import apply from '../lib/index.js'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
-import { pluginConfig, providerContext } from './dsh02-fixture.mjs'
+import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
 
 export const xaiProfile = {
   api: 'openai-responses',

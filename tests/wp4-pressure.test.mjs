@@ -3,20 +3,11 @@ import { test } from 'node:test'
 import { writeFile, unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { restoreCompactionPatches } from '../lib/dsh-compat.js'
+import { loadSource } from './wp2-source.mjs'
 
-const compiledPath = resolve(`.wp4-index-${process.pid}.mjs`)
-const built = await build({
-  entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external',
-  format: 'esm', platform: 'node', target: 'node24', write: false,
-  footer: { js: '\nexport { patchCompactionPressureService };' },
-})
-await writeFile(compiledPath, built.outputFiles[0].contents)
-let source
-try { source = await import(pathToFileURL(compiledPath).href) }
-finally { await unlink(compiledPath) }
+const source = await loadSource('index', 'patchCompactionPressureService')
 
 test('Native and emergency bands use routed pressure budget and exact boundaries', () => {
   const policy = { auto: 90, emergency: 95 }

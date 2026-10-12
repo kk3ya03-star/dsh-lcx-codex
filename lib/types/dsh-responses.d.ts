@@ -27,7 +27,7 @@ type SerializeOptions = Partial<ImageOptions> & {
     /**
      * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
      * serialization: a non-leading `system` message is then a real instruction update and is emitted in
-     * its history position with the model's instruction role. Any other value keeps the DSH 0.1.5-style
+     * its history position with the model's instruction role. Any other value keeps the plain
      * mapping (later `system` messages are ordinary user context).
      */
     systemPromptUpdate?: unknown;
@@ -70,12 +70,21 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
     reasoning: {
         efforts: string[];
     } | undefined;
+    /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
+    contextWindow: number | undefined;
     resolved: boolean;
 }>;
-export declare function resolveModelImageSupport(ctx: DshContext | undefined, route: {
-    provider?: unknown;
-    model?: unknown;
-}, signal?: AbortSignal): Promise<ImageSupport>;
+/**
+ * The model facts a route serializes and sends with, laid over the bundled catalog descriptor. What DSH
+ * reported for the exact routed model (context window; on a GPT route also the reasoning capability) wins
+ * over the catalog entry, and on a GPT route a profile's declared `reasoningEfforts` (wire mapping, or `false`
+ * for a non-reasoning model) wins over both. A GPT model with no catalog entry follows what DSH itself
+ * resolved for it instead of being assumed to reason. A Grok route carries its reasoning projection
+ * separately (`modelDefaults` / `modelControls`), so only the context window is applied there.
+ */
+export declare function routeModelOverride(routeConfig: {
+    modelControls?: object;
+}, facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">, grok: boolean): Record<string, unknown> | undefined;
 export declare function readDshPiReplayState(value: unknown): {
     response: ReplayResponse;
     blocks: ReplayBlock[];

@@ -58,8 +58,6 @@ export declare function onScopedToolExecute(agent: unknown, listener: ToolExecut
 export declare function tokenMeterTotal(value: unknown, session: Session): number | undefined;
 export declare function sessionsService(ctx: unknown): Pick<SessionStore, "get"> | undefined;
 export declare function sessionFor(ctx: unknown, sessionId: string): Session | undefined;
-export declare function readWebSearchProvider(ctx: unknown): unknown;
-export declare function writeWebSearchProvider(ctx: unknown, providerId: unknown): boolean;
 export declare function contextService(ctx: unknown, name: string): unknown;
 export declare function resolveContextService(ctx: unknown, name: string): unknown;
 export declare function resolveScopedService(agent: unknown, name: string): unknown;
@@ -86,7 +84,4 @@ export declare function patchCompactionConfig(state: {
     original: unknown;
 }, createConfig: (originalConfig: unknown) => unknown): ConfigPatchRecord | undefined;
 export declare function restoreCompactionConfig(record: ConfigPatchRecord | undefined): void;
-export declare function patchVisibleWebSearchTimeout(agent: unknown, getTimeoutMs: () => number | undefined, patchedDefinitions: Map<MutableService, unknown>): void;
-export declare function refreshVisibleWebSearchTimeouts(patchedDefinitions: ReadonlyMap<MutableService, unknown>, timeoutMs: number | undefined): void;
-export declare function restoreVisibleWebSearchTimeouts(patchedDefinitions: Map<MutableService, unknown>): void;
 export {};

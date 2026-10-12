@@ -35,11 +35,11 @@ export function conversationEngine() {
 const ownerCtx = () => ({ effect: (setup) => { const dispose = setup(); return () => dispose?.() } })
 
 /**
- * Build one Session-bound assembly: the real registries and assembler, a minimal `chat` view target that
- * keeps the materialized Nodes, and LCX's real client registered on the real event registry.
+ * The registries a Client shares between Sessions: LCX registers its Definitions once on the event registry, and
+ * every Session gets its own assembler on top (`createAssembly({ shared })`), exactly as DSH wires it.
  */
-export function createAssembly({ mediaPreview = true } = {}) {
-  const { ConversationEventRegistry, ConversationViewRegistry, ConversationNodeAssembler } = conversationEngine()
+export function createSharedEngine({ mediaPreview = true } = {}) {
+  const { ConversationEventRegistry, ConversationViewRegistry } = conversationEngine()
   const events = new ConversationEventRegistry(ownerCtx())
   const views = new ConversationViewRegistry(ownerCtx())
   views.register({
@@ -54,8 +54,18 @@ export function createAssembly({ mediaPreview = true } = {}) {
       }
     },
   })
-  const assembler = new ConversationNodeAssembler(events, views)
   installLcxClient(events, mediaPreview)
+  return { events, views }
+}
+
+/**
+ * Build one Session-bound assembly: the real registries and assembler, a minimal `chat` view target that
+ * keeps the materialized Nodes, and LCX's real client registered on the real event registry.
+ */
+export function createAssembly({ mediaPreview = true, shared = createSharedEngine({ mediaPreview }) } = {}) {
+  const { ConversationNodeAssembler } = conversationEngine()
+  const { events, views } = shared
+  const assembler = new ConversationNodeAssembler(events, views)
   assembler.activateTarget('chat')
   return {
     assembler,

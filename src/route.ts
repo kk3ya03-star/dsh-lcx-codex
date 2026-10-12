@@ -3,13 +3,13 @@ import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { SessionId, type Session } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-settings";
-import { attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { assertUsableApiKey, attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import {
-  getBuiltinModels,
-  getBuiltinProviders,
-} from "./pi-responses-runtime.js";
-import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
+import { resolveCatalogModel } from "./model-catalog.js";
+import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
+import { providerSessionHeaders } from "./provider-headers.js";
+import { codedError, isPositiveFinite, isPositiveSafeInteger, isRecord } from "./util.js";
+import { DEFAULTS } from "./defaults.js";
 
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
@@ -53,33 +53,18 @@ type ModelDescriptorDefaults = Partial<
   Pick<PiResponsesModel, "reasoning" | "thinkingLevelMap">
 >;
 type UnresolvedRouteConfig = RoutePolicy & { provider: string; model: string; baseURL: string; apiKeyEnv: string; headers?: HeaderMap };
-export type ResolvedResponsesRoute = UnresolvedRouteConfig & { api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
+export type ResolvedResponsesRoute = UnresolvedRouteConfig & { catalogHeaders?: HeaderMap; api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
 type GenerationControls = { reasoningEffort?: unknown; temperature?: unknown; maxTokens?: unknown };
 type CheckpointRouteRecord = { version: number; provider: unknown; model: unknown; baseURLFingerprint: unknown; sourceSessionId: unknown };
-type LcxError = Error & { code?: string };
 
-/** @param {unknown} value */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-/** @param {unknown} value */
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-function isPositiveFinite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
 
-/** @param {unknown} value */
 export function normalizeBaseURL(value: unknown): string {
   return String(value ?? "").trim().replace(/\/+$/u, "");
 }
-/** @param {unknown} baseURL */
 export function baseURLFingerprint(baseURL: unknown): string {
   return createHash("sha256").update(normalizeBaseURL(baseURL), "utf8").digest("hex");
 }
 
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {{ includeSession?: boolean }} [options] */
 export function routeFingerprint(route: Partial<RouteIdentity> | null | undefined, options: { includeSession?: boolean } = {}): string {
   const includeSession = options.includeSession !== false;
   return createHash("sha256").update([
@@ -87,14 +72,6 @@ export function routeFingerprint(route: Partial<RouteIdentity> | null | undefine
   ].join("\u001f"), "utf8").digest("hex");
 }
 
-/** @param {unknown} value */
-function clampPromptCacheKey(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  const chars = Array.from(String(value));
-  return chars.length <= 64 ? String(value) : chars.slice(0, 64).join("");
-}
-
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export function promptCacheSessionId(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
   if (config.cacheRetention === "none") return undefined;
   const sessionId = route?.sessionId ? String(route.sessionId) : undefined;
@@ -114,9 +91,8 @@ export function promptCacheSessionId(route: Partial<RouteIdentity> | null | unde
   return current?.id ?? sessionId;
 }
 
-/** @param {Partial<RouteIdentity> | null | undefined} route @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention'>>} [config] @param {RouteContext | null | undefined} [ctx] */
 export function promptCacheKey(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
-  return clampPromptCacheKey(promptCacheSessionId(route, config, ctx));
+  return clampOpenAIPromptCacheKey(promptCacheSessionId(route, config, ctx));
 }
 
 /** Grok follows Pi directly: cache/affinity belongs to the selected child session. */
@@ -128,15 +104,13 @@ export function grokPromptCacheSessionId(
   const sessionId = String(route?.sessionId ?? "");
   return sessionId || undefined;
 }
-/** @param {Partial<Pick<ResolvedResponsesRoute, 'cacheRetention' | 'supportsLongCacheRetention' | 'responsesCompat'>>} [config] */
 export function promptCacheRetention(config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "supportsLongCacheRetention" | "responsesCompat">> = {}): "24h" | undefined {
   return config.cacheRetention === "long" && config.supportsLongCacheRetention === true && config.responsesCompat?.supportsExplicitPromptCacheMode !== true ? "24h" : undefined;
 }
 
-/** @param {RetryPolicyConfig | null | undefined} policy @param {number} [fallback] */
-function retryAttempts(policy: RetryPolicyConfig | null | undefined, fallback = 3): number {
+function retryAttempts(policy: RetryPolicyConfig | null | undefined, fallback: number = DEFAULTS.maxAttempts): number {
   if (!policy) return fallback;
-  try { const resolved = resolveRetryPolicy(policy, "llm-pi-ai provider retryPolicy"); if (resolved.mode === "normal" && isPositiveInteger(resolved.maxRetries)) return Math.min(resolved.maxRetries + 1, 6); } catch {}
+  try { const resolved = resolveRetryPolicy(policy, "llm-pi-ai provider retryPolicy"); if (resolved.mode === "normal" && isPositiveSafeInteger(resolved.maxRetries)) return Math.min(resolved.maxRetries + 1, DEFAULTS.maxAttemptsCap); } catch {}
   return fallback;
 }
 
@@ -163,9 +137,7 @@ function configuredProviderProfile(
   }
 }
 
-/** @type {Set<keyof ResponsesCompat>} */
 const RESPONSES_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "sessionAffinityFormat", "supportsStrictMode", "supportsLongCacheRetention", "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch", "supportsExplicitPromptCacheMode", "supportsMaxOutputTokens"]);
-/** @param {ResponsesCompat} target @param {unknown} source */
 function copyResponsesCompat(target: ResponsesCompat, source: unknown): void {
   if (!isRecord(source)) return;
   for (const field of RESPONSES_COMPAT_FIELDS) {
@@ -174,23 +146,6 @@ function copyResponsesCompat(target: ResponsesCompat, source: unknown): void {
       if (value === "openai" || value === "openai-nosession" || value === "openrouter") target.sessionAffinityFormat = value;
     } else if (typeof value === "boolean") Object.assign(target, { [field]: value });
   }
-}
-
-/** @param {unknown} provider @param {unknown} modelId */
-function builtinResponsesModel(
-  provider: unknown,
-  modelId: unknown,
-): PiResponsesModel | undefined {
-  const providerName = String(provider ?? "");
-  // A newer plugin-Pi catalog must not grant LCX a route that Pi 0.86 lacked.
-  if (!wasPi086ResponsesModel(providerName, String(modelId ?? ""))) return undefined;
-  const builtinProvider = getBuiltinProviders().find(
-    (candidate) => candidate === providerName,
-  );
-  if (builtinProvider === undefined) return undefined;
-  return getBuiltinModels(builtinProvider).find(
-    (model) => model.id === String(modelId ?? "") && model.api === "openai-responses",
-  ) as PiResponsesModel | undefined;
 }
 
 function modelDescriptorDefaults(
@@ -203,6 +158,126 @@ function modelDescriptorDefaults(
   };
 }
 
+/**
+ * Models DSH itself resolved (`llm.resolveModelInfo` succeeded), remembered per plugin context together with a
+ * fingerprint of the provider profile they were observed under. The route resolvers are synchronous, so the
+ * stream handler asks DSH once for a route it cannot resolve and records the answer here; later resolutions of
+ * the same model under the same profile need no further lookup. A live profile change alters the fingerprint,
+ * which drops the answer and lets a fresh lookup decide again.
+ */
+const hostRecognizedModels = new WeakMap<object, Map<string, string>>();
+
+function recognitionKey(provider: unknown, modelId: unknown): string {
+  return `${String(provider)}\u001f${String(modelId)}`;
+}
+
+/** What decides whether DSH serves a model of this provider: the endpoint, the protocol and the served model ids. */
+function profileFingerprint(profile: ProviderProfile | null | undefined): string {
+  const ids = (list: unknown) => Array.isArray(list) ? list.map((entry) => String(entry?.id ?? "")) : [];
+  return JSON.stringify([
+    profile?.api ?? null,
+    profile?.baseURL ?? null,
+    ids(profile?.models),
+    Object.keys(profile?.modelOverrides ?? {}).sort(),
+  ]);
+}
+
+/**
+ * Record that DSH resolves this exact provider/model under the provider's current profile.
+ * @returns whether this changed what is remembered (a new model, or the profile changed since).
+ */
+export function markHostRecognizedModel(ctx: RouteContext | null | undefined, provider: unknown, modelId: unknown): boolean {
+  const owner: unknown = ctx;
+  if (owner === null || typeof owner !== "object") return false;
+  let known = hostRecognizedModels.get(owner);
+  if (known === undefined) hostRecognizedModels.set(owner, known = new Map());
+  if (known.size >= 256) known.clear();
+  const key = recognitionKey(provider, modelId);
+  const fingerprint = profileFingerprint(configuredProviderProfile(ctx, String(provider)));
+  const changed = known.get(key) !== fingerprint;
+  known.set(key, fingerprint);
+  return changed;
+}
+
+/**
+ * Ask DSH, ahead of any request, which GPT / Grok models it serves on providers whose profile lists no
+ * `models`, and remember the ones LCX's bundled catalog does not describe. One `listModels` call per such
+ * provider: it returns exactly the models DSH would resolve. A model listed in a profile needs no lookup
+ * (the list itself declares it) and a provider DSH does not serve is skipped.
+ * @returns whether the remembered set changed, so the caller can resynchronise the tools it registers.
+ */
+export async function warmHostRecognizedModels(ctx: RouteContext | null | undefined): Promise<boolean> {
+  let entries: ReturnType<RouteContext["llm"]["listConfigurableProviders"]>;
+  try {
+    entries = ctx?.llm.listConfigurableProviders() ?? [];
+  } catch {
+    return false;
+  }
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.settingsNs !== "llm-pi-ai" || (typeof entry.error === "string" && entry.error.trim())) continue;
+    const profile = configuredProviderProfile(ctx, entry.provider);
+    if (!isRecord(profile) || (Array.isArray(profile.models) && profile.models.length > 0)) continue;
+    let models: Awaited<ReturnType<RouteContext["llm"]["listModels"]>>;
+    try {
+      models = (await ctx?.llm.listModels(entry.provider)) ?? [];
+    } catch {
+      continue;
+    }
+    for (const model of models) {
+      if (!/^(?:gpt-|grok)/iu.test(model.id)) continue;
+      if (resolveCatalogModel(entry.provider, model.id).source === "catalog-model") continue;
+      if (markHostRecognizedModel(ctx, entry.provider, model.id)) changed = true;
+    }
+  }
+  return changed;
+}
+
+function hostRecognizesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown): boolean {
+  const owner: unknown = ctx;
+  if (owner === null || typeof owner !== "object") return false;
+  return hostRecognizedModels.get(owner)?.get(recognitionKey(provider, modelId)) === profileFingerprint(profile);
+}
+
+/**
+ * Providers whose authentication Pi resolves itself and LCX cannot reproduce from one credential reference:
+ * Cloudflare AI Gateway needs the account and gateway ids in the endpoint and sends the key as
+ * `cf-aig-authorization` while removing `Authorization`. DSH serves them, LCX leaves them to DSH.
+ */
+const HOST_AUTH_PROVIDERS: ReadonlySet<string> = new Set(["cloudflare-ai-gateway"]);
+
+function usesHostProviderAuth(provider: unknown): boolean {
+  return HOST_AUTH_PROVIDERS.has(String(provider));
+}
+
+/**
+ * A nonempty `models` list replaces the served catalog: DSH serves exactly the listed models, and LCX answers
+ * `llm/stream` before DSH's adapter does, so a claim here would send a request DSH itself refuses.
+ */
+function profileExcludesModel(profile: ProviderProfile | null | undefined, modelId: unknown): boolean {
+  return Array.isArray(profile?.models) && profile.models.length > 0 &&
+    !profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
+}
+
+/**
+ * DSH serves a model its catalog does not describe only when the profile lists it in `models`, or, for a profile
+ * with no `models` list, when its own (newer) catalog describes it; the latter is visible to a plugin only as a
+ * successful `resolveModelInfo`. A nonempty `models` list is authoritative: DSH serves exactly the listed models,
+ * so a remembered recognition never widens it.
+ *
+ * `assumeHostServes` answers the undecided case optimistically, for the one decision that cannot wait for DSH:
+ * which tools to register while an agent's tools are assembled. It is exact, not a guess: a model on a provider
+ * with no `models` list that DSH does not serve is refused by DSH (UNKNOWN_MODEL) before any request, so no tool
+ * is ever sent for it, and one DSH does serve is taken by LCX (the stream awaits DSH's answer; see
+ * `hostRecognizedRouteStream`), which is where the tools are used. The protocol still has to be the provider's
+ * shared Responses protocol, and the model must not be one the catalog itself marks as another protocol.
+ */
+function dshServesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown, assumeHostServes = false): boolean {
+  if (Array.isArray(profile?.models) && profile.models.length > 0)
+    return profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
+  return assumeHostServes || hostRecognizesModel(ctx, profile, provider, modelId);
+}
+
 function configuredModelProfile(
   profile: ProviderProfile | null | undefined,
   modelId: unknown,
@@ -213,7 +288,6 @@ function configuredModelProfile(
     : profile?.modelOverrides?.[String(modelId)];
 }
 
-/** @param {ProviderProfile | null | undefined} profile @param {unknown} modelId @returns {ResponsesCompat | undefined} */
 function configuredResponsesCompat(profile: ProviderProfile | null | undefined, modelId: unknown): ResponsesCompat | undefined {
   const compat: ResponsesCompat = {};
   copyResponsesCompat(compat, profile?.compat);
@@ -293,22 +367,25 @@ function isLcxCapabilityRoute(
 }
 
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
-export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy): ResolvedResponsesRoute | undefined {
+export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy, assumeHostServes = false): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
   if (!provider.trim() || !/^gpt-/iu.test(model)) return undefined;
   const profile = configuredProviderProfile(ctx, provider);
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
   const configured = profile;
-  const builtin = builtinResponsesModel(provider, model);
-  const api = configured.api ?? builtin?.api;
+  if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
+  // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
+  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model, assumeHostServes));
+  const builtin = catalog.descriptor;
+  const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
-  const baseURL = configured.baseURL ?? builtin?.baseUrl;
+  const baseURL = configured.baseURL ?? catalog.baseUrl;
   const apiKeyEnv = configured.apiKeyEnv;
   if (typeof baseURL !== "string" || !normalizeBaseURL(baseURL) || typeof apiKeyEnv !== "string" || !apiKeyEnv.trim()) return undefined;
   const responsesCompat: ResponsesCompat = {};
   copyResponsesCompat(responsesCompat, builtin?.compat); copyResponsesCompat(responsesCompat, lcxCapabilityRoute ? policy.responsesCompat : undefined); copyResponsesCompat(responsesCompat, configuredResponsesCompat(configured, model));
-  const promptCacheModel = lcxCapabilityRoute && policy.supportsExplicitPromptCacheMode === true ? builtinResponsesModel("openai", model) : undefined;
+  const promptCacheModel = lcxCapabilityRoute && policy.supportsExplicitPromptCacheMode === true ? resolveCatalogModel("openai", model).descriptor : undefined;
   const promptCacheRaw: unknown = promptCacheModel;
   const promptCacheCompat = isRecord(promptCacheRaw)
     ? promptCacheRaw.compat
@@ -333,20 +410,39 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
     apiKeyEnv,
+    ...(builtin?.headers === undefined ? {} : { catalogHeaders: { ...builtin.headers } }),
     headers: { ...(configured.headers ?? {}) },
     cacheRetention,
     supportsLongCacheRetention,
     responsesCompat,
     // Only a declared `reasoningEfforts` is projected here; an undeclared model follows the catalog
-    // and what DSH resolved for it (see `gptModelOverride`).
+    // and what DSH resolved for it (see `routeModelOverride`).
     ...(declaredControls === undefined ? {} : { modelControls: declaredControls }),
     // These are explicitly LCX-owned transport and request-capability policies.
-    timeoutMs: isPositiveInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
+    timeoutMs: isPositiveSafeInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
-    maxRequestImageBytes: isPositiveInteger(configured.maxRequestImageBytes) ? configured.maxRequestImageBytes : policy.maxRequestImageBytes,
-    requestImagePixelBudget: isPositiveInteger(configured.requestImagePixelBudget) ? configured.requestImagePixelBudget : policy.requestImagePixelBudget,
-    requestImageMaxBytes: isPositiveInteger(configured.requestImageMaxBytes) ? configured.requestImageMaxBytes : policy.requestImageMaxBytes,
+    maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes) ? configured.maxRequestImageBytes : policy.maxRequestImageBytes,
+    requestImagePixelBudget: isPositiveSafeInteger(configured.requestImagePixelBudget) ? configured.requestImagePixelBudget : policy.requestImagePixelBudget,
+    requestImageMaxBytes: isPositiveSafeInteger(configured.requestImageMaxBytes) ? configured.requestImageMaxBytes : policy.requestImageMaxBytes,
   };
+}
+
+/** Why a GPT request could not be resolved to an authenticated Responses route. */
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "host-auth" | "api-unresolved" | "api-not-responses" | "incomplete";
+
+/**
+ * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
+ * change: `api-unresolved` means neither the profile nor the model catalog names a protocol for this model.
+ */
+export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, options: RouteOptions): ResponsesRouteDiagnosis {
+  const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
+  const profile = provider.trim() ? configuredProviderProfile(ctx, provider) : undefined;
+  if (!isRecord(profile)) return "no-profile";
+  if (profileExcludesModel(profile, model)) return "model-not-configured";
+  if (usesHostProviderAuth(provider)) return "host-auth";
+  const api = profile.api ?? resolveCatalogModel(provider, model, dshServesModel(ctx, profile, provider, model)).api;
+  if (api === undefined) return "api-unresolved";
+  return api === "openai-responses" ? "incomplete" : "api-not-responses";
 }
 
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
@@ -360,10 +456,12 @@ export function resolveGrokResponsesRouteConfig(
   if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
-  const selectedBuiltin = builtinResponsesModel(provider, model);
-  const api = configured.api ?? selectedBuiltin?.api;
+  if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
+  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
+  const selectedBuiltin = catalog.descriptor;
+  const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
-  const baseURL = configured.baseURL ?? selectedBuiltin?.baseUrl;
+  const baseURL = configured.baseURL ?? catalog.baseUrl;
   const apiKeyEnv = configured.apiKeyEnv;
   if (
     typeof baseURL !== "string" ||
@@ -391,6 +489,7 @@ export function resolveGrokResponsesRouteConfig(
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
     apiKeyEnv,
+    ...(selectedBuiltin?.headers === undefined ? {} : { catalogHeaders: { ...selectedBuiltin.headers } }),
     headers: effectiveGrokProfileHeaders(configured.headers),
     cacheRetention,
     supportsLongCacheRetention,
@@ -403,34 +502,34 @@ export function resolveGrokResponsesRouteConfig(
     profileReasoning: profileReasoning(configured.reasoning),
     // Pi applies only an explicitly configured request deadline; stream liveness
     // is owned separately by the provider idle watchdog.
-    timeoutMs: isPositiveInteger(configured.timeoutMs)
+    timeoutMs: isPositiveSafeInteger(configured.timeoutMs)
       ? configured.timeoutMs
       : undefined,
     streamIdleTimeoutMs: isPositiveFinite(configured.streamIdleTimeoutMs)
       ? configured.streamIdleTimeoutMs
-      : 300_000,
+      : DEFAULTS.streamIdleTimeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
-    maxRequestImageBytes: isPositiveInteger(configured.maxRequestImageBytes)
+    maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes)
       ? configured.maxRequestImageBytes
       : policy.maxRequestImageBytes,
-    requestImagePixelBudget: isPositiveInteger(configured.requestImagePixelBudget)
+    requestImagePixelBudget: isPositiveSafeInteger(configured.requestImagePixelBudget)
       ? configured.requestImagePixelBudget
       : policy.requestImagePixelBudget,
-    requestImageMaxBytes: isPositiveInteger(configured.requestImageMaxBytes)
+    requestImageMaxBytes: isPositiveSafeInteger(configured.requestImageMaxBytes)
       ? configured.requestImageMaxBytes
       : policy.requestImageMaxBytes,
   };
 }
 
-/** @param {RouteContext | null | undefined} ctx @param {Pick<ResolvedResponsesRoute, 'apiKeyEnv'>} config */
 export async function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string> {
   const resolved = await ctx?.credentials.resolve(credentialRef(config.apiKeyEnv));
-  if (resolved?.value.trim()) return resolved.value.trim();
-  const error: LcxError = new Error(
+  // DSH's own definition of a usable key (trimmed, nothing an HTTP header cannot carry). A rejected key is
+  // reported by its reference only, never by its value.
+  if (resolved?.value.trim()) return assertUsableApiKey(resolved.value, "lcx-codex", config.apiKeyEnv);
+  throw codedError(
     `DSH provider credential is unavailable: ${config.apiKeyEnv}`,
+    "LCX_CREDENTIAL_UNAVAILABLE",
   );
-  error.code = "LCX_CREDENTIAL_UNAVAILABLE";
-  throw error;
 }
 
 function setHeaderCaseInsensitive(
@@ -442,6 +541,14 @@ function setHeaderCaseInsensitive(
   for (const existing of Object.keys(headers))
     if (existing.toLowerCase() === normalized) delete headers[existing];
   headers[name] = value;
+}
+
+/** Layer header maps, later ones replacing earlier ones whatever the header name's case. */
+function layerHeaders(...layers: Array<HeaderMap | undefined>): HeaderMap {
+  const result: HeaderMap = {};
+  for (const layer of layers)
+    for (const [name, value] of Object.entries(layer ?? {})) setHeaderCaseInsensitive(result, name, value);
+  return result;
 }
 
 /** Apply DSH's case-insensitive attribution reservation at profile resolution. */
@@ -457,11 +564,8 @@ function effectiveGrokProfileHeaders(
   return effective;
 }
 
-/** @param {HeaderMap | null | undefined} headers @param {string} name */
 function hasHeader(headers: HeaderMap | null | undefined, name: string): boolean { return Object.keys(headers ?? {}).some((key) => key.toLowerCase() === name.toLowerCase()); }
-/** @param {HeaderMap | null | undefined} headers */
 function hasExplicitSessionAffinity(headers: HeaderMap | null | undefined): boolean { return ["session-id", "session_id", "x-session-id"].some((name) => hasHeader(headers, name)); }
-/** @param {Partial<ResolvedResponsesRoute> | null | undefined} config */
 function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | undefined): "none" | "openai" | "openai-nosession" | "openrouter" {
   if (config?.api && config.api !== "openai-responses") return "none";
   const explicit = config?.responsesCompat?.sessionAffinityFormat;
@@ -472,17 +576,27 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
     : "openai";
 }
 
-/** @param {RouteContext | null | undefined} ctx @param {ResolvedResponsesRoute} config @param {unknown} sessionId @param {string | null | undefined} requestId @returns {Promise<HeaderMap>} */
-export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined): Promise<HeaderMap> {
+/**
+ * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
+ * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
+ * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
+ */
+export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string): Promise<HeaderMap> {
   const explicit = { ...(config.headers ?? {}) };
-  const headers: HeaderMap = {
-    ...attributionHeaders(),
-    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  };
   const sid = sessionId ? String(sessionId) : undefined; const format = sessionAffinityFormat(config);
+  // Lowest first, as Pi's client layers them: the catalog model's own headers, DSH attribution, the credential,
+  // the provider's per-request headers (Copilot initiator / vision, OpenCode routing), then the affinity ids.
+  const headers: HeaderMap = layerHeaders(
+    config.catalogHeaders,
+    attributionHeaders(),
+    { authorization: `Bearer ${await resolveApiKey(ctx, config)}` },
+    dynamicHeaders,
+    providerSessionHeaders(config.provider, providerSessionId ?? sid),
+  );
   if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers.session_id = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
   if (requestId !== null && !hasHeader(explicit, "x-client-request-id")) { const correlation = requestId ?? (sid && (format === "openai" || format === "openai-nosession") ? sid : !sid ? randomUUID() : undefined); if (correlation) headers["x-client-request-id"] = correlation; }
-  return { ...headers, ...explicit };
+  // The profile's own headers win over every default.
+  return layerHeaders(headers, explicit);
 }
 
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
@@ -490,12 +604,15 @@ export async function authenticatedGrokHeaders(
   ctx: RouteContext | null | undefined,
   config: ResolvedResponsesRoute,
   sessionId: unknown,
+  dynamicHeaders: HeaderMap = {},
+  providerSessionId?: string,
 ): Promise<HeaderMap> {
   const explicit = effectiveGrokProfileHeaders(config.headers);
-  const headers: HeaderMap = {
-    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  };
   const sid = sessionId ? String(sessionId) : undefined;
+  // The catalog model's headers come first, so DSH attribution (applied last, as the host does) replaces them.
+  const headers: HeaderMap = layerHeaders(config.catalogHeaders, {
+    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
+  }, dynamicHeaders, providerSessionHeaders(config.provider, providerSessionId ?? sid));
   const format = sessionAffinityFormat(config);
   if (sid) {
     if (format === "openai") headers.session_id = sid;
@@ -510,24 +627,20 @@ export async function authenticatedGrokHeaders(
   return headers;
 }
 
-/** @param {RouteOptions | null | undefined} options @param {Pick<UnresolvedRouteConfig, 'provider' | 'model' | 'baseURL'>} config @returns {RouteIdentity} */
 export function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity {
   return { provider: String(options?.provider ?? config.provider ?? ""), model: String(options?.model ?? config.model ?? ""), baseURL: normalizeBaseURL(config.baseURL), sessionId: String(options?.sessionId ?? "") };
 }
 
-/** @param {RequestHeader | null | undefined} header @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls {
   const config = header?.config;
   if (!config || String(config.provider ?? "") !== String(route?.provider ?? "") || String(config.model ?? "") !== String(route?.model ?? "")) return {};
   const controls: GenerationControls = {}; if (config.reasoningEffort !== undefined) controls.reasoningEffort = config.reasoningEffort; if (config.temperature !== undefined) controls.temperature = config.temperature; if (config.maxTokens !== undefined) controls.maxTokens = config.maxTokens; return controls;
 }
 
-/** @param {RouteSession | null | undefined} session @param {Partial<RouteIdentity> | null | undefined} route @returns {GenerationControls} */
 export function generationControlsFromSession(session: RouteSession | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls {
   try { return generationControlsFromHeader(session?.requestHeader?.(), route); } catch { return {}; }
 }
 
-/** @param {CheckpointRouteRecord | null | undefined} record @param {RouteIdentity} route @param {unknown} ctx */
 export function routeCompatible(record: CheckpointRouteRecord | null | undefined, route: RouteIdentity, ctx: unknown): boolean {
   void ctx;
   return !!record && record.version === 5 && record.provider === route.provider && record.model === route.model && record.baseURLFingerprint === baseURLFingerprint(route.baseURL) && record.sourceSessionId === route.sessionId;

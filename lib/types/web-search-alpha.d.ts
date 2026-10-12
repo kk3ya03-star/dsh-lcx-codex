@@ -281,15 +281,6 @@ export declare function alphaSearchRetryOptions(maxResponseBytes?: number): {
     maxResponseBytes?: number | undefined;
 };
 export declare function runWithAlphaSessionLock<T>(sessionId: unknown, signal: AbortSignal | undefined, task: () => T | Promise<T>): Promise<T>;
-export declare function fetchAlphaSearchJson(options: {
-    url: string;
-    body: Record<string, unknown>;
-    headers?: HeadersInit;
-    signal?: AbortSignal;
-    timeoutMs?: number;
-    maxResponseBytes?: number;
-    sessionId: unknown;
-}): Promise<any>;
 export declare function probeAlphaCapabilities({ invoke, startChain, schemaFingerprint, trustedNativeProvenance, actionProbes, clickProbeRef, screenshotProbeRef, }: {
     invoke: AlphaInvoke;
     /** Begin a fresh body/session id and clear probe history before each independent chain. */

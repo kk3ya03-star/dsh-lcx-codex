@@ -2,14 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import {TILE_ASPECT_MAX,TILE_ASPECT_MIN,inlineMediaCss,nativeMarkdownImageCss,installInlineMedia,supportsInlineMediaDom} from '../src/client/inline-media.ts';
-import {extractDirectMediaLinks,extractDirectVideoLinks} from '../src/client/search-media.ts';
+import {extractDirectMediaLinks} from '../src/client/search-media.ts';
+// Direct video files only: the video subset of the shared direct-media extraction.
+const extractDirectVideoLinks=text=>extractDirectMediaLinks(text).filter(item=>item.kind==='video');
 
 // Issue #102 ownership: DSH owns Markdown/native images; LCX owns structured provider images and direct video only.
 const photo='https://example.com/photo.jpg', video='https://example.com/video.mp4';
 const labels={image:'Enlarge image',video:'Play video',close:'Close',source:'Open source',failed:'Image failed to load',videoFailed:'Video cannot be played',heading:'Search images',previous:'Previous images',next:'Next images',dialog:'Video preview',imageDialog:'Image preview'};
 const structured=(url,extra={})=>({kind:'image',url,structured:true,...extra});
-function fixture(body,kind='assistant-step',wrapper) {
- const open=wrapper===undefined?'':wrapper, close=wrapper===undefined?'':'</div>';
+// DSH renders the chat flow items inside its ChatFlow slot wrapper, the only layout supported (DSH 0.2.1).
+const SLOT_WRAPPER='<div data-slot="conversation.chat.flow" style="display: contents">';
+function fixture(body,kind='assistant-step',wrapper=SLOT_WRAPPER) {
+ const open=wrapper??'', close=wrapper===null?'':'</div>';
  const {window,document}=parseHTML(`<html><body><div data-chat-flow>${open}
  <div data-chat-flow-kind="user" data-chat-turn="3"></div>
  <div data-chat-flow-kind="turn-process" data-chat-turn="3"></div>
@@ -376,9 +380,8 @@ test('wrong owner, foreign turn and unknown renderers fail closed',()=>{
  assert.equal(supportsInlineMediaDom(document.getElementById('marker')),false);
 });
 
-const SLOT_WRAPPER='<div data-slot="conversation.chat.flow" style="display: contents">';
-test('DSH 0.2.1 ChatFlow slot wrapper: media still lands under its own response (rc.2 layout above stays supported)',()=>{
- const f=fixture('<p id="answer-3">First</p>','assistant-step',SLOT_WRAPPER);
+test('DSH ChatFlow slot wrapper: media lands under its own response',()=>{
+ const f=fixture('<p id="answer-3">First</p>');
  try{
   const marker=f.document.getElementById('marker');
   assert.equal(marker.closest('[data-chat-group-key]').parentElement.dataset.slot,'conversation.chat.flow');
@@ -395,7 +398,7 @@ test('DSH 0.2.1 ChatFlow slot wrapper: media still lands under its own response 
 });
 
 test('slot wrapper: two turns resolve each response among the wrapper own children',()=>{
- const f=fixture('<p>First</p>','assistant-step',SLOT_WRAPPER);
+ const f=fixture('<p>First</p>');
  let stopSecond;
  try{
   const wrapper=f.document.querySelector('[data-slot="conversation.chat.flow"]');
@@ -411,7 +414,8 @@ test('slot wrapper: two turns resolve each response among the wrapper own childr
 });
 
 test('only the named ChatFlow slot may sit between the group and the chat column; other wrappers fail closed',()=>{
- for(const wrapper of ['<div>','<div data-slot="conversation.chat.node">']){
+ // null: the items sit directly in the chat column (the DSH 0.2.0 layout), no longer supported.
+ for(const wrapper of [null,'<div>','<div data-slot="conversation.chat.node">']){
   const f=fixture('<p>x</p>','assistant-step',wrapper);
   try{
    assert.equal(supportsInlineMediaDom(f.document.getElementById('marker')),false,wrapper);
@@ -424,11 +428,11 @@ test('only the named ChatFlow slot may sit between the group and the chat column
  assert.equal(supportsInlineMediaDom(document.getElementById('marker')),false);
 });
 
-test('DSH 0.2 process groups place two turns of media under their own answers and clean up independently',()=>{
+test('process groups place two turns of media under their own answers and clean up independently',()=>{
  const f=fixture('<p id="answer-3">First</p>');
  let stopSecond;
  try{
-  const column=f.document.querySelector('[data-chat-flow]');
+  const column=f.document.querySelector('[data-slot="conversation.chat.flow"]');
   column.insertAdjacentHTML('beforeend',`
    <div data-chat-flow-kind="user" data-chat-turn="4"></div>
    <div data-chat-group-key='["process","tool-4",null]' data-chat-turn="4" data-step-process><div data-step-process-content data-chat-flow hidden="until-found"></div></div>

@@ -3,22 +3,13 @@ import { test } from 'node:test'
 import { writeFile, unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { loadSource } from './wp2-source.mjs'
 
-const compiledPath = resolve(`.wp4-index-${process.pid}.mjs`)
-const built = await build({
-  entryPoints: [resolve('src/index.ts')], bundle: true, packages: 'external',
-  format: 'esm', platform: 'node', target: 'node24', write: false,
-  footer: { js: '\nexport { stripCompactionDirective, remoteCompactionStream };' },
-})
-await writeFile(compiledPath, built.outputFiles[0].contents)
-let source
-try { source = await import(pathToFileURL(compiledPath).href) }
-finally { await unlink(compiledPath) }
+const source = await loadSource('index', 'stripCompactionDirective, remoteCompactionStream')
 
 test('real compaction-basic compactNow directive is absent from Native V2 input', async () => {
   const ctx = new Context()
