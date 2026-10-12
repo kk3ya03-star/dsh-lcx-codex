@@ -571,10 +571,12 @@ class LcxResponsesSearchProvider {
     const active = hostedSearchRouteContext.getStore();
     if (!active) return false;
     const config = this.getConfig();
+    // Tool-assembly question, answered before DSH can be asked: see `assumeHostServes` in route.ts.
     const route = resolveResponsesRouteConfig(
       this.ctx,
       active,
       config,
+      true,
     );
     return this.enabled() && Boolean(route);
   }
@@ -740,7 +742,9 @@ function syncGptToolsForAgent(
 ) {
   const config = getConfig();
   const active = selectedAgentRoute(agent);
-  const route = resolveResponsesRouteConfig(ctx, active, config);
+  // Registering the tools cannot wait for DSH's answer about a model only its own catalog knows: the optimistic
+  // answer is exact (see `assumeHostServes` in route.ts), and the stream awaits DSH before LCX takes the request.
+  const route = resolveResponsesRouteConfig(ctx, active, config, true);
   const webSearch = state.enabled && state.webSearch && Boolean(route);
   const advanced = webSearch && state.advancedHostedSearch;
   if (!webSearch && !advanced) {
@@ -1433,6 +1437,7 @@ async function* remoteCompactionStream(
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
       providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const generation = generationControlsFromSession(
       sessionFor(ctx, route.sessionId),
@@ -1870,6 +1875,7 @@ async function* managedResponsesStream(
       cacheSessionId,
       cacheSessionId === undefined ? null : route.sessionId,
       providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const body = buildResponsesBody({
       model: prepared.model,
@@ -1941,6 +1947,7 @@ async function* managedGrokNativeSearchStream(
       routeConfig,
       cacheSessionId,
       providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
     );
     const model = {
       ...prepared.model,
@@ -2054,6 +2061,22 @@ async function* hostRecognizedRouteStream(
   yield* options.purpose === "compaction"
     ? remoteCompactionStream(options, routeWithPolicies(routeConfig, policy()), ctx, next)
     : managedResponsesStream(options, routeWithPolicies(routeConfig, policy()), ctx);
+}
+
+/** The Grok counterpart of `hostRecognizedRouteStream`: DSH not resolving the model is DSH's to report. */
+async function* hostRecognizedGrokStream(
+  options: GenerateOptions,
+  ctx: HostContext,
+  policy: () => NormalizedConfig,
+  nativeSearch: GrokNativeSearchState,
+  next: () => AsyncIterable<StreamChunk>,
+): AsyncGenerator<StreamChunk> {
+  const facts = await resolveRouteModelFacts(ctx, options, options.signal);
+  if (facts.resolved) markHostRecognizedModel(ctx, options.provider, options.model);
+  const grokRoute = facts.resolved ? resolveGrokResponsesRouteConfig(ctx, options, policy()) : undefined;
+  yield* grokRoute
+    ? managedGrokNativeSearchStream(options, routeWithPolicies(grokRoute, policy()), nativeSearch, ctx)
+    : next();
 }
 
 function installInjected(
@@ -2269,6 +2292,9 @@ function installInjected(
             grokNativeSearch,
             ctx,
           );
+        // A Grok model only DSH's own catalog may know: ask DSH now, so the first request is not left to a race.
+        if (/^grok/iu.test(String(options.model ?? "")) && diagnoseResponsesRoute(ctx, options) === "api-unresolved")
+          return hostRecognizedGrokStream(options, ctx, () => runtimeConfig, grokNativeSearch, next);
       }
       if (!state.enabled || !isGptLifecycleTarget(options)) return next();
       const routeConfig = resolveResponsesRouteConfig(

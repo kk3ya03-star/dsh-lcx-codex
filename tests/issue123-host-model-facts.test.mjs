@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
@@ -153,7 +153,7 @@ async function withHarness(profiles, settings, run, prepare = undefined) {
  * patches the registered dsh-llm-pi-ai adapter, so every public lookup (`listModels`, `resolveModelInfo`,
  * `prepareCall`, which the agent loop calls) answers the way DSH would for a model it serves.
  */
-function simulateNewerHost(ctx, ids, isServed = () => true, provider = 'openai') {
+function simulateNewerHost(ctx, ids, isServed = () => true, provider = 'openai', { listDelayMs = 0 } = {}) {
   const adapter = ctx.llm.adapters.get(provider).adapter
   const lookups = []
   const info = (route, model) => ({ provider: route, id: model, name: model, inputModalities: ['text', 'image'], context: { contextWindow: 272000 }, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only' })
@@ -167,6 +167,7 @@ function simulateNewerHost(ctx, ids, isServed = () => true, provider = 'openai')
     ? { model: info(route, model), stream: () => { throw new Error('the real adapter must not be dispatched: LCX owns the request') } }
     : original.prepareCall(route, model, signal)
   adapter.listModels = async route => {
+    if (listDelayMs > 0) await new Promise(done => setTimeout(done, listDelayMs))
     const base = await original.listModels(route)
     return isServed() ? [...base, ...ids.map(id => ({ provider: route, id, name: id, inputModalities: ['text', 'image'] }))] : base
   }
@@ -609,4 +610,135 @@ test('cloudflare-ai-gateway is left to DSH: the request is made by the host with
     assert.equal(requests[0].headers.authorization, undefined)
     assert.ok(requests[0].headers['x-stainless-lang'], 'made by the OpenAI SDK inside Pi')
   })
+})
+
+// TL re-review 4, item 1: the pre-warm is asynchronous, but tool ownership is decided synchronously, so a request
+// right after start must not depend on who wins. Tool registration is optimistic and exact for the undecided case.
+test('a host-only model gets the LCX tools on its first request even while DSH\'s model list is still pending', async () => {
+  await withHarness(bareProfiles(), { advancedHostedSearch: true }, async ({ open, requests }) => {
+    const session = await open('openai', 'gpt-9-future')
+    try {
+      const started = Date.now()
+      const first = await session.ask('right after start')
+      assert.ok(Date.now() - started < 1000, 'the request did not wait for the delayed model list')
+      assert.equal(first.url, `${baseURL}/responses`)
+      assert.equal(first.body.model, 'gpt-9-future')
+      const toolNames = names(first.body)
+      assert.ok(toolNames.includes('web_search'), 'the LCX search backend is on the first request')
+      assert.ok(toolNames.includes('websearch_gpt_advanced') || first.body.input.some(item => item.type === 'additional_tools'), 'and so is the advanced hosted search tool')
+      assert.equal(requests.length, 1)
+    } finally { await session.dispose() }
+  }, ctx => simulateNewerHost(ctx, ['gpt-9-future'], () => true, 'openai', { listDelayMs: 1300 }))
+})
+
+test('the undecided case is exact: a model DSH does not serve sends nothing, so no LCX tool reaches a non-LCX request', async () => {
+  await withHarness(bareProfiles(), { advancedHostedSearch: true }, async ({ open, requests, warnings }) => {
+    const session = await open('openai', 'gpt-9-never')
+    try {
+      await session.ask('hello').catch(() => undefined)
+      assert.equal(requests.length, 0, 'DSH refuses the unknown model before any request')
+    } finally { await session.dispose() }
+  })
+})
+
+test('the optimistic tool decision never covers a provider whose shared protocol is not Responses, an explicit other api, a models list or a host-authenticated provider', () => {
+  const route = (profiles, provider, model, assume) => resolveResponsesRouteConfig(
+    { llm: { listConfigurableProviders: () => Object.keys(profiles).map(name => ({ provider: name, settingsNs: 'llm-pi-ai', settingsPath: ['providers', name] })) }, settings: { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles } }] } },
+    { provider, model }, {}, assume)
+  const base = { apiKeyEnv: 'K', baseURL }
+  // Undecided on a Responses-only provider: exact only when asked optimistically.
+  assert.equal(route({ openai: base }, 'openai', 'gpt-9-future', false), undefined)
+  assert.ok(route({ openai: base }, 'openai', 'gpt-9-future', true))
+  assert.ok(route({ xai: base }, 'xai', 'gpt-9-future', true))
+  // opencode and github-copilot ship models of several protocols: no shared protocol, nothing to assume.
+  for (const provider of ['opencode', 'opencode-go', 'github-copilot']) assert.equal(route({ [provider]: base }, provider, 'gpt-9-future', true), undefined, provider)
+  // A model the catalog itself lists with another protocol, an explicit other api, a models list that omits it.
+  assert.equal(route({ openai: { ...base, api: 'openai-completions' } }, 'openai', 'gpt-9-future', true), undefined)
+  assert.equal(route({ openai: { ...base, models: [{ id: 'gpt-6-sol' }] } }, 'openai', 'gpt-9-future', true), undefined)
+  assert.equal(route({ 'cloudflare-ai-gateway': base }, 'cloudflare-ai-gateway', 'gpt-9-future', true), undefined)
+  // Not a GPT model, no credential, no endpoint.
+  assert.equal(route({ openai: base }, 'openai', 'o3-future', true), undefined)
+  assert.equal(route({ openai: { baseURL } }, 'openai', 'gpt-9-future', true), undefined)
+})
+
+test('a host-only Grok model is claimed on its first request, with the native-search tools, whatever the pre-warm has done', async () => {
+  const profiles = { xai: { apiKeyEnv: 'LCX_FIXTURE_KEY', baseURL: 'https://fixture.invalid/xai' } }
+  await withHarness(profiles, { grokNativeWebSearch: true }, async ({ ctx, requests }) => {
+    const chunks = await collect(ctx.llm.stream({ provider: 'xai', model: 'grok-9-future', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'search' }] }] }))
+    assert.equal(chunks.at(-1).type, 'finish')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, 'https://fixture.invalid/xai/responses')
+    assert.ok(requests[0].body.tools.some(tool => tool.type === 'web_search'), 'the Grok native web_search tool is LCX-owned')
+  }, ctx => simulateNewerHost(ctx, ['grok-9-future'], () => true, 'xai', { listDelayMs: 1300 }))
+  // DSH does not know the model: DSH answers, LCX sends nothing.
+  await withHarness(profiles, { grokNativeWebSearch: true }, async ({ ctx, requests }) => {
+    const chunks = await collect(ctx.llm.stream({ provider: 'xai', model: 'grok-9-never', messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'search' }] }] }))
+    assert.equal(chunks.at(-1).reason.failure.code, 'UNKNOWN_MODEL')
+    assert.equal(requests.length, 0)
+  })
+})
+
+// TL re-review 4, item 3: the OpenCode routing header is Pi's per-conversation header and carries the CURRENT DSH
+// session id, whatever the prompt-cache policy: a subagent's cache key is its root's, its routing header is its own,
+// and without cache retention the header is still sent.
+function realSession(id, extra) {
+  return Session.create(SessionId(id), undefined, { version: 4, id, createdAt: Date.now(), isSeeded: false, ...extra })
+}
+const SESSION_MESSAGES = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hi' }] }]
+
+async function withSubagentSessions(profiles, run, settings = {}) {
+  await withHarness(profiles, settings, async harness => {
+    const sessions = new Map([['i123-root', realSession('i123-root')], ['i123-child', realSession('i123-child', { origin: 'subagent', parentSession: 'i123-root' })]])
+    harness.ctx.sessions.get = id => sessions.get(String(id))
+    await run(harness)
+  })
+}
+
+test('opencode: a subagent keeps its root\'s prompt cache key and sends its own session id in the routing header', async () => {
+  await withSubagentSessions(providerProfile('opencode'), async ({ ctx, requests }) => {
+    await collect(ctx.llm.stream({ provider: 'opencode', model: 'gpt-6-sol', sessionId: 'i123-child', messages: SESSION_MESSAGES }))
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].body.prompt_cache_key, 'i123-root', 'the prompt cache belongs to the root session')
+    assert.equal(requests[0].headers['x-opencode-session'], 'i123-child', 'the routing header is the current session\'s')
+    await collect(ctx.llm.stream({ provider: 'opencode', model: 'gpt-6-sol', sessionId: 'i123-root', messages: SESSION_MESSAGES }))
+    assert.equal(requests[1].headers['x-opencode-session'], 'i123-root')
+  })
+})
+
+test('opencode: without cache retention the routing header is still sent with the current session id', async () => {
+  const profiles = providerProfile('opencode')
+  profiles.opencode.cacheRetention = 'none'
+  await withSubagentSessions(profiles, async ({ ctx, requests }) => {
+    await collect(ctx.llm.stream({ provider: 'opencode', model: 'gpt-6-sol', sessionId: 'i123-child', messages: SESSION_MESSAGES }))
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].body.prompt_cache_key, undefined, 'no prompt cache key without retention')
+    assert.equal(requests[0].headers['x-opencode-session'], 'i123-child')
+  })
+})
+
+test('opencode: the remote compaction request carries the routing header of the current session too', async () => {
+  await withSubagentSessions(providerProfile('opencode'), async ({ ctx, requests }) => {
+    // The mocked endpoint answers with an ordinary stream, so the compaction itself fails; the request is what counts.
+    await collect(ctx.llm.stream({
+      provider: 'opencode',
+      model: 'gpt-6-sol',
+      sessionId: 'i123-child',
+      purpose: 'compaction',
+      messages: [...SESSION_MESSAGES, { role: 'user', content: [{ type: 'text', text: 'compact now' }] }],
+    })).catch(() => undefined)
+    assert.ok(requests.length >= 1, 'LCX sent the compaction request')
+    assert.equal(requests[0].headers['x-opencode-session'], 'i123-child')
+  })
+})
+
+test('opencode Grok route: the routing header is the current session\'s as well, with and without cache retention', async () => {
+  for (const cacheRetention of [undefined, 'none']) {
+    const profiles = providerProfile('opencode')
+    if (cacheRetention) profiles.opencode.cacheRetention = cacheRetention
+    await withSubagentSessions(profiles, async ({ ctx, requests }) => {
+      await collect(ctx.llm.stream({ provider: 'opencode', model: 'grok-4.7', sessionId: 'i123-child', messages: SESSION_MESSAGES }))
+      assert.equal(requests.length, 1)
+      assert.equal(requests[0].headers['x-opencode-session'], 'i123-child', String(cacheRetention))
+    }, { grokNativeWebSearch: true })
+  }
 })

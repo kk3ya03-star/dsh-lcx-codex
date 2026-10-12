@@ -264,11 +264,18 @@ function profileExcludesModel(profile: ProviderProfile | null | undefined, model
  * with no `models` list, when its own (newer) catalog describes it; the latter is visible to a plugin only as a
  * successful `resolveModelInfo`. A nonempty `models` list is authoritative: DSH serves exactly the listed models,
  * so a remembered recognition never widens it.
+ *
+ * `assumeHostServes` answers the undecided case optimistically, for the one decision that cannot wait for DSH:
+ * which tools to register while an agent's tools are assembled. It is exact, not a guess: a model on a provider
+ * with no `models` list that DSH does not serve is refused by DSH (UNKNOWN_MODEL) before any request, so no tool
+ * is ever sent for it, and one DSH does serve is taken by LCX (the stream awaits DSH's answer; see
+ * `hostRecognizedRouteStream`), which is where the tools are used. The protocol still has to be the provider's
+ * shared Responses protocol, and the model must not be one the catalog itself marks as another protocol.
  */
-function dshServesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown): boolean {
+function dshServesModel(ctx: RouteContext | null | undefined, profile: ProviderProfile | null | undefined, provider: unknown, modelId: unknown, assumeHostServes = false): boolean {
   if (Array.isArray(profile?.models) && profile.models.length > 0)
     return profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
-  return hostRecognizesModel(ctx, profile, provider, modelId);
+  return assumeHostServes || hostRecognizesModel(ctx, profile, provider, modelId);
 }
 
 function configuredModelProfile(
@@ -360,7 +367,7 @@ function isLcxCapabilityRoute(
 }
 
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
-export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy): ResolvedResponsesRoute | undefined {
+export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & { purpose?: string }, policy: RoutePolicy, assumeHostServes = false): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
   if (!provider.trim() || !/^gpt-/iu.test(model)) return undefined;
   const profile = configuredProviderProfile(ctx, provider);
@@ -369,7 +376,7 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   const configured = profile;
   if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
   // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
-  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model));
+  const catalog = resolveCatalogModel(provider, model, dshServesModel(ctx, configured, provider, model, assumeHostServes));
   const builtin = catalog.descriptor;
   const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
@@ -569,7 +576,12 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
     : "openai";
 }
 
-export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}): Promise<HeaderMap> {
+/**
+ * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
+ * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
+ * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
+ */
+export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string): Promise<HeaderMap> {
   const explicit = { ...(config.headers ?? {}) };
   const sid = sessionId ? String(sessionId) : undefined; const format = sessionAffinityFormat(config);
   // Lowest first, as Pi's client layers them: the catalog model's own headers, DSH attribution, the credential,
@@ -579,7 +591,7 @@ export async function authenticatedHeaders(ctx: RouteContext | null | undefined,
     attributionHeaders(),
     { authorization: `Bearer ${await resolveApiKey(ctx, config)}` },
     dynamicHeaders,
-    providerSessionHeaders(config.provider, sid),
+    providerSessionHeaders(config.provider, providerSessionId ?? sid),
   );
   if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers.session_id = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
   if (requestId !== null && !hasHeader(explicit, "x-client-request-id")) { const correlation = requestId ?? (sid && (format === "openai" || format === "openai-nosession") ? sid : !sid ? randomUUID() : undefined); if (correlation) headers["x-client-request-id"] = correlation; }
@@ -593,13 +605,14 @@ export async function authenticatedGrokHeaders(
   config: ResolvedResponsesRoute,
   sessionId: unknown,
   dynamicHeaders: HeaderMap = {},
+  providerSessionId?: string,
 ): Promise<HeaderMap> {
   const explicit = effectiveGrokProfileHeaders(config.headers);
   const sid = sessionId ? String(sessionId) : undefined;
   // The catalog model's headers come first, so DSH attribution (applied last, as the host does) replaces them.
   const headers: HeaderMap = layerHeaders(config.catalogHeaders, {
     authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  }, dynamicHeaders, providerSessionHeaders(config.provider, sid));
+  }, dynamicHeaders, providerSessionHeaders(config.provider, providerSessionId ?? sid));
   const format = sessionAffinityFormat(config);
   if (sid) {
     if (format === "openai") headers.session_id = sid;

@@ -232,3 +232,32 @@ test('client: root calls are scoped to their Session feed; colliding call ids ne
   sessionC.replace([start(1, 7), call(2, 7), dispatch(3), end(4, 7)])
   assert.deepEqual(records(sessionC, 7), [7], 'C: a colliding id resolves to the turn of session C itself')
 })
+
+// Technical Lead review 4: the Sessions' seqs may continue upward (A: 1-6, B: 7-9), so a rolled-back seq is not a
+// boundary. A root call can only be settled while its turn runs: the roots are forgotten at the end of the turn.
+test('client: a Session whose seqs continue upward cannot inherit the roots of a finished turn of another (#125)', () => {
+  const shared = createSharedEngine()
+  const sessionA = createAssembly({ shared })
+  const sessionB = createAssembly({ shared })
+  const sessionC = createAssembly({ shared })
+  const record = { requestId: 'r', provider: 'p', model: 'm', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 } }
+  const dispatch = seq => ({ type: 'tool/ptc-dispatch', seq, time: 0, data: { rootCallId: 'call_dup', parentCallId: 'call_dup', subCallId: 'call_dup:ptc:1', name: 'web_search', arguments: {}, isError: false, content: [], meta: { auxiliaryUsage: [record] } } })
+  const call = (seq, number) => ({ type: 'tool/call', seq, time: 0, data: { turn: number, step: 1, callId: 'call_dup', name: 'run_code', arguments: '{}' } })
+  const start = (seq, number) => ({ type: 'turn/start', seq, time: 0, data: { turn: number } })
+  const end = (seq, number) => ({ type: 'turn/end', seq, time: 0, data: { turn: number, reason: { kind: 'completed' } } })
+  const records = (assembly, number) => Array.from(assembly.turnUsage(number) ?? [], item => item.usage.totalTokens)
+  // A: seq 1-6, call_dup belongs to turn 3, which ends at seq 4.
+  sessionA.replace([start(1, 3), call(2, 3), dispatch(3), end(4, 3), start(5, 4), end(6, 4)])
+  assert.deepEqual(records(sessionA, 3), [7])
+  // B: seq 7-9, nested result for call_dup without its root, inside a turn 3 of its own.
+  sessionB.replace([start(7, 3), dispatch(8), end(9, 3)])
+  assert.deepEqual(records(sessionB, 3), [], 'B: the root of A is gone, so the settlement is not attributed')
+  // C: its own root, even later in seq.
+  sessionC.replace([start(10, 5), call(11, 5), dispatch(12), end(13, 5)])
+  assert.deepEqual(records(sessionC, 5), [7], 'C: its own root resolves to its own turn')
+  // Within one feed a later turn does not inherit the roots of an earlier one either.
+  const sessionD = createAssembly({ shared })
+  sessionD.replace([start(20, 1), call(21, 1), dispatch(22), end(23, 1), start(24, 2), dispatch(25), end(26, 2)])
+  assert.deepEqual(records(sessionD, 1), [7])
+  assert.deepEqual(records(sessionD, 2), [], 'a settlement naming the root of a finished turn is not attributed to the next turn')
+})

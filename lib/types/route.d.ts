@@ -118,7 +118,7 @@ export declare function warmHostRecognizedModels(ctx: RouteContext | null | unde
 /** Resolve only the selected DSH profile; policy cannot supply route identity or credentials. */
 export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & {
     purpose?: string;
-}, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
+}, policy: RoutePolicy, assumeHostServes?: boolean): ResolvedResponsesRoute | undefined;
 /** Why a GPT request could not be resolved to an authenticated Responses route. */
 export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "host-auth" | "api-unresolved" | "api-not-responses" | "incomplete";
 /**
@@ -129,9 +129,14 @@ export declare function diagnoseResponsesRoute(ctx: RouteContext | null | undefi
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export declare function resolveGrokResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 export declare function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string>;
-export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders?: HeaderMap): Promise<HeaderMap>;
+/**
+ * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
+ * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
+ * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
+ */
+export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders?: HeaderMap, providerSessionId?: string): Promise<HeaderMap>;
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
-export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, dynamicHeaders?: HeaderMap): Promise<HeaderMap>;
+export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, dynamicHeaders?: HeaderMap, providerSessionId?: string): Promise<HeaderMap>;
 export declare function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity;
 export declare function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;
 export declare function generationControlsFromSession(session: RouteSession | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls;

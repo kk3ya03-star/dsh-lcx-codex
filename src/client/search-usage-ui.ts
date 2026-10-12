@@ -17,6 +17,8 @@ export function createSearchUsageDefinition(callTurns:CallTurns=createCallTurns(
   kind:'lcx-search-usage',
   match(event) {
     if (event.type!=='assistant/live-chunk') callTurns.observe(event.seq);
+    if (event.type==='turn/start') callTurns.openTurn(event.data.turn);
+    if (event.type==='turn/end') callTurns.closeTurn(event.data.turn);
     if (event.type==='turn/start') return {id:String(event.data.turn),role:'start'};
     if (event.type==='tool/call') callTurns.remember(event.data.callId,event.data.turn);
     if (event.type==='turn/end' || event.type==='tool/result' || event.type==='tool/call') return {id:String(event.data.turn),role:'update'};

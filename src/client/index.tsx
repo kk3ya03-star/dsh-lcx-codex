@@ -303,6 +303,8 @@ window.__ModuleLoader__.load({
       target: "chat",
       match(event) {
         if (event.type !== "assistant/live-chunk") callTurns.observe(event.seq);
+        if (event.type === "turn/start") callTurns.openTurn(event.data.turn);
+        if (event.type === "turn/end") callTurns.closeTurn(event.data.turn);
         if (event.type === "turn/start")
           return { id: String(event.data.turn), role: "start" };
         if (event.type === "tool/call")
