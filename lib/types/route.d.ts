@@ -111,6 +111,13 @@ export declare function promptCacheRetention(config?: Partial<Pick<ResolvedRespo
 export declare function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions & {
     purpose?: string;
 }, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
+/** Why a GPT request could not be resolved to an authenticated Responses route. */
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
+/**
+ * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
+ * change: `api-unresolved` means neither the profile nor the model catalog names a protocol for this model.
+ */
+export declare function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, options: RouteOptions): ResponsesRouteDiagnosis;
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export declare function resolveGrokResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 /** @param {RouteContext | null | undefined} ctx @param {Pick<ResolvedResponsesRoute, 'apiKeyEnv'>} config */

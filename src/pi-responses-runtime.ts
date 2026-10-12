@@ -58,6 +58,17 @@ const models: Readonly<
   xai: responsesOnly(RESPONSE_CATALOGS.xai),
 };
 
+/**
+ * Every catalog entry of a bundled provider whatever its wire protocol. DSH resolves the protocol of a
+ * model its catalog has not caught up with from the one protocol all of the provider's shipped models
+ * share, so ownership needs the complete provider catalog and not only the Responses subset.
+ */
+export function getCatalogModels(provider: string): readonly Model<Api>[] {
+  return Object.hasOwn(RESPONSE_CATALOGS, provider)
+    ? Object.values(RESPONSE_CATALOGS[provider as BundledResponsesProvider])
+    : [];
+}
+
 export function getBuiltinProviders(): readonly BundledResponsesProvider[] {
   return providers;
 }

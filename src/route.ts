@@ -5,11 +5,7 @@ import { SessionId, type Session } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-settings";
 import { attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import {
-  getBuiltinModels,
-  getBuiltinProviders,
-} from "./pi-responses-runtime.js";
-import { wasPi086ResponsesModel } from "./pi086-responses-allowlist.js";
+import { resolveCatalogModel } from "./model-catalog.js";
 
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
@@ -176,23 +172,6 @@ function copyResponsesCompat(target: ResponsesCompat, source: unknown): void {
   }
 }
 
-/** @param {unknown} provider @param {unknown} modelId */
-function builtinResponsesModel(
-  provider: unknown,
-  modelId: unknown,
-): PiResponsesModel | undefined {
-  const providerName = String(provider ?? "");
-  // A newer plugin-Pi catalog must not grant LCX a route that Pi 0.86 lacked.
-  if (!wasPi086ResponsesModel(providerName, String(modelId ?? ""))) return undefined;
-  const builtinProvider = getBuiltinProviders().find(
-    (candidate) => candidate === providerName,
-  );
-  if (builtinProvider === undefined) return undefined;
-  return getBuiltinModels(builtinProvider).find(
-    (model) => model.id === String(modelId ?? "") && model.api === "openai-responses",
-  ) as PiResponsesModel | undefined;
-}
-
 function modelDescriptorDefaults(
   model: PiResponsesModel | undefined,
 ): ModelDescriptorDefaults | undefined {
@@ -201,6 +180,20 @@ function modelDescriptorDefaults(
     reasoning: model.reasoning,
     thinkingLevelMap: model.thinkingLevelMap,
   };
+}
+
+/** The profile lists this model in `models`: the one way DSH serves a model its catalog does not describe. */
+function profileDeclaresModel(profile: ProviderProfile | null | undefined, modelId: unknown): boolean {
+  return Array.isArray(profile?.models) && profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
+}
+
+/**
+ * A nonempty `models` list replaces the served catalog: DSH serves exactly the listed models, and LCX answers
+ * `llm/stream` before DSH's adapter does, so a claim here would send a request DSH itself refuses.
+ */
+function profileExcludesModel(profile: ProviderProfile | null | undefined, modelId: unknown): boolean {
+  return Array.isArray(profile?.models) && profile.models.length > 0 &&
+    !profile.models.some((entry) => String(entry?.id ?? "") === String(modelId));
 }
 
 function configuredModelProfile(
@@ -300,15 +293,18 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   const lcxCapabilityRoute = isLcxCapabilityRoute(provider, model);
   if (!isRecord(profile)) return undefined;
   const configured = profile;
-  const builtin = builtinResponsesModel(provider, model);
-  const api = configured.api ?? builtin?.api;
+  if (profileExcludesModel(configured, model)) return undefined;
+  // Protocol and endpoint: the profile, then what DSH resolves for the model (see `resolveCatalogModel`).
+  const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
+  const builtin = catalog.descriptor;
+  const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
-  const baseURL = configured.baseURL ?? builtin?.baseUrl;
+  const baseURL = configured.baseURL ?? catalog.baseUrl;
   const apiKeyEnv = configured.apiKeyEnv;
   if (typeof baseURL !== "string" || !normalizeBaseURL(baseURL) || typeof apiKeyEnv !== "string" || !apiKeyEnv.trim()) return undefined;
   const responsesCompat: ResponsesCompat = {};
   copyResponsesCompat(responsesCompat, builtin?.compat); copyResponsesCompat(responsesCompat, lcxCapabilityRoute ? policy.responsesCompat : undefined); copyResponsesCompat(responsesCompat, configuredResponsesCompat(configured, model));
-  const promptCacheModel = lcxCapabilityRoute && policy.supportsExplicitPromptCacheMode === true ? builtinResponsesModel("openai", model) : undefined;
+  const promptCacheModel = lcxCapabilityRoute && policy.supportsExplicitPromptCacheMode === true ? resolveCatalogModel("openai", model).descriptor : undefined;
   const promptCacheRaw: unknown = promptCacheModel;
   const promptCacheCompat = isRecord(promptCacheRaw)
     ? promptCacheRaw.compat
@@ -349,6 +345,23 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   };
 }
 
+/** Why a GPT request could not be resolved to an authenticated Responses route. */
+export type ResponsesRouteDiagnosis = "no-profile" | "model-not-configured" | "api-unresolved" | "api-not-responses" | "incomplete";
+
+/**
+ * Name the reason `resolveResponsesRouteConfig` returned nothing, so the failure can tell the user what to
+ * change: `api-unresolved` means neither the profile nor the model catalog names a protocol for this model.
+ */
+export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, options: RouteOptions): ResponsesRouteDiagnosis {
+  const provider = String(options?.provider ?? ""); const model = String(options?.model ?? "");
+  const profile = provider.trim() ? configuredProviderProfile(ctx, provider) : undefined;
+  if (!isRecord(profile)) return "no-profile";
+  if (profileExcludesModel(profile, model)) return "model-not-configured";
+  const api = profile.api ?? resolveCatalogModel(provider, model, profileDeclaresModel(profile, model)).api;
+  if (api === undefined) return "api-unresolved";
+  return api === "openai-responses" ? "incomplete" : "api-not-responses";
+}
+
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export function resolveGrokResponsesRouteConfig(
   ctx: RouteContext | null | undefined,
@@ -360,10 +373,12 @@ export function resolveGrokResponsesRouteConfig(
   if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
-  const selectedBuiltin = builtinResponsesModel(provider, model);
-  const api = configured.api ?? selectedBuiltin?.api;
+  if (profileExcludesModel(configured, model)) return undefined;
+  const catalog = resolveCatalogModel(provider, model, profileDeclaresModel(configured, model));
+  const selectedBuiltin = catalog.descriptor;
+  const api = configured.api ?? catalog.api;
   if (api !== "openai-responses") return undefined;
-  const baseURL = configured.baseURL ?? selectedBuiltin?.baseUrl;
+  const baseURL = configured.baseURL ?? catalog.baseUrl;
   const apiKeyEnv = configured.apiKeyEnv;
   if (
     typeof baseURL !== "string" ||

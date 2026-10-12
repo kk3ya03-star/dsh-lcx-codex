@@ -283,7 +283,8 @@ test(`opaque X without client call preserves every original item after cold reop
 for (const fixture of [
   { name: 'foreign session', overrides: { sessionId: 'foreign-session-59' } },
   { name: 'foreign provider', overrides: { provider: 'relay' }, profiles: { relay: xaiProfile } },
-  { name: 'changed model', overrides: { model: 'grok-4.5' } },
+  // The profile lists both models: a models list is authoritative, so the changed model must be configured too.
+  { name: 'changed model', overrides: { model: 'grok-4.5' }, profile: { ...xaiProfile, models: [...xaiProfile.models, { id: 'grok-4.5' }] } },
   { name: 'changed endpoint authority', profile: { ...xaiProfile, baseURL: 'https://other-gateway.example/v1' } },
   { name: 'changed credential authority', profile: { ...xaiProfile, apiKeyEnv: 'OTHER_FIXTURE_KEY' } },
   { name: 'changed selected headers', profile: { ...xaiProfile, headers: { 'x-fixture-route': 'changed' } } },
