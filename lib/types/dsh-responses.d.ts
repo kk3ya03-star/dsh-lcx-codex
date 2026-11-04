@@ -40,6 +40,15 @@ type SerializeOptions = Partial<ImageOptions> & {
      * keeps only the immediate declarations. Any other value keeps the strict full-list contract.
      */
     toolUpdate?: unknown;
+    /**
+     * The effort a request sends as `configuration_update` items (see `configurationUpdateEffort`). Each
+     * same-model assistant reply that recorded its own level is preceded by that level, as Pi serializes it.
+     * Pi also ends the conversion with the request's own update; the caller appends that tail only after
+     * checkpoint and portable-history assembly.
+     */
+    configurationUpdateEffort?: string;
+    /** Trace the transient request head without changing Pi message positions or synthetic IDs. */
+    tracePrelude?: boolean;
 };
 type ReplayBlock = WireRecord & {
     type: "text" | "reasoning" | "tool-call";
@@ -51,6 +60,7 @@ type ReplayResponse = WireRecord & {
     provider: string;
     model: string;
     stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
+    providerThinkingLevel?: string;
 };
 export declare function responseInputItems(value: unknown): ResponseInputItem[];
 /**
@@ -91,7 +101,15 @@ export declare function readDshPiReplayState(value: unknown): {
 };
 /** A full system prompt snapshot written by DSH's own system-prompt projection. */
 export declare function isPromptSnapshotMessage(message: RequestMessage): boolean;
-/** Whether history after the leading head holds a non-empty DSH prompt snapshot (an in-history update). */
+/**
+ * Mirrors the host adapter's `splitSystemPrompt`: the request-level `system` text and every leading system
+ * message form the initial prompt, joined by a blank line; empty parts drop out, on every route.
+ */
+export declare function splitSystemPrompt(system: string | undefined, messages: readonly RequestMessage[]): {
+    systemPrompt: string | undefined;
+    messages: RequestMessage[];
+};
+/** Whether history after the leading system messages holds a non-empty DSH prompt snapshot (an in-history update). */
 export declare function hasMidHistoryPromptSnapshot(messages: readonly RequestMessage[]): boolean;
 export declare function resolvePiResponsesModel(options: {
     imageSupport: unknown;
@@ -115,6 +133,7 @@ export declare function resolvePiResponsesModel(options: {
 };
 export declare function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options?: SerializeOptions): Promise<{
     input: unknown[];
+    preludeItemCount: number;
     supersededInstructionItems: number[];
     imageMap: Map<string, import("@deepseek-ai/dsh-attachment").ImageAttachmentRef>;
     tools: import("openai/resources/responses/responses.js").Tool[] | undefined;

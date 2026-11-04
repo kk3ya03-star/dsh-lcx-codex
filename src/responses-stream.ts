@@ -137,6 +137,8 @@ type StreamRequestOptions = {
   isServerToolItem?: (item: unknown) => boolean;
   declaredToolNames?: ReadonlySet<string>;
   nativeReplayRoute?: GrokNativeReplayRoute;
+  /** The level this request sent as `configuration_update`; recorded on the reply for its later replay, as Pi does. */
+  providerThinkingLevel?: string;
   onServerToolUsage?: (usage: ServerToolUsage) => void;
   /** Called at most once, when the request ends in a non-abort failure. */
   onFailure?: (info: StreamFailureInfo) => void;
@@ -1448,6 +1450,9 @@ function replayState(
       ...(typeof message.responseId === "string"
         ? { responseId: message.responseId }
         : {}),
+      ...(typeof message.providerThinkingLevel === "string"
+        ? { providerThinkingLevel: message.providerThinkingLevel }
+        : {}),
       stopReason: message.stopReason,
     },
     blocks: content.map((block) => {
@@ -1710,6 +1715,7 @@ export async function* streamResponsesRequest({
   isServerToolItem,
   declaredToolNames,
   nativeReplayRoute,
+  providerThinkingLevel,
   onServerToolUsage,
   onFailure,
 }: StreamRequestOptions) {
@@ -1761,6 +1767,7 @@ export async function* streamResponsesRequest({
       api: "openai-responses",
       provider,
       model,
+      ...(providerThinkingLevel === undefined ? {} : { providerThinkingLevel }),
       usage: emptyUsage(),
       stopReason: "pending",
       timestamp: Date.now(),

@@ -330,7 +330,7 @@ function declaredReasoningControls(
     const value = efforts[level];
     if (value === undefined) thinkingLevelMap[level] = null;
     else if (value === null) {
-      // DSH permits only off:null: it means supported-off by omitting the wire option. Pi 1.1.0 would
+      // DSH permits only off:null: it means supported-off by omitting the wire option. Pi (1.3.0) would
       // read an absent `off` as "send none", so the omission is made explicit here.
       thinkingLevelMap[level] = null;
       if (level === "off") offOmitsReasoning = true;

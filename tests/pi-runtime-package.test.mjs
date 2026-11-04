@@ -14,7 +14,7 @@ function plain(value) {
 test('bounded Pi catalog preserves every public Responses descriptor previously reachable', () => {
   const bundled = ['cloudflare-ai-gateway', 'github-copilot', 'openai', 'opencode', 'opencode-go', 'xai']
   const expected = Object.fromEntries(bundled.map(provider => [provider, plain(getAllModels(provider).filter(model => model.api === 'openai-responses'))]))
-  assert.ok(getAllProviders().includes('meta'), 'Pi 1.1.0 catalog shape changed; review bundle scope')
+  assert.ok(getAllProviders().includes('meta'), 'Pi 1.5.0 catalog shape changed; review bundle scope')
   for (const provider of bundled)
     assert.deepEqual(plain(getCatalogModels(provider).filter(model => model.api === 'openai-responses')), expected[provider], provider)
   assert.deepEqual(getCatalogModels('unrelated-provider'), [])
@@ -23,23 +23,27 @@ test('bounded Pi catalog preserves every public Responses descriptor previously 
 test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
-  assert.equal(pkg.version, '0.6.0-pre.2')
+  assert.equal(pkg.version, '0.6.0')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.1-alpha.2')
-  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.1-alpha.2', verifiedDsh: '0.2.1-alpha.2', verifiedHostPi: '1.1.0', verifiedPluginPi: '1.1.0' })
-  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '1.1.0')
+  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.1-rc.5')
+  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.1-rc.5 <0.2.2-0', verifiedDsh: '0.2.1-rc.5', verifiedHostPi: '1.5.0', verifiedPluginPi: '1.5.0' })
+  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '1.5.0')
   for (const [name, version] of Object.entries(pkg.peerDependencies))
     if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, pkg.lcxCompatibility.dshInstallRange, name)
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-settings'], pkg.lcxCompatibility.dshInstallRange)
   assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/dsh-client-ui-settings'].optional, true)
   const officialPi = readJson('node_modules/@deepseek-ai/dsh-llm-pi-ai/package.json')
-  // Product Owner decision 2026-10-10: install ranges have a floor and no ceiling. The floors are the host's own minimums.
-  const floors = { '@deepseek-ai/cordis': '>=4.0.5-alpha.1', '@deepseek-ai/cordis-plugin-loader': '>=1.0.6-alpha.1', '@deepseek-ai/schemastery': '>=3.18.5-alpha.1' }
+  // Stable admission is bounded to the selected DSH release family. Shared peer floors match the
+  // exact fixture installation; version verification remains separate from installability.
+  const floors = { '@deepseek-ai/cordis': '>=4.0.5', '@deepseek-ai/cordis-plugin-loader': '>=1.0.6', '@deepseek-ai/schemastery': '>=3.18.5' }
   for (const [name, range] of Object.entries(floors)) assert.equal(pkg.peerDependencies[name], range, name)
   for (const [name, range] of Object.entries(pkg.peerDependencies))
-    if (name.startsWith('@deepseek-ai/')) assert.doesNotMatch(range, /[<~^]|\|\|/u, `${name} peer must be a plain lower bound`)
-  assert.equal(officialPi.peerDependencies['@deepseek-ai/cordis-plugin-loader'], '~1.0.6-alpha.1')
-  assert.equal(readJson('node_modules/@deepseek-ai/cordis-plugin-loader/package.json').version, '1.0.6-alpha.1', 'floor is the exact build/test baseline')
+    if (name.startsWith('@deepseek-ai/') && !name.startsWith('@deepseek-ai/dsh-')) assert.doesNotMatch(range, /[<~^]|\|\|/u, `${name} peer must be a plain lower bound`)
+  // The linked host asks for the floor or its release; the build/test runtime installs exactly one of the two.
+  const loaderFloor = floors['@deepseek-ai/cordis-plugin-loader'].slice(2)
+  const accepted = [loaderFloor, loaderFloor.replace(/-.*$/u, '')]
+  assert.ok(accepted.map(version => `~${version}`).includes(officialPi.peerDependencies['@deepseek-ai/cordis-plugin-loader']), officialPi.version)
+  assert.ok(accepted.includes(readJson('node_modules/@deepseek-ai/cordis-plugin-loader/package.json').version), 'the build/test runtime satisfies the floor')
   assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], pkg.lcxCompatibility.verifiedDsh, 'the exact baseline stays pinned')
   assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/cordis-plugin-loader'].optional, true)
   assert.equal(lock.packages[''].peerDependencies['@deepseek-ai/cordis-plugin-loader'], pkg.peerDependencies['@deepseek-ai/cordis-plugin-loader'])

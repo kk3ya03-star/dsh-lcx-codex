@@ -10,7 +10,7 @@ import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -33,7 +33,8 @@ import { resolveCatalogModel } from '../lib/model-catalog.js'
 // tools, agent and agent-loop classes with the LCX plugin installed on that context; only the network is captured.
 
 const baseURL = 'https://fixture.invalid/v1'
-const names = body => (body.tools ?? []).map(entry => entry.name ?? entry.type)
+const initialTools = body => body.tools ?? (body.input[0]?.type === 'additional_tools' ? body.input[0].tools : [])
+const names = body => initialTools(body).map(entry => entry.name ?? entry.type)
 
 function sse(text) {
   const output = [{ type: 'message', id: 'msg_fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] }]
@@ -148,7 +149,7 @@ async function withHarness(profiles, settings, run, prepare = undefined) {
 }
 
 /**
- * A host newer than the bundled Pi catalog. DSH 0.2.1-alpha.2 runs on the same Pi (1.1.0) that LCX bundles, so no
+ * A host newer than the bundled Pi catalog. DSH 0.2.1-alpha.5 and 0.2.1-rc.2 run on the same Pi (1.3.0) that LCX bundles, so no
  * real model is known to the host and not to LCX; this stands in for a later DSH whose own catalog is ahead. It
  * patches the registered dsh-llm-pi-ai adapter, so every public lookup (`listModels`, `resolveModelInfo`,
  * `prepareCall`, which the agent loop calls) answers the way DSH would for a model it serves.
@@ -221,8 +222,8 @@ test('addition-only tool updates follow the host on a model outside the frozen L
       setting('advancedHostedSearch', true)
       const second = await session.ask('two')
       assert.equal(requests.length, 2)
-      assert.equal(JSON.stringify(second.body.tools), JSON.stringify(first.body.tools), 'request tools stay anchored')
-      const added = second.body.input.filter(item => item.type === 'additional_tools').flatMap(item => item.tools.map(tool => tool.name))
+      assert.equal(JSON.stringify(initialTools(second.body)), JSON.stringify(initialTools(first.body)), 'request tools stay anchored')
+      const added = second.body.input.filter((item, index) => item.type === 'additional_tools' && index !== 0).flatMap(item => item.tools.map(tool => tool.name))
       assert.deepEqual(added, ['websearch_gpt_advanced'])
       assert.deepEqual(warnings, [])
     } finally { await session.dispose() }
@@ -292,7 +293,7 @@ test('gpt-6.1-sol is a bundled catalog model and follows the tool-update mode th
   profiles.openai.models.push(entry('gpt-6.1-sol'))
   await withHarness(profiles, {}, async ({ ctx, setting, open, requests, warnings }) => {
     const info = await ctx.llm.resolveModelInfo('openai', 'gpt-6.1-sol')
-    // Host Pi 1.1.0 and the bundled Pi 1.1.0 catalog both describe the model.
+    // Host Pi 1.3.0 and the bundled Pi 1.3.0 catalog both describe the model.
     assert.equal(info.toolUpdate, 'addition-only')
     assert.equal(info.systemPromptUpdate, 'in-history')
     const session = await open('openai', 'gpt-6.1-sol')
@@ -302,8 +303,8 @@ test('gpt-6.1-sol is a bundled catalog model and follows the tool-update mode th
       assert.equal(first.body.model, 'gpt-6.1-sol')
       setting('advancedHostedSearch', true)
       const second = await session.ask('two')
-      assert.equal(JSON.stringify(second.body.tools), JSON.stringify(first.body.tools), 'request tools stay anchored on the host declaration')
-      assert.deepEqual(second.body.input.filter(item => item.type === 'additional_tools').flatMap(item => item.tools.map(tool => tool.name)), ['websearch_gpt_advanced'])
+      assert.equal(JSON.stringify(initialTools(second.body)), JSON.stringify(initialTools(first.body)), 'request tools stay anchored on the host declaration')
+      assert.deepEqual(second.body.input.filter((item, index) => item.type === 'additional_tools' && index !== 0).flatMap(item => item.tools.map(tool => tool.name)), ['websearch_gpt_advanced'])
       assert.equal(requests.length, 2)
       assert.deepEqual(warnings, [])
     } finally { await session.dispose() }
@@ -369,7 +370,7 @@ test('gpt-6.1-sol on a bare profile is owned from the first request, with the LC
       assert.equal(first.url, `${baseURL}/responses`)
       assert.equal(first.body.model, 'gpt-6.1-sol')
       assert.ok(names(first.body).includes('web_search'), 'LCX registered its search tool before the first request')
-      assert.deepEqual(first.body.tools.filter(tool => tool.name === 'web_search').map(tool => tool.type), ['function'])
+      assert.deepEqual(initialTools(first.body).filter(tool => tool.name === 'web_search').map(tool => tool.type), ['function'])
     } finally { await session.dispose() }
   })
 })

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 
 const ZSTD_MAGIC = 0xfd2fb528;
 const TARGET_MODELS = new Set(['gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna']);
-const DEFAULT_SOURCE = 'C:\\Users\\83737\\.dsh\\sessions';
+// Default source: the DSH session store under DSH_HOME, else under the default DSH home (~/.dsh). Override with --source.
+const DEFAULT_SOURCE = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'sessions');
 const DEFAULT_OUTPUT = 'evidence/cache-baseline';
 const SESSION_HASH_SALT = 'dsh-lcx-cache-baseline-v1';
 

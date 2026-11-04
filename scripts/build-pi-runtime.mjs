@@ -21,7 +21,7 @@ const result = await build({
   metafile: true,
   treeShaking: true,
   banner: {
-    js: '// Generated from public @earendil-works/pi-ai@1.1.0 by scripts/build-pi-runtime.mjs. Do not edit.',
+    js: '// Generated from public @earendil-works/pi-ai@1.5.0 by scripts/build-pi-runtime.mjs. Do not edit.',
   },
 })
 
@@ -31,6 +31,43 @@ assert.ok(emittedOutput, 'Pi bundle output was not represented in the esbuild me
 const contributing = Object.entries(emittedOutput.inputs)
   .filter(([, value]) => value.bytesInOutput > 0)
   .map(([path]) => path.replaceAll('\\', '/'))
+// Pin the output-contributing closure, not esbuild's scanned (tree-shaken) input graph.
+const expectedContributing = [
+  "node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js",
+  "node_modules/@earendil-works/pi-ai/dist/api/github-copilot-headers.js",
+  "node_modules/@earendil-works/pi-ai/dist/api/openai-prompt-cache.js",
+  "node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js",
+  "node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js",
+  "node_modules/@earendil-works/pi-ai/dist/model-catalog.js",
+  "node_modules/@earendil-works/pi-ai/dist/models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/cloudflare-ai-gateway.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/cloudflare-ai-gateway.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/github-copilot.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/openai.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/opencode.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/data/xai.json",
+  "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/openai.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/opencode-go.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/opencode-headers.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/opencode.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/providers/xai.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/hash.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/json-parse.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/sanitize-unicode.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/streaming-json.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/text.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/transcript.js",
+  "node_modules/partial-json/dist/index.js",
+  "node_modules/partial-json/dist/options.js",
+  "src/pi-responses-runtime.ts"
+]
+assert.equal(contributing.length, 30, 'Pi output-contributing module count drifted')
+assert.deepEqual([...contributing].sort(), expectedContributing, 'Pi output-contributing module list drifted')
+assert.ok(contributing.some(path => path.endsWith('/utils/streaming-json.js')), 'Pi streaming JSON parser must be bundled')
+assert.deepEqual(contributing.filter(path => /(?:\/telemetry\.js$|\/@earendil-works\/pi-(?:telemetry|schema)\/)/u.test(path)), [], 'Telemetry/schema runtime entered Pi bundle')
 const forbiddenInputs = contributing.filter(path => forbiddenRuntime.test(path))
 assert.deepEqual(forbiddenInputs, [], `Forbidden runtime dependency entered Pi bundle: ${forbiddenInputs.join(', ')}`)
 

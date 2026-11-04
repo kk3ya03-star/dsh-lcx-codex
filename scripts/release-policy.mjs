@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 
+// DSH includes prereleases in range evaluation; a release ceiling admits its prereleases.
+export function assertInstallRange(range) {
+  assert.equal(typeof range, 'string')
+  assert.doesNotMatch(range, /(?:^|\s)<=?\d+\.\d+\.\d+(?=\s|$)/u, 'Bounded install ranges must exclude next-version prereleases with <X.Y.Z-0')
+}
+
 // Runs before registry access or publication. Review metadata cannot authorize release.
 export function assertReleasePolicy(pkg, manifest, ref) {
+  assertInstallRange(pkg.lcxCompatibility?.dshInstallRange)
   const field = name => manifest.match(new RegExp(`^\\s*${name}:\\s*(\\S+)\\s*$`, 'm'))?.[1]
   assert.equal(pkg.name, 'dsh-lcx-codex')
   assert.match(pkg.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/, 'Semantic release version required')

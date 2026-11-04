@@ -11,40 +11,129 @@ import { resolveCatalogModel } from '../lib/model-catalog.js'
 import { loadHostSource } from './wp2-source.mjs'
 
 const route = await loadHostSource('route')
-// The six providers whose catalogs LCX bundles (Pi 1.1.0, the Pi of DSH 0.2.1-alpha.2). A credential-only profile
+// The six providers whose catalogs LCX bundles (Pi 1.5.0). A credential-only profile
 // (no `api`) owns exactly the GPT / Grok Responses models those catalogs ship: DSH serves nothing else without the
 // profile naming it. The pinned set below is the exact computed result, so a catalog change fails here and is reviewed.
 const OWNED_PAIRS = {
-  'cloudflare-ai-gateway': [
-    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-mini', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano',
-    'gpt-5.1', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.6-luna',
-    'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol',
+  "cloudflare-ai-gateway": [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5.1",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra"
   ],
-  'github-copilot': [
-    'gpt-5-mini', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.5', 'gpt-5.6-luna',
-    'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'grok-4.5', 'grok-4.6',
-    'grok-4.7',
+  "github-copilot": [
+    "gpt-5.3-codex",
+    "gpt-5.4-nano",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7"
   ],
-  openai: [
-    'gpt-4', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-2024-05-13',
-    'gpt-4o-2024-08-06', 'gpt-4o-2024-11-20', 'gpt-4o-mini', 'gpt-5', 'gpt-5-chat-latest', 'gpt-5-mini', 'gpt-5-nano',
-    'gpt-5-pro', 'gpt-5.1', 'gpt-5.2', 'gpt-5.2-chat-latest', 'gpt-5.2-pro', 'gpt-5.3-chat-latest', 'gpt-5.3-codex',
-    'gpt-5.3-codex-spark', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro', 'gpt-5.5', 'gpt-5.5-pro',
-    'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol',
-    'gpt-daybreak-blue-latest', 'gpt-daybreak-red-latest', 'gpt-realtime-2.1',
+  "openai": [
+    "gpt-4",
+    "gpt-4-turbo",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-mini",
+    "gpt-5",
+    "gpt-5-chat-latest",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-pro",
+    "gpt-5.1",
+    "gpt-5.2",
+    "gpt-5.2-pro",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.6-cyber",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-daybreak-blue-latest",
+    "gpt-daybreak-red-latest"
   ],
-  opencode: [
-    'gpt-5', 'gpt-5-codex', 'gpt-5-nano', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini',
-    'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-pro', 'gpt-5.5',
-    'gpt-5.5-pro', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol',
-    'gpt-6.1-sol', 'grok-4.5', 'grok-4.6', 'grok-4.7', 'grok-build-0.1',
+  "opencode": [
+    "gpt-5",
+    "gpt-5-codex",
+    "gpt-5-nano",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6.1-sol",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7",
+    "grok-build-0.1"
   ],
-  'opencode-go': [
-    'gpt-5.6-luna', 'gpt-6-luna', 'grok-4.6', 'grok-4.7',
+  "opencode-go": [
+    "gpt-5.6-luna",
+    "gpt-6-luna",
+    "grok-4.7"
   ],
-  xai: [
-    'grok-4.3', 'grok-4.5', 'grok-4.6', 'grok-4.7',
-  ],
+  "xai": [
+    "grok-4.3",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7"
+  ]
 }
 const bundledProviders = Object.keys(OWNED_PAIRS)
 const ownedPair = (provider, model) => OWNED_PAIRS[provider]?.includes(model) ?? false
@@ -242,7 +331,7 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
   const computed = Object.fromEntries(bundledProviders.map(provider => [provider,
     getBuiltinModels(provider).filter(model => model.api === 'openai-responses' && /^(?:gpt-|grok)/iu.test(model.id)).map(model => model.id).sort()]))
   assert.deepEqual(computed, OWNED_PAIRS)
-  assert.equal(Object.values(OWNED_PAIRS).flat().length, 111)
+  assert.equal(Object.values(OWNED_PAIRS).flat().length, 107)
   const context = fixture('omitted', Object.fromEntries(bundledProviders.map(provider => [provider, { apiKeyEnv: 'SYNTHETIC_KEY' }])))
   let owned = 0
   for (const [provider, ids] of Object.entries(OWNED_PAIRS)) for (const model of ids) {
@@ -260,7 +349,7 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
     assert.equal(resolveCatalogModel(provider, model).source, 'catalog-model', pair)
     owned += 1
   }
-  assert.equal(owned, 111 - OWNED_PAIRS['cloudflare-ai-gateway'].length)
+  assert.equal(owned, 107 - OWNED_PAIRS['cloudflare-ai-gateway'].length)
   // Nothing outside the set is owned: a pair the provider's catalog lacks, a GPT model on a Grok provider, and so on.
   for (const [provider, model] of [['xai', 'gpt-5.6-sol'], ['openai', 'grok-4.7'], ['openai', 'gpt-9-unlisted'], ['xai', 'grok-9-unlisted']]) {
     assert.equal(route.resolveResponsesRouteConfig(context, { provider, model }, policy), undefined, `${provider}/${model}`)
@@ -275,8 +364,8 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
   assert.equal(route.resolveResponsesRouteConfig(explicit, { provider: 'cloudflare-ai-gateway', model: 'gpt-6-sol' }, policy), undefined)
 })
 
-test('Pi 1.1.0 catalog: no bundled Responses model sets sampling parameters, which the LCX body builder does not merge', () => {
-  // Pi 1.1.0 merges model.samplingParams / samplingParamsByThinkingLevel into its request. None of the bundled
+test('Pi 1.5.0 catalog: no bundled Responses model sets sampling parameters, which the LCX body builder does not merge', () => {
+  // Pi 1.5.0 merges model.samplingParams / samplingParamsByThinkingLevel into its request. None of the bundled
   // providers uses them today; a catalog that starts to must be reviewed against buildResponsesBody first.
   for (const provider of bundledProviders)
     for (const model of getBuiltinModels(provider))
