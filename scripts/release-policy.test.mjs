@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { assertReleasePolicy } from './release-policy.mjs'
+import { assertReleasePolicy, assertInstallRange } from './release-policy.mjs'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)))
 const persisted = readFileSync(new URL('../PUBLIC-RELEASE-MANIFEST.yml', import.meta.url), 'utf8')
@@ -25,12 +25,18 @@ const underReview = /^state: REVIEW_ONLY$/m.test(persisted)
  * the guard still has to be proven to accept a correctly approved candidate,
  * so the approval exists only for the duration of this process.
  */
-const approved = underReview
+const approvedMetadata = underReview
   ? persisted
     .replace(/^state: REVIEW_ONLY$/m, `state: ${approvedState}`)
     .replace(/^ {2}product_owner: PENDING_CONTROLLER_APPROVAL$/m, '  product_owner: synthetic-in-memory-approval-not-persisted')
     .replace(/^ {2}state: BLOCKED$/m, '  state: APPROVED_PENDING_PUBLISH')
   : persisted
+
+// Runtime metadata is synthesized from the candidate while Controller records remain under review.
+const approved = underReview ? approvedMetadata
+  .replace(/^  dsh: .+$/m, `  dsh: ${declaredDsh}`)
+  .replace(/^  host_pi: .+$/m, `  host_pi: ${pkg.lcxCompatibility.verifiedHostPi}`)
+  .replace(/^  plugin_pi: .+$/m, `  plugin_pi: ${pkg.lcxCompatibility.verifiedPluginPi}`) : approvedMetadata
 
 /** The review-only manifest, persisted under review and synthesized after approval. */
 const review = underReview
@@ -42,7 +48,7 @@ const review = underReview
 
 test('the persisted manifest matches the package it describes', () => {
   assert.match(persisted, new RegExp(`^version: ${pkg.version.replace(/[.\\+*?[^\]$(){}=!<>|:#-]/gu, '\\$&')}$`, 'm'))
-  assert.match(persisted, new RegExp(`^ {2}dsh: ${declaredDsh.replace(/[.\\+*?[^\]$(){}=!<>|:#-]/gu, '\\$&')}$`, 'm'))
+  if (!underReview) assert.match(persisted, new RegExp(`^ {2}dsh: ${declaredDsh.replace(/[.\\+*?[^\]$(){}=!<>|:#-]/gu, '\\$&')}$`, 'm'))
 })
 
 test('a candidate under review carries no persisted approval', () => {
@@ -78,3 +84,10 @@ for (const [label, manifest, ref] of [
   ['pending owner approval', approved.replace(/^ {2}product_owner: .+$/m, '  product_owner: PENDING_CONTROLLER_APPROVAL'), tag],
   ['blocked publication', approved.replace('state: APPROVED_PENDING_PUBLISH', 'state: BLOCKED'), tag],
 ]) test(`publication rejects ${label}`, () => assert.throws(() => assertReleasePolicy(pkg, manifest, ref)))
+
+ test('install range ceilings exclude next-version prereleases', () => {
+   for (const range of ['>=0.2.1-rc.5 <0.2.2', '>=1.0.0 <2.0.0', '>=1.0.0 <=2.0.0'])
+     assert.throws(() => assertInstallRange(range), /<X.Y.Z-0/u)
+   for (const range of ['>=0.2.1-rc.5 <0.2.2-0', '>=0.2.2-alpha.3'])
+     assert.doesNotThrow(() => assertInstallRange(range))
+ })

@@ -17,10 +17,17 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 const n = z.number().int().nonnegative();
 const schema = z.object({auxiliary:z.object({uncachedInputTokens:n,outputTokens:n,cacheReadTokens:n,cacheWriteTokens:n}).strict(),aggregateContext:z.boolean(),
   contextDetails:z.object({input_tokens:n,output_tokens:n}).strict().optional(),contextProvenance:z.literal('provider-context-details').optional()}).strict();
+const stateSchema = schema.extend({pending:z.record(z.string(),z.string()),headerKey:z.string().optional(),sampleHeaderKey:z.string().optional()});
+type Definition = ProjectionDefinition<'lcxSearchUsage'> & { wire: NonNullable<ProjectionDefinition<'lcxSearchUsage'>['wire']> };
+// DSH (since 0.2.1-alpha.5) pins its own zod, which need not be the one this plugin resolves, and TypeScript
+// cannot relate schemas of two zod copies. The host only calls `parse` on them, so they are checked against
+// the plugin's zod here and handed to the host typed by its own contract.
+const hostStateSchema = (stateSchema satisfies z.ZodType<SearchUsageState>) as unknown as Definition['stateSchema'];
+const hostViewSchema = (schema satisfies z.ZodType<SearchUsageView>) as unknown as Definition['wire']['viewSchema'];
 const headerKey = (header?:EpochHeader) => header === undefined ? undefined : JSON.stringify(canonicalHeader(header));
 /** Separate, durable extension: the host's own usage projection remains primary-call billing. */
-export const searchUsageProjection = {
-  key:'lcxSearchUsage', stateVersion:3, stateSchema:schema.extend({pending:z.record(z.string(),z.string()),headerKey:z.string().optional(),sampleHeaderKey:z.string().optional()}),
+export const searchUsageProjection: Definition = {
+  key:'lcxSearchUsage', stateVersion:3, stateSchema:hostStateSchema,
   init:()=>({auxiliary:zeroBuckets(),aggregateContext:false,pending:{}}),
   apply(state:SearchUsageState,event:Parameters<ProjectionDefinition<'lcxSearchUsage'>['apply']>[1]):SearchUsageState {
     // Unit state is checkpointed by the host's projection cache, which refuses any state that is not
@@ -49,8 +56,8 @@ export const searchUsageProjection = {
     if(event.type==='turn/end' && Object.keys(state.pending).length) return {...state,auxiliary,aggregateContext,pending:{}};
     return auxiliary===state.auxiliary && aggregateContext===state.aggregateContext ? state : {...state,auxiliary,aggregateContext};
   },
-  wire:{viewSchema:schema,view:({auxiliary,aggregateContext,contextDetails,contextProvenance}:SearchUsageState)=>({auxiliary,aggregateContext,...(contextDetails ? {contextDetails,contextProvenance} : {})})},
-} satisfies ProjectionDefinition<'lcxSearchUsage'>;
+  wire:{viewSchema:hostViewSchema,view:({auxiliary,aggregateContext,contextDetails,contextProvenance}:SearchUsageState)=>({auxiliary,aggregateContext,...(contextDetails ? {contextDetails,contextProvenance} : {})})},
+};
 type Meter = { measure(session:Session, header?:EpochHeader):TokenMeasurement };
 type SessionProjections = { stateOf(session:Session, key:string): unknown };
 const installed = new WeakMap<object,{release:()=>void;refs:number}>();

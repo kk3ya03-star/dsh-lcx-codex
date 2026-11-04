@@ -9,7 +9,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -29,9 +29,10 @@ import apply, { Config } from '../lib/index.js'
 // the tool through its settings handling; the request body is captured at the transport.
 
 const baseURL = 'https://fixture.invalid/v1'
-const additions = body => body.input.filter(item => item.type === 'additional_tools')
+const initialTools = body => body.tools ?? (body.input[0]?.type === 'additional_tools' ? body.input[0].tools : [])
+const additions = body => body.input.filter((item, index) => item.type === 'additional_tools' && !(index === 0 && body.tools === undefined))
 const addedNames = body => additions(body).flatMap(item => item.tools.map(entry => entry.name))
-const names = body => (body.tools ?? []).map(entry => entry.name)
+const names = body => initialTools(body).map(entry => entry.name)
 
 function sse(text) {
   const output = [{ type: 'message', id: 'msg_fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] }]
@@ -121,11 +122,11 @@ for (const model of ['gpt-6-sol', 'gpt-5.6-sol']) {
       assert.equal(bodies.length, 2, 'LCX owned both requests')
       assert.ok(names(one).includes('web_search'), 'LCX registered its web_search override at agent creation')
       assert.ok(!names(one).includes('websearch_gpt_advanced'))
-      assert.equal(JSON.stringify(two.tools), JSON.stringify(one.tools))
+      assert.equal(JSON.stringify(initialTools(two)), JSON.stringify(initialTools(one)))
 
       setting('advancedHostedSearch', true)
       const three = await ask('turn three')
-      assert.equal(JSON.stringify(three.tools), JSON.stringify(one.tools), 'request tools did not change when LCX registered websearch_gpt_advanced')
+      assert.equal(JSON.stringify(initialTools(three)), JSON.stringify(initialTools(one)), 'request tools did not change when LCX registered websearch_gpt_advanced')
       assert.deepEqual(addedNames(three), ['websearch_gpt_advanced'])
       assert.doesNotMatch(JSON.stringify(three), /deferLoading|defer_loading|tool-addition/u)
       const previous = two.input.map(item => JSON.stringify(item))

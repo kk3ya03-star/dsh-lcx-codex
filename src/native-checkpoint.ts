@@ -388,8 +388,9 @@ export async function activeCompactionId(ctx: SessionQueryContext, session: Sess
  * one, as developer/system or even as user text, would keep a stale full prompt (for example plan-mode
  * policy that has since been switched off) in front of the model after the compaction.
  *
- * Only items the serializer traced back to such snapshots (`supersededItemIndices`, absolute positions
- * in `input`) are removed. Any other retained developer/system item is genuine client context and
+ * Only items traced to such snapshots or Pi tool-update notices (`supersededItemIndices`, absolute positions
+ * in `input`) are removed. Tool notices belong to the old series, whose declarations retention drops.
+ * Any other retained developer/system item is genuine client context and
  * stays. The ephemeral prelude is removed by the caller's slice, and the retention budget is computed
  * over what is actually kept.
  */

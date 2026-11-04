@@ -8,7 +8,7 @@ import { LlmAdapter, createUserMessage, projectToolUpdates } from '@deepseek-ai/
 import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
 import Llm from '@deepseek-ai/dsh-llm'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'

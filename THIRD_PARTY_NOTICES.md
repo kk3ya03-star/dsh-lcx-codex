@@ -2,9 +2,9 @@
 
 `lib/pi-responses-runtime.js` is generated from public exports of the packages below. The build recipe in `scripts/build-pi-runtime.mjs` verifies that no other third-party package contributes output bytes.
 
-## @earendil-works/pi-ai 1.1.0
+## @earendil-works/pi-ai 1.5.0
 
-Upstream source: https://github.com/earendil-works/pi/tree/v1.1.0/packages/ai
+Upstream source: https://github.com/earendil-works/pi/tree/v1.5.0/packages/ai
 
 Included public Responses helpers and model catalogs:
 

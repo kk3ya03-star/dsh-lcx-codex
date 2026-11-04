@@ -19,7 +19,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop';
 import Llm from '@deepseek-ai/dsh-llm';
 import Tools from '@deepseek-ai/dsh-tools';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -52,7 +52,9 @@ function reply(s,scope='aggregate',turn=1,usage=u,metadata={}){
 }
 test('integration runs against the untouched official token-meter artifact',()=>{
  const digest=createHash('sha256').update(readFileSync(new URL('../node_modules/@deepseek-ai/dsh-token-meter/lib/index.js',import.meta.url))).digest('hex');
- assert.equal(digest,'39ed60a470b240f8bbc82befdb0bbbad1f409732e8ba8d12d41a1059de0dde05');
+ // DSH 0.2.1-alpha.5 and 0.2.1-rc.2 ship the same artifact. Against 0.2.1-alpha.2 only the context-breakdown
+ // projection changed (Issue #129 review); measure() and TokenMeasurement, which LCX wraps, are unchanged.
+ assert.equal(digest,'b76a27f84d1f733c4a760e36fcc0491f807b32d51055703feb0fed1643cc2e05');
 });
 test('plugin-only aggregate pressure correction preserves exact billing and cold restore',async t=>{
  const{ctx,session}=await fixture(t);reply(session);
