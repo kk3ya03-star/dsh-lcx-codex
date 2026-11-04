@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -60,7 +60,14 @@ async function fixture(turns, count, query = true) {
   const persisted = await writer.read()
   await writer.close()
   assert.equal(persisted.events.length, session.snapshotEvents().length)
-  return { root, ctx, backend, session, checkpoints, detach, async close() { detach(); await rm(root, { recursive: true, force: true }) } }
+  // Events appended after the fixture flush are persisted asynchronously; drain them before removing the
+  // directory, or the JSONL writer can still be creating files while it is deleted (ENOTEMPTY).
+  return { root, ctx, backend, session, checkpoints, detach, async close() {
+    await ctx.sessions.flush(session)
+    await ctx.sessionPersistence.flush()
+    detach()
+    await rm(root, { recursive: true, force: true })
+  } }
 }
 
 function oldActive(session) {

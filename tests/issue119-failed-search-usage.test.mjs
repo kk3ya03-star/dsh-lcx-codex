@@ -1,3 +1,5 @@
+import { executeTool } from './dsh022-tool-fixture.mjs'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -6,7 +8,7 @@ import { resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import Llm, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import Tools from '@deepseek-ai/dsh-tools'
@@ -34,12 +36,12 @@ const usage = (n) => ({ usage: { input_tokens: 100 + n, output_tokens: 10, total
 
 async function runtime(t) {
   const ctx = new Context()
-  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime)]
+  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime), await ctx.plugin(NativeToolExecutor)]
   fibers.push(await ctx.plugin(installFailedAuxiliaryUsage))
   t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose() })
   return ctx
 }
-const run = (ctx, name, args = {}) => ctx.tools.execute({ toolCallId: ToolCallId(`call-${name}`), name, arguments: args, signal: new AbortController().signal })
+const run = (ctx, name, args = {}) => executeTool(ctx.tools, { toolCallId: ToolCallId(`call-${name}`), name, arguments: args, signal: new AbortController().signal })
 
 const plain = (execute) => withAuxiliaryUsage({
   name: 'fixture', description: 'fixture', parameters: { type: 'object' },
@@ -95,7 +97,7 @@ test('multi-query web_search: the first failure rejects the whole call, and ever
     tools: { register(candidate) { definition = candidate; return () => {} } },
     systemPrompt: { getSectionOrder: () => 0, section: () => () => {} },
   }
-  applyWebSearchTool(composition, 5, 5, 60000, false)
+  applyWebSearchTool(composition, 5, 5, 800, 60000, false)
   ctx.tools.register(withAuxiliaryUsage(definition))
   const result = await run(ctx, 'web_search', { queries: ['alpha', 'beta'] })
   assert.equal(result.isError, true, 'DSH rejects the whole call')
@@ -142,6 +144,7 @@ test('plugin wiring: a real Agent whose Hosted search was billed and then failed
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   await new Promise((done) => setTimeout(done, 500))

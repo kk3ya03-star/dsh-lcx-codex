@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
@@ -20,7 +21,7 @@ test('Luna receives the DSH-projected, non-strict LCX web tool schemas', async (
     { name: 'websearch_gpt_advanced', description: 'Hosted', parameters: HOSTED_SEARCH_PARAMETERS },
   ]
   const ctx = new Context()
-  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime)]
+  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime), await ctx.plugin(NativeToolExecutor)]
   t.after(() => { for (const fiber of fibers.reverse()) fiber.dispose() })
   for (const definition of definitions) ctx.tools.register({
     ...definition,

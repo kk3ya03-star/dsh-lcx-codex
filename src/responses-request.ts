@@ -3,6 +3,8 @@ import { responsesTools } from "./dsh-responses.js";
 import { isRecord } from "./util.js";
 
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
+/** Pi's fixed request effort while the real one travels in `configuration_update` input items. */
+const CONFIGURATION_UPDATE_REQUEST_EFFORT = "medium";
 
 type UnknownRecord = Record<string, unknown>;
 type CacheRetention = "none" | "short" | "long";
@@ -10,10 +12,12 @@ type ResponsesCompat = {
   supportsLongCacheRetention?: boolean;
   supportsExplicitPromptCacheMode?: boolean;
   supportsMaxOutputTokens?: boolean;
+  supportsMidConvoEffort?: boolean;
 };
 type PiResponsesModel = {
   id: string;
   provider: string;
+  baseUrl?: string;
   reasoning?: boolean;
   thinkingLevelMap?: Record<string, string | null>;
   includeEncryptedReasoning?: boolean;
@@ -23,6 +27,8 @@ type GenerationControls = {
   reasoningEffort?: unknown;
   temperature?: unknown;
   maxTokens?: unknown;
+  /** Set when the effort is sent as `configuration_update` items (see `configurationUpdateEffort`). */
+  configurationUpdateEffort?: string;
 };
 type BuildResponsesBodyOptions = GenerationControls & {
   model: PiResponsesModel | string;
@@ -66,6 +72,28 @@ function normalizeCacheRetention(value: unknown): CacheRetention {
 }
 
 /**
+ * The effort Pi 1.3.0 sends as `configuration_update` input items instead of `reasoning.effort`, or undefined
+ * to send it as `reasoning.effort` (Pi's `getConfigurationUpdateEffort`): only for a model whose compat states
+ * `supportsMidConvoEffort`, only with a requested level, and never for a Sign in with ChatGPT key, which rejects
+ * those items. The key is read only when that last rule can apply.
+ */
+export async function configurationUpdateEffort(
+  model: PiResponsesModel,
+  reasoningEffort: unknown,
+  apiKey: () => Promise<string>,
+): Promise<string | undefined> {
+  if (model.compat?.supportsMidConvoEffort !== true || reasoningEffort === undefined || reasoningEffort === "off")
+    return undefined;
+  const requested = String(reasoningEffort);
+  const mapped = model.thinkingLevelMap?.[requested];
+  // A level the model maps to null is unsupported; DSH refuses it before dispatch, so it never travels here.
+  if (mapped === null) return undefined;
+  if (model.provider === "openai" && model.baseUrl === "https://api.openai.com/v1" && !(await apiKey()).startsWith("sk-"))
+    return undefined;
+  return mapped ?? requested;
+}
+
+/**
  * Pi-parity generation controls for OpenAI Responses.
  */
 export function responsesGenerationEnvelope({
@@ -73,6 +101,7 @@ export function responsesGenerationEnvelope({
   reasoningEffort,
   temperature,
   maxTokens,
+  configurationUpdateEffort,
   includeDefaultReasoning = false,
 }: GenerationControls & {
   model?: PiResponsesModel | string;
@@ -93,7 +122,9 @@ export function responsesGenerationEnvelope({
       const mapped = descriptor.thinkingLevelMap?.[requested];
       const wire = mapped === undefined ? requested : mapped;
       if (wire !== null) {
-        result.reasoning = { effort: wire, summary: "auto" };
+        // With mid-conversation effort the request carries a fixed effort, so an effort change keeps the
+        // cached prefix; the level itself is the last `configuration_update` input item.
+        result.reasoning = { effort: configurationUpdateEffort === undefined ? wire : CONFIGURATION_UPDATE_REQUEST_EFFORT, summary: "auto" };
         result.include = ["reasoning.encrypted_content"];
       }
     } else if (
@@ -141,6 +172,7 @@ export function buildResponsesBody({
   reasoningEffort,
   temperature,
   maxTokens,
+  configurationUpdateEffort,
   samplingParams,
 }: BuildResponsesBodyOptions): ResponsesWireBody {
   if (!Array.isArray(input))
@@ -186,6 +218,7 @@ export function buildResponsesBody({
       reasoningEffort,
       temperature,
       maxTokens,
+      configurationUpdateEffort,
       includeDefaultReasoning: true,
     }),
   };

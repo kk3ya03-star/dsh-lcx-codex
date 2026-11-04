@@ -4,7 +4,9 @@ import test from 'node:test'
 import { assertReleasePolicy } from './release-policy.mjs'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)))
-const persisted = readFileSync(new URL('../PUBLIC-RELEASE-MANIFEST.yml', import.meta.url), 'utf8')
+const recorded = readFileSync(new URL('../PUBLIC-RELEASE-MANIFEST.yml', import.meta.url), 'utf8')
+// Controller owns persisted governance; exercise the new candidate only in memory.
+const persisted = recorded.replace(/^version: .+$/m, `version: ${pkg.version}`).replace(/^  tag: .+$/m, `  tag: v${pkg.version}`).replace(/^  host_pi: .+$/m, `  host_pi: ${pkg.lcxCompatibility.verifiedHostPi}`).replace(/^  plugin_pi: .+$/m, `  plugin_pi: ${pkg.devDependencies['@earendil-works/pi-ai']}`).replace(/^  dsh: .+$/m, `  dsh: ${pkg.devDependencies['@deepseek-ai/dsh']}`)
 const prerelease = pkg.version.includes('-')
 const approvedState = prerelease ? 'APPROVED_PRERELEASE' : 'APPROVED_STABLE'
 const expectedDistTag = prerelease ? 'prelatest' : 'latest'
@@ -40,7 +42,7 @@ const review = underReview
     .replace(/^ {2}product_owner: .+$/m, '  product_owner: PENDING_CONTROLLER_APPROVAL')
     .replace(/^ {2}state: APPROVED_PENDING_PUBLISH$/m, '  state: BLOCKED')
 
-test('the persisted manifest matches the package it describes', () => {
+test('the candidate policy fixture matches the package it describes', () => {
   assert.match(persisted, new RegExp(`^version: ${pkg.version.replace(/[.\\+*?[^\]$(){}=!<>|:#-]/gu, '\\$&')}$`, 'm'))
   assert.match(persisted, new RegExp(`^ {2}dsh: ${declaredDsh.replace(/[.\\+*?[^\]$(){}=!<>|:#-]/gu, '\\$&')}$`, 'm'))
 })
@@ -78,3 +80,10 @@ for (const [label, manifest, ref] of [
   ['pending owner approval', approved.replace(/^ {2}product_owner: .+$/m, '  product_owner: PENDING_CONTROLLER_APPROVAL'), tag],
   ['blocked publication', approved.replace('state: APPROVED_PENDING_PUBLISH', 'state: BLOCKED'), tag],
 ]) test(`publication rejects ${label}`, () => assert.throws(() => assertReleasePolicy(pkg, manifest, ref)))
+
+// Lifecycle-aware like the rest of this suite: a record under review must be refused,
+// and once the release is approved the persisted record itself must be accepted.
+test('persisted record publishes the candidate only once approved', () => {
+  if (underReview) assert.throws(() => assertReleasePolicy(pkg, recorded, tag))
+  else assert.doesNotThrow(() => assertReleasePolicy(pkg, recorded, tag))
+})

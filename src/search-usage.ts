@@ -11,18 +11,24 @@ type SearchUsageState = { auxiliary: Buckets; aggregateContext: boolean; pending
   contextProvenance?: 'provider-context-details' };
 type SearchUsageView = Omit<SearchUsageState,'pending' | 'headerKey' | 'sampleHeaderKey'>;
 declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap { lcxSearchUsage: SearchUsageState }
   interface SessionProjectionMap { lcxSearchUsage: SearchUsageView }
 }
 const n = z.number().int().nonnegative();
 const schema = z.object({auxiliary:z.object({uncachedInputTokens:n,outputTokens:n,cacheReadTokens:n,cacheWriteTokens:n}).strict(),aggregateContext:z.boolean(),
   contextDetails:z.object({input_tokens:n,output_tokens:n}).strict().optional(),contextProvenance:z.literal('provider-context-details').optional()}).strict();
+const stateSchema = schema.extend({pending:z.record(z.string(),z.string()),headerKey:z.string().optional(),sampleHeaderKey:z.string().optional()});
+type Definition = ProjectionDefinition<'lcxSearchUsage', SearchUsageState> & { wire: NonNullable<ProjectionDefinition<'lcxSearchUsage', SearchUsageState>['wire']> };
+// DSH (since 0.2.1-alpha.5) pins its own zod, which need not be the one this plugin resolves, and TypeScript
+// cannot relate schemas of two zod copies. The host only calls `parse` on them, so they are checked against
+// the plugin's zod here and handed to the host typed by its own contract.
+const hostStateSchema = (stateSchema satisfies z.ZodType<SearchUsageState>) as unknown as Definition['stateSchema'];
+const hostViewSchema = (schema satisfies z.ZodType<SearchUsageView>) as unknown as Definition['wire']['viewSchema'];
 const headerKey = (header?:EpochHeader) => header === undefined ? undefined : JSON.stringify(canonicalHeader(header));
 /** Separate, durable extension: the host's own usage projection remains primary-call billing. */
-export const searchUsageProjection = {
-  key:'lcxSearchUsage', stateVersion:3, stateSchema:schema.extend({pending:z.record(z.string(),z.string()),headerKey:z.string().optional(),sampleHeaderKey:z.string().optional()}),
+export const searchUsageProjection: Definition = {
+  key:'lcxSearchUsage', stateVersion:3, stateSchema:hostStateSchema,
   init:()=>({auxiliary:zeroBuckets(),aggregateContext:false,pending:{}}),
-  apply(state:SearchUsageState,event:Parameters<ProjectionDefinition<'lcxSearchUsage'>['apply']>[1]):SearchUsageState {
+  apply(state:SearchUsageState,event:Parameters<ProjectionDefinition<'lcxSearchUsage', SearchUsageState>['apply']>[1]):SearchUsageState {
     // Unit state is checkpointed by the host's projection cache, which refuses any state that is not
     // lossless plain JSON. An optional field is therefore omitted when absent, never set to `undefined`.
     if(event.type==='request/header') {
@@ -49,19 +55,19 @@ export const searchUsageProjection = {
     if(event.type==='turn/end' && Object.keys(state.pending).length) return {...state,auxiliary,aggregateContext,pending:{}};
     return auxiliary===state.auxiliary && aggregateContext===state.aggregateContext ? state : {...state,auxiliary,aggregateContext};
   },
-  wire:{viewSchema:schema,view:({auxiliary,aggregateContext,contextDetails,contextProvenance}:SearchUsageState)=>({auxiliary,aggregateContext,...(contextDetails ? {contextDetails,contextProvenance} : {})})},
-} satisfies ProjectionDefinition<'lcxSearchUsage'>;
+  wire:{viewSchema:hostViewSchema,view:({auxiliary,aggregateContext,contextDetails,contextProvenance}:SearchUsageState)=>({auxiliary,aggregateContext,...(contextDetails ? {contextDetails,contextProvenance} : {})})},
+};
 type Meter = { measure(session:Session, header?:EpochHeader):TokenMeasurement };
-type SessionProjections = { stateOf(session:Session, key:string): unknown };
+type SearchUsageReader = { stateOf(session:Session): SearchUsageState };
 const installed = new WeakMap<object,{release:()=>void;refs:number}>();
 /** Own a reversible adapter on the public measure method, never a DSH file or private fold. */
-export function installSearchMeasurement(meter: Meter, projections: SessionProjections): () => void {
+export function installSearchMeasurement(meter: Meter, projection: SearchUsageReader): () => void {
   const existing = installed.get(meter);
   if (existing) { existing.refs++; let active=true; return () => {if(active){active=false;release(meter);}}; }
   const original = meter.measure, descriptor = Object.getOwnPropertyDescriptor(meter,'measure');
   function measure(this:Meter,session:Session,header?:EpochHeader):TokenMeasurement {
     const value = original.call(this,session,header);
-    const state = projections.stateOf(session,'lcxSearchUsage') as SearchUsageState | undefined;
+    const state = projection.stateOf(session);
     if (!state?.aggregateContext) return value;
     const effectiveHeader = header ?? session.requestHeader();
     if (state.contextDetails && state.sampleHeaderKey !== undefined && effectiveHeader !== undefined
@@ -92,8 +98,10 @@ function release(meter:Meter):void {
   if(record && --record.refs===0){record.release();installed.delete(meter);}
 }
 export function installSearchUsage(ctx:Context):void {
-  ctx.inject(['sessionProjections'], c=>{c.sessionProjections.register(searchUsageProjection);});
-  ctx.inject(['tokenMeter','sessionProjections'], c=>{
-    c.effect(()=>installSearchMeasurement(c.tokenMeter,c.sessionProjections),'lcx search context measurement');
+  ctx.inject(['sessionProjections'], async c=>{
+    const handle = await c.sessionProjections.register(searchUsageProjection);
+    c.inject(['tokenMeter'], c=>{
+      c.effect(()=>installSearchMeasurement(c.tokenMeter,handle),'lcx search context measurement');
+    });
   });
 }

@@ -21,7 +21,7 @@
  * repeats the call id of a root it does not contain. Without a Session identity on the Client the two cannot be told apart.
  */
 // Type-only: brings DSH's `tool/ptc-dispatch` session event types into this program.
-import type {} from '@deepseek-ai/dsh-tools/types';
+import type {} from '@deepseek-ai/dsh-tool-executor-ptc/types';
 
 export type CallTurns = {
   /** Feed the `seq` of every durable event the Definition sees, in the order it sees them. */

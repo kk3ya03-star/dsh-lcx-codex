@@ -1,10 +1,11 @@
+import * as PtcExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import Llm, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import Tools from '@deepseek-ai/dsh-tools'
@@ -111,7 +112,8 @@ export async function runAgent(t, { modelCalls, fetchHandler, config = {}, tools
   ctx.plugin(QuerySqlite, { path: ':memory:', openAt: 'never' })
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
-  ctx.plugin(Tools, tools)
+  ctx.plugin(Tools)
+  ctx.plugin(PtcExecutor, tools)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   ctx.plugin(InProcessPtcRuntime)

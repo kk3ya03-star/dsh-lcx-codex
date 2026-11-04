@@ -64,6 +64,8 @@ type StreamRequestOptions = {
     isServerToolItem?: (item: unknown) => boolean;
     declaredToolNames?: ReadonlySet<string>;
     nativeReplayRoute?: GrokNativeReplayRoute;
+    /** The level this request sent as `configuration_update`; recorded on the reply for its later replay, as Pi does. */
+    providerThinkingLevel?: string;
     onServerToolUsage?: (usage: ServerToolUsage) => void;
     /** Called at most once, when the request ends in a non-abort failure. */
     onFailure?: (info: StreamFailureInfo) => void;
@@ -77,5 +79,5 @@ export declare function managedFailureChunk(error: unknown, signal?: AbortLike):
  * Send one LCX-owned OpenAI Responses request. Ordinary and replay use one provider attempt;
  * the DSH agent recovery layer remains the visible retry owner.
  */
-export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, applyDefaultTimeout, streamIdleTimeoutMs, maxAttempts, maxResponseBytes, serverToolTypes, isServerToolItem, declaredToolNames, nativeReplayRoute, onServerToolUsage, onFailure, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, unknown>;
+export declare function streamResponsesRequest({ baseURL, provider, model, piModel, body, grammarToolInputProperties, headers, signal, timeoutMs, applyDefaultTimeout, streamIdleTimeoutMs, maxAttempts, maxResponseBytes, serverToolTypes, isServerToolItem, declaredToolNames, nativeReplayRoute, providerThinkingLevel, onServerToolUsage, onFailure, }: StreamRequestOptions): AsyncGenerator<StreamChunk, void, unknown>;
 export {};

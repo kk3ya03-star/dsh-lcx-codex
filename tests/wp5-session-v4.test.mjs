@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -7,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import Sessions, { Session, SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Llm from '@deepseek-ai/dsh-llm'
@@ -157,6 +158,7 @@ test('real DSH mid-turn v4 fork serializes synthetic result and only portable pa
     ctx.plugin(Projections)
     ctx.plugin(SystemPrompt)
     ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
     ctx.plugin(Agents)
     ctx.plugin(AgentLoop)
     ctx.plugin(TokenMeter)

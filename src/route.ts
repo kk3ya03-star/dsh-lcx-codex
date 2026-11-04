@@ -3,7 +3,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { SessionId, type Session } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-settings";
-import { assertUsableApiKey, attributionHeaders, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
+import { assertUsableApiKey, attributionHeaders, LlmError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { resolveCatalogModel } from "./model-catalog.js";
 import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
@@ -22,7 +22,7 @@ type ProviderModelProfile = {
   compat?: unknown;
   reasoningEfforts?: unknown;
 };
-type ProviderProfile = { api?: string; baseURL?: string; apiKeyEnv?: string; headers?: HeaderMap; reasoning?: unknown; cacheRetention?: unknown; timeoutMs?: unknown; streamIdleTimeoutMs?: unknown; maxRequestImageBytes?: unknown; requestImagePixelBudget?: unknown; requestImageMaxBytes?: unknown; retryPolicy?: RetryPolicyConfig; compat?: unknown; models?: ProviderModelProfile[]; modelOverrides?: Record<string, ProviderModelProfile> };
+type ProviderProfile = { api?: string; baseURL?: string; apiKeyEnv?: string; headers?: HeaderMap; reasoning?: unknown; cacheRetention?: unknown; timeoutMs?: unknown; streamIdleTimeoutMs?: unknown; maxRequestImageBytes?: unknown; maxRequestImages?: unknown; imageOffloadCountQuantum?: unknown; requestImagePixelBudget?: unknown; requestImageMaxBytes?: unknown; retryPolicy?: RetryPolicyConfig; compat?: unknown; models?: ProviderModelProfile[]; modelOverrides?: Record<string, ProviderModelProfile> };
 type RequestHeaderConfig = {
   provider?: unknown;
   model?: unknown;
@@ -36,7 +36,7 @@ export type RouteContext = Pick<
   Context,
   "credentials" | "llm" | "logger" | "sessions" | "settings"
 >;
-type RoutePolicy = { cacheRetention?: unknown; supportsLongCacheRetention?: unknown; supportsExplicitPromptCacheMode?: unknown; responsesCompat?: unknown; timeoutMs?: number; maxAttempts?: number; maxRequestImageBytes?: number; requestImagePixelBudget?: number; requestImageMaxBytes?: number };
+type RoutePolicy = { cacheRetention?: unknown; supportsLongCacheRetention?: unknown; supportsExplicitPromptCacheMode?: unknown; responsesCompat?: unknown; timeoutMs?: number; maxAttempts?: number; maxRequestImageBytes?: number; maxRequestImages?: number; imageOffloadCountQuantum?: number; requestImagePixelBudget?: number; requestImageMaxBytes?: number };
 type PiResponsesModel = Model<"openai-responses">;
 type ModelControlProjection = {
   reasoning?: boolean;
@@ -330,7 +330,7 @@ function declaredReasoningControls(
     const value = efforts[level];
     if (value === undefined) thinkingLevelMap[level] = null;
     else if (value === null) {
-      // DSH permits only off:null: it means supported-off by omitting the wire option. Pi 1.1.0 would
+      // DSH permits only off:null: it means supported-off by omitting the wire option. Pi (1.3.0) would
       // read an absent `off` as "send none", so the omission is made explicit here.
       thinkingLevelMap[level] = null;
       if (level === "off") offOmitsReasoning = true;
@@ -421,6 +421,8 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     // These are explicitly LCX-owned transport and request-capability policies.
     timeoutMs: isPositiveSafeInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
+    maxRequestImages: isPositiveSafeInteger(configured.maxRequestImages) ? configured.maxRequestImages : 50,
+    imageOffloadCountQuantum: isPositiveSafeInteger(configured.imageOffloadCountQuantum) ? configured.imageOffloadCountQuantum : Math.min(10, isPositiveSafeInteger(configured.maxRequestImages) ? configured.maxRequestImages : 50),
     maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes) ? configured.maxRequestImageBytes : policy.maxRequestImageBytes,
     requestImagePixelBudget: isPositiveSafeInteger(configured.requestImagePixelBudget) ? configured.requestImagePixelBudget : policy.requestImagePixelBudget,
     requestImageMaxBytes: isPositiveSafeInteger(configured.requestImageMaxBytes) ? configured.requestImageMaxBytes : policy.requestImageMaxBytes,
@@ -509,6 +511,8 @@ export function resolveGrokResponsesRouteConfig(
       ? configured.streamIdleTimeoutMs
       : DEFAULTS.streamIdleTimeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
+    maxRequestImages: isPositiveSafeInteger(configured.maxRequestImages) ? configured.maxRequestImages : 50,
+    imageOffloadCountQuantum: isPositiveSafeInteger(configured.imageOffloadCountQuantum) ? configured.imageOffloadCountQuantum : Math.min(10, isPositiveSafeInteger(configured.maxRequestImages) ? configured.maxRequestImages : 50),
     maxRequestImageBytes: isPositiveSafeInteger(configured.maxRequestImageBytes)
       ? configured.maxRequestImageBytes
       : policy.maxRequestImageBytes,
@@ -576,27 +580,58 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
     : "openai";
 }
 
+type HeaderRequest = { sessionId?: string; purpose?: string };
+/** Headers whose owners (credentials, session affinity, correlation) layer them after the contributors. */
+const OWNER_PROTECTED_HEADERS = new Set(["authorization", "session_id", "session-id", "x-session-id", "x-client-request-id", "x-opencode-session"]);
+/** The host exposes profile headers only. Credential and routing headers are layered by their owners later. */
+export function prepareRequestHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, options: HeaderRequest = {}): HeaderMap {
+  try {
+    const initial = new Headers(config.headers);
+    const request = Object.freeze({ provider: config.provider, model: config.model, baseURL: config.baseURL,
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+      ...(options.purpose === undefined ? {} : { purpose: options.purpose }) });
+    const waterfall = (ctx as { waterfall?: (name: string, ...args: unknown[]) => unknown } | undefined)?.waterfall;
+    const headers = waterfall === undefined ? initial : waterfall.call(ctx, "llm-pi-ai/request-headers", request, initial, () => initial) as Headers;
+    for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value);
+    return Object.fromEntries(headers);
+  } catch (error) {
+    const diagnostic = error instanceof TypeError
+      ? "TypeError during header preparation; check the contributing plugin's header names, values, and configuration"
+      : error instanceof Error ? error.message : "the contributing plugin threw a non-Error value; throw an Error with a safe diagnostic";
+    throw new LlmError(`pi-ai request header preparation failed for provider "${config.provider}": ${diagnostic}`, "REQUEST_HEADERS", { cause: error });
+  }
+}
+
 /**
  * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
  * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
  * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
  */
-export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string): Promise<HeaderMap> {
+export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string, request?: HeaderRequest): Promise<HeaderMap> {
   const explicit = { ...(config.headers ?? {}) };
+  const currentSessionId = providerSessionId ?? (sessionId ? String(sessionId) : undefined);
+  // As on the host, the credential is resolved before contributors run: a missing one never reaches them.
+  const apiKey = await resolveApiKey(ctx, config);
+  const prepared = prepareRequestHeaders(ctx, config, request ?? (currentSessionId === undefined ? {} : { sessionId: currentSessionId }));
   const sid = sessionId ? String(sessionId) : undefined; const format = sessionAffinityFormat(config);
-  // Lowest first, as Pi's client layers them: the catalog model's own headers, DSH attribution, the credential,
-  // the provider's per-request headers (Copilot initiator / vision, OpenCode routing), then the affinity ids.
+  // Model/provider defaults precede the contributed profile layer. Credentials and session routing
+  // are owned by their later layers; attribution is re-applied last.
   const headers: HeaderMap = layerHeaders(
     config.catalogHeaders,
-    attributionHeaders(),
-    { authorization: `Bearer ${await resolveApiKey(ctx, config)}` },
     dynamicHeaders,
+    prepared,
+    { authorization: `Bearer ${apiKey}` },
     providerSessionHeaders(config.provider, providerSessionId ?? sid),
   );
   if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers.session_id = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
   if (requestId !== null && !hasHeader(explicit, "x-client-request-id")) { const correlation = requestId ?? (sid && (format === "openai" || format === "openai-nosession") ? sid : !sid ? randomUUID() : undefined); if (correlation) headers["x-client-request-id"] = correlation; }
-  // The profile's own headers win over every default.
-  return layerHeaders(headers, explicit);
+  // Ordinary profile headers keep whatever the contributors made of them. The owner-protected ones (credential,
+  // session affinity, correlation) are the profile's to set over every default and never a contributor's.
+  // Attribution is re-applied last, as on the host.
+  const protectedProfile = Object.fromEntries(
+    Object.entries(explicit).filter(([name]) => OWNER_PROTECTED_HEADERS.has(name.toLowerCase())),
+  );
+  return layerHeaders(headers, protectedProfile, attributionHeaders());
 }
 
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */

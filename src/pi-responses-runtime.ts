@@ -1,4 +1,4 @@
-// Public Pi 1.1.0 runtime surface used by LCX. The release build bundles this file.
+// Public Pi 1.5.0 runtime surface used by LCX. The release build bundles this file.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { CLOUDFLARE_AI_GATEWAY_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-ai-gateway.models";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";
@@ -8,6 +8,7 @@ import { OPENCODE_GO_MODELS } from "@earendil-works/pi-ai/providers/opencode-go.
 import { XAI_MODELS } from "@earendil-works/pi-ai/providers/xai.models";
 
 export {
+  getResponsesToolSupport,
   convertResponsesMessages,
   convertResponsesTools,
   processResponsesStream,
@@ -15,7 +16,7 @@ export {
 export { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
 export { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 export { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-export { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+export { normalizeContext, resolveTranscriptTools, resolveTranscript } from "@earendil-works/pi-ai/utils/transcript";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "@earendil-works/pi-ai/api/github-copilot-headers";
 export { withOpenCodeSessionHeader } from "@earendil-works/pi-ai/providers/opencode-headers";

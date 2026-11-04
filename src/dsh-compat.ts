@@ -7,7 +7,6 @@ import {
   type SessionEvent,
 } from "@deepseek-ai/dsh-session";
 import type { ToolRuntime } from "@deepseek-ai/dsh-tools";
-import type { SessionProjectionRegistry } from "@deepseek-ai/dsh-session-projection";
 import type { TokenMeter } from "@deepseek-ai/dsh-token-meter";
 import type { ToolExecuteListener } from "./auxiliary-usage.js";
 import { InvocationPolicyScope } from "./invocation-policy-scope.js";
@@ -26,6 +25,7 @@ interface AgentLike {
   ctx?: unknown;
   options?: unknown;
   session?: unknown;
+  model?: { current?: () => unknown };
 }
 
 type AgentSessionLike = {
@@ -143,12 +143,11 @@ export function readSelectedAgentRouteState(agent: unknown): ReturnType<typeof r
   const route = readAgentRouteState(agent);
   const session = sessionFromAgent(agent);
   if (!session) return route;
-  // Cold/resumed Agents recover pending selection from DSH's public projection.
-  const projections = resolveScopedService(agent, "sessionProjections") as Partial<Pick<SessionProjectionRegistry, "stateOf">> | undefined;
-  if (typeof projections?.stateOf === "function") {
-    const selection = projections.stateOf(session, "modelSelection");
-    if (mutableService(selection))
-      return { ...route, requestConfig: selection.pending ?? route.requestConfig };
+  // The Agent owns pending and last-used selections, including cold/resumed sessions.
+  const model = agentLike(agent)?.model;
+  if (typeof model?.current === "function") {
+    const selection = model.current();
+    if (mutableService(selection)) return { ...route, requestConfig: selection };
   }
   const cached = agentRouteStates.get(session);
   return cached ? { ...route, requestConfig: cached.pending ?? cached.config } : route;

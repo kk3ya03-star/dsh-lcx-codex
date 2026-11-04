@@ -19,7 +19,7 @@ function formFixture(id, schema, raw = {}) {
   ctx.provide('profileContext', { home: 'unused' }, true)
   const entry = {
     options: { id, config: raw },
-    fiber: { uid: 1, state: 2, runtime: { Config: schema }, config: schema(raw), ctx },
+    fiber: { uid: 1, state: 2, runtime: { Config: schema }, effectiveConfig: schema(raw), ctx },
   }
   const editor = {
     configuration: () => [{ entry, inherited: {}, override: raw }],
@@ -27,7 +27,7 @@ function formFixture(id, schema, raw = {}) {
     async edit(_entry, change) {
       raw = change(raw, {})
       entry.options.config = raw
-      entry.fiber.config = schema(raw)
+      entry.fiber.effectiveConfig = schema(raw)
     },
   }
   ctx.provide('configEditor', editor, true)
@@ -44,11 +44,11 @@ test('LCX Config is a live SettingsForms entry with defaults, updates and dispos
   assert.equal(initial.value.searchMediaPreview, false)
   assert.equal(initial.value.webSearch, false)
   assert.equal(initial.value.alphaCapabilityPath, undefined, 'ordinary config is outside the live form')
-  assert.equal(f.entry.fiber.config.enabled.get(), false)
+  assert.equal(f.entry.fiber.effectiveConfig.enabled.get(), false)
   assert.ok(f.logs.some(row => row.ns === 'lcx-codex'))
   await f.forms.mutate('lcx-codex', [{ op: 'set', path: ['enabled'], value: true }], initial.revision)
   assert.equal(f.forms.describe()[0].value.enabled, true)
-  assert.equal(f.entry.fiber.config.enabled.get(), true)
+  assert.equal(f.entry.fiber.effectiveConfig.enabled.get(), true)
   assert.equal(f.raw().enabled, true)
   assert.ok(f.logs.some(row => row.revision === initial.revision + 1))
   const off = f.forms.configure({ auto: false }, f.entry.fiber)
@@ -94,7 +94,7 @@ test('real DSH legacy settings import keeps LCX switches and the Pi provider pro
   ].map(({ id, schema }, index) => ({
     id,
     options: { id, config: {} },
-    fiber: { uid: index + 1, state: 2, runtime: { Config: schema }, config: schema({}), ctx },
+    fiber: { uid: index + 1, state: 2, runtime: { Config: schema }, effectiveConfig: schema({}), ctx },
   }))
   let edits = 0
   ctx.provide('configEditor', {
@@ -103,7 +103,7 @@ test('real DSH legacy settings import keeps LCX switches and the Pi provider pro
     async edit(entry, change) {
       const raw = change(entry.options.config, {})
       entry.options.config = raw
-      entry.fiber.config = entry.fiber.runtime.Config(raw)
+      entry.fiber.effectiveConfig = entry.fiber.runtime.Config(raw)
       edits += 1
     },
   }, true)
@@ -120,7 +120,7 @@ test('real DSH legacy settings import keeps LCX switches and the Pi provider pro
   assert.equal(existsSync(settingsPath), false)
   assert.equal(existsSync(`${settingsPath}.imported`), true)
   assert.match(readFileSync(`${settingsPath}.imported`, 'utf8'), /lcx-codex:/u)
-  const lcx = entries[0].fiber.config
+  const lcx = entries[0].fiber.effectiveConfig
   for (const key of ['enabled', 'webSearch', 'advancedHostedSearch', 'alphaSearch', 'grokNativeWebSearch', 'grokNativeXSearch', 'searchMediaPreview'])
     assert.equal(lcx[key].get(), true, key)
   const profile = entries[1].options.config.providers.relay

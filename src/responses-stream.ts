@@ -38,6 +38,8 @@ type FailureCode =
   | "GROK_NATIVE_PROTOCOL_ERROR"
   | "TIMEOUT"
   | "TRANSPORT"
+  | "MALFORMED_RESPONSE"
+  | "REQUEST_HEADERS"
   | "RESPONSES_ERROR";
 type ManagedFailure = {
   message: string;
@@ -137,6 +139,8 @@ type StreamRequestOptions = {
   isServerToolItem?: (item: unknown) => boolean;
   declaredToolNames?: ReadonlySet<string>;
   nativeReplayRoute?: GrokNativeReplayRoute;
+  /** The level this request sent as `configuration_update`; recorded on the reply for its later replay, as Pi does. */
+  providerThinkingLevel?: string;
   onServerToolUsage?: (usage: ServerToolUsage) => void;
   /** Called at most once, when the request ends in a non-abort failure. */
   onFailure?: (info: StreamFailureInfo) => void;
@@ -333,7 +337,9 @@ export function managedFailure(
       /time(?:d)?\s*out|timeout/iu.test(String(signalReason?.message ?? "")));
   const upstreamClass = signal?.aborted ? undefined : classifyUpstreamFailure(upstream);
   let code: FailureCode = "RESPONSES_ERROR";
-  if (upstreamClass?.definite === true) code = upstreamClass.code;
+  if (sourceCodes.has("REQUEST_HEADERS")) code = "REQUEST_HEADERS";
+  else if (sourceCodes.has("MALFORMED_RESPONSE")) code = "MALFORMED_RESPONSE";
+  else if (upstreamClass?.definite === true) code = upstreamClass.code;
   else if (
     signalTimedOut ||
     facts.status === 408 ||
@@ -410,6 +416,8 @@ export function managedFailure(
   // Nothing in the text said otherwise: a failure the provider reported without a usable code is its own.
   if (code === "RESPONSES_ERROR" && upstreamClass !== undefined) code = upstreamClass.code;
   const messages = {
+    MALFORMED_RESPONSE: "Responses provider completed a tool call with malformed arguments",
+    REQUEST_HEADERS: error instanceof Error ? error.message : "Request header preparation failed",
     ABORTED: "Responses request was aborted",
     AUTH: "Responses request was rejected by authentication",
     INSUFFICIENT_QUOTA: "服务商额度不足或未满足请求预留额度，请检查中转额度（并非 API 密钥无效） / Provider quota is insufficient for this request",
@@ -1448,6 +1456,9 @@ function replayState(
       ...(typeof message.responseId === "string"
         ? { responseId: message.responseId }
         : {}),
+      ...(typeof message.providerThinkingLevel === "string"
+        ? { providerThinkingLevel: message.providerThinkingLevel }
+        : {}),
       stopReason: message.stopReason,
     },
     blocks: content.map((block) => {
@@ -1516,6 +1527,7 @@ async function* toDshChunks(
   nativeReplayRoute?: GrokNativeReplayRoute,
 ): AsyncGenerator<StreamChunk> {
   const toolIds = new Map<number, { id: string; name: string }>();
+  let argumentsError = false;
   for await (const event of events) {
     switch (event.type) {
       case "start":
@@ -1600,6 +1612,7 @@ async function* toDshChunks(
         const call: UnknownRecord = isRecord(event.toolCall)
           ? event.toolCall
           : {};
+        if (call.argumentsError !== undefined) { argumentsError = true; break; }
         yield {
           type: "block-end",
           index: Number(event.contentIndex),
@@ -1617,6 +1630,8 @@ async function* toDshChunks(
           ? event.message
           : {};
         yield { type: "usage", usage: dshUsage(message.usage) };
+        if (argumentsError && message.stopReason !== "length")
+          throw codedError("Responses provider completed a tool call with malformed arguments", "MALFORMED_RESPONSE");
         const reason = successfulFinish(message);
         const replay = reason.kind === "error"
           ? undefined
@@ -1710,6 +1725,7 @@ export async function* streamResponsesRequest({
   isServerToolItem,
   declaredToolNames,
   nativeReplayRoute,
+  providerThinkingLevel,
   onServerToolUsage,
   onFailure,
 }: StreamRequestOptions) {
@@ -1761,6 +1777,7 @@ export async function* streamResponsesRequest({
       api: "openai-responses",
       provider,
       model,
+      ...(providerThinkingLevel === undefined ? {} : { providerThinkingLevel }),
       usage: emptyUsage(),
       stopReason: "pending",
       timestamp: Date.now(),

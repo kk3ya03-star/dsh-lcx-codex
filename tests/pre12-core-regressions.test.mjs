@@ -185,13 +185,14 @@ test('cross-model phase restoration follows ordered assistant blocks when text r
     },
   ], undefined, { model: model('lcx', 'gpt-5.6-terra') })
   const assistant = serialized.input.filter(item => item.type === 'message' && item.role === 'assistant')
+  // Pi 1.3.0 drops another model's thinking instead of replaying it as assistant text, like the host.
   assert.deepEqual(assistant.map(item => [item.content[0].text, item.phase]), [
     ['OK', 'commentary'],
-    ['Visible cross-model summary.', undefined],
     ['OK', 'final_answer'],
     ['More', 'commentary'],
   ])
   assert.equal(JSON.stringify(serialized.input).includes('SYNTHETIC_ORDERED'), false)
+  assert.equal(JSON.stringify(serialized.input).includes('Visible cross-model summary.'), false)
 })
 
 test('failed and aborted identical-text assistants do not shift later phase slots', async () => {

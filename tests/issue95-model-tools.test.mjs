@@ -1,13 +1,14 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import Agents, { installModelSelection } from '@deepseek-ai/dsh-agent'
+import Agents, { installModelSelection, AgentModel, modelSelectionProjectionDefinition } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Llm, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import Sessions, { Session, SessionId } from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -38,13 +39,10 @@ for (const projected of [false, true]) test(`real DSH selected model changes pro
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   await new Promise(resolve => setTimeout(resolve, 500))
-  if (projected) {
-    const { installModelSelectionProjection } = await import('../node_modules/@deepseek-ai/dsh-api-session-controller/lib/types/model-selection-projection.js')
-    installModelSelectionProjection(ctx)
-  }
   ctx.llm.registerAdapter(['fixture', 'xai'], new FixtureAdapter())
   const baseURL = 'https://fixture.invalid/v1'
   const capabilityPath = resolve(root, 'capabilities.json')
@@ -74,14 +72,17 @@ for (const projected of [false, true]) test(`real DSH selected model changes pro
   }, { prepend: true })
   const selection = { current: { provider: 'xai', model: 'grok-fixture' }, assembled: undefined }
   handle = await ctx.agents.create({ sessionId: SessionId('issue95-model-tools'), meta: { cwd: root }, agentOptions: selection.current,
-    setup(agentCtx) { installModelSelection(agentCtx, selection) },
+    setup(agentCtx) { installModelSelection(agentCtx) },
   })
   const { agent } = handle
   if (projected) {
     const cold = Session.create(SessionId('issue95-cold-selection'))
     const pending = { provider: 'fixture', model: 'gpt-luna' }
     cold.append('model/selection', pending)
-    assert.deepEqual(readSelectedAgentRouteState({ session: cold, options: selection.current, ctx: agent.ctx }).requestConfig, pending)
+    const handle = await ctx.sessionProjections.register(modelSelectionProjectionDefinition)
+    const model = new AgentModel(handle.readerFor(cold), cold, selection.current)
+    assert.deepEqual(readSelectedAgentRouteState({ session: cold, options: selection.current, model }).requestConfig, pending)
+    await handle.dispose()
   }
   const ask = async () => {
     const before = requests.length
@@ -96,7 +97,7 @@ for (const projected of [false, true]) test(`real DSH selected model changes pro
   for (const model of ['gpt-luna', 'gpt-sol', 'gpt-unknown', 'grok-fixture', 'gpt-luna']) {
     const selected = { provider: model.startsWith('gpt-') ? 'fixture' : 'xai', model }
     // Exact public session/selectModel seam: append first, then update selection.current.
-    agent.session.append('model/selection', selected)
+    agent.model.select(selected)
     selection.current = selected
     const oldHeader = agent.session.snapshotEvents().findLast(event => event.type === 'request/header')
     agent.session.append('request/header', oldHeader.data)

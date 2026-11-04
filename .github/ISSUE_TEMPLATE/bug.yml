@@ -11,14 +11,14 @@ body:
     id: plugin
     attributes:
       label: 插件版本 / Plugin version
-      placeholder: "0.6.0-pre.2"
+      placeholder: "0.7.0-pre.1"
     validations:
       required: true
   - type: input
     id: dsh
     attributes:
       label: DSH 版本 / DSH version (`dsh --version`)
-      placeholder: "0.2.0-rc.2"
+      placeholder: "0.2.2-alpha.3"
     validations:
       required: true
   - type: input
