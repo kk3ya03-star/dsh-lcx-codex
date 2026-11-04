@@ -46,6 +46,8 @@ type RoutePolicy = {
     timeoutMs?: number;
     maxAttempts?: number;
     maxRequestImageBytes?: number;
+    maxRequestImages?: number;
+    imageOffloadCountQuantum?: number;
     requestImagePixelBudget?: number;
     requestImageMaxBytes?: number;
 };
@@ -129,12 +131,18 @@ export declare function diagnoseResponsesRoute(ctx: RouteContext | null | undefi
 /** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
 export declare function resolveGrokResponsesRouteConfig(ctx: RouteContext | null | undefined, options: RouteOptions, policy: RoutePolicy): ResolvedResponsesRoute | undefined;
 export declare function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string>;
+type HeaderRequest = {
+    sessionId?: string;
+    purpose?: string;
+};
+/** The host exposes profile headers only. Credential and routing headers are layered by their owners later. */
+export declare function prepareRequestHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, options?: HeaderRequest): HeaderMap;
 /**
  * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
  * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
  * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
  */
-export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders?: HeaderMap, providerSessionId?: string): Promise<HeaderMap>;
+export declare function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders?: HeaderMap, providerSessionId?: string, request?: HeaderRequest): Promise<HeaderMap>;
 /** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
 export declare function authenticatedGrokHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, dynamicHeaders?: HeaderMap, providerSessionId?: string): Promise<HeaderMap>;
 export declare function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity;

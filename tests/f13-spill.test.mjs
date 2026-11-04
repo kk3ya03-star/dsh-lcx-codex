@@ -1,3 +1,5 @@
+import { executeTool } from './dsh022-tool-fixture.mjs'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -36,7 +38,7 @@ async function fixture(t, { failStore = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'lcx-f13-spill-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const ctx = new Context()
-  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime),
+  const fibers = [await ctx.plugin(SystemPrompt), await ctx.plugin(ToolRuntime), await ctx.plugin(NativeToolExecutor),
     await ctx.plugin(LocalSpillStore, { root: join(directory, 'spill'), cleanupPeriodDays: 0 }),
     await ctx.plugin(spillPolicy, { maxInlineTokens: 12500 })]
   t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose() })
@@ -87,7 +89,7 @@ async function fixture(t, { failStore = false } = {}) {
   handlers.get('agent/created')({ agent })
   assert.ok(definitions.size > 0, JSON.stringify(warnings))
   for (const definition of definitions.values()) ctx.tools.register(definition)
-  const run = (name, args) => ctx.tools.execute({ toolCallId: ToolCallId(`call-${name}`), name, arguments: args, agent,
+  const run = (name, args) => executeTool(ctx.tools, { toolCallId: ToolCallId(`call-${name}`), name, arguments: args, agent,
     signal: new AbortController().signal })
   return { directory, refPath, ctx, session, agent, run, warnings }
 }

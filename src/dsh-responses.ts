@@ -29,6 +29,9 @@ import {
   convertResponsesTools,
   createGrammarToolInputProperties,
   normalizeContext,
+  resolveTranscript,
+  resolveTranscriptTools,
+  getResponsesToolSupport,
 } from "./pi-responses-runtime.js";
 import { resolveCatalogModel } from "./model-catalog.js";
 import { withoutDeferLoading } from "./tool-surface.js";
@@ -72,6 +75,8 @@ type ImageOptions = {
   imageSupport: ImageSupport;
   signal?: AbortSignal;
   maxRequestImageBytes: number;
+  maxRequestImages?: number;
+  imageOffloadCountQuantum?: number;
   requestImagePixelBudget: number;
   requestImageMaxBytes: number;
 };
@@ -85,7 +90,7 @@ type SerializeOptions = Partial<ImageOptions> & {
    * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
    * serialization: a non-leading `system` message is then a real instruction update and is emitted in
    * its history position with the model's instruction role. Any other value keeps the plain
-   * mapping (later `system` messages are ordinary user context).
+   * mapping (later `system` messages are user context wrapped in the host system-reminder).
    */
   systemPromptUpdate?: unknown;
   onReplayDegrade?: unknown;
@@ -97,6 +102,15 @@ type SerializeOptions = Partial<ImageOptions> & {
    * keeps only the immediate declarations. Any other value keeps the strict full-list contract.
    */
   toolUpdate?: unknown;
+  /**
+   * The effort a request sends as `configuration_update` items (see `configurationUpdateEffort`). Each
+   * same-model assistant reply that recorded its own level is preceded by that level, as Pi serializes it.
+   * Pi also ends the conversion with the request's own update; the caller appends that tail only after
+   * checkpoint and portable-history assembly.
+   */
+  configurationUpdateEffort?: string;
+  /** Trace the transient request head without changing Pi message positions or synthetic IDs. */
+  tracePrelude?: boolean;
 };
 type NativeItem = WireRecord & { type?: string; role?: string; content?: unknown; output?: unknown };
 type ReplayBlock = WireRecord & { type: "text" | "reasoning" | "tool-call" };
@@ -107,6 +121,7 @@ type ReplayResponse = WireRecord & {
   provider: string;
   model: string;
   stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
+  providerThinkingLevel?: string;
 };
 
 
@@ -355,6 +370,12 @@ function replayBlockType(type: unknown): ReplayBlock["type"] | undefined {
   return type === "text" || type === "reasoning" || type === "tool-call" ? type : undefined;
 }
 
+/** A Responses `configuration_update` input item carrying exactly this reasoning effort. */
+function isConfigurationUpdate(item: unknown, effort?: string): boolean {
+  return isRecord(item) && item.type === "configuration_update" && isRecord(item.reasoning) &&
+    typeof item.reasoning.effort === "string" && (effort === undefined || item.reasoning.effort === effort);
+}
+
 function replayTextPhase(signature: unknown): "commentary" | "final_answer" | undefined {
   if (typeof signature !== "string" || !signature.startsWith("{")) return undefined;
   try {
@@ -379,15 +400,14 @@ function restorePortableAssistantPhases(
       continue;
     const sameProviderAndApi = message.provider === target.provider && message.api === target.api;
     const sameModel = sameProviderAndApi && message.model === target.id;
+    // Pi drops thinking from another model (it no longer becomes assistant text), so only text blocks
+    // become assistant message items.
     for (const block of message.content) {
-      if (block.type === "text") {
-        const phase = sameProviderAndApi && !sameModel
-          ? replayTextPhase(block.textSignature)
-          : undefined;
-        slots.push({ text: block.text, ...(phase === undefined ? {} : { phase }) });
-      } else if (block.type === "thinking" && !sameModel && !block.redacted && block.thinking.trim()) {
-        slots.push({ text: block.thinking });
-      }
+      if (block.type !== "text") continue;
+      const phase = sameProviderAndApi && !sameModel
+        ? replayTextPhase(block.textSignature)
+        : undefined;
+      slots.push({ text: block.text, ...(phase === undefined ? {} : { phase }) });
     }
   }
   const output = structuredClone(input) as unknown[];
@@ -418,6 +438,7 @@ export function readDshPiReplayState(value: unknown): { response: ReplayResponse
     throw invalidReplay("unknown stopReason");
   if (responseValue.responseModel !== undefined && typeof responseValue.responseModel !== "string") throw invalidReplay("responseModel must be a string");
   if (responseValue.responseId !== undefined && typeof responseValue.responseId !== "string") throw invalidReplay("responseId must be a string");
+  if (responseValue.providerThinkingLevel !== undefined && typeof responseValue.providerThinkingLevel !== "string") throw invalidReplay("providerThinkingLevel must be a string");
   if (!Array.isArray(value.blocks)) throw invalidReplay("blocks must be an array");
   const blocks = value.blocks.map((block, index): ReplayBlock => {
     if (!isRecord(block) || replayBlockType(block.type) === undefined) throw invalidReplay(`block ${index} has an unknown type`);
@@ -458,7 +479,7 @@ function replayedAssistant(
     if (block.type === "tool-call") return { type: "toolCall", id: String(block.id), name: block.name, arguments: parseArguments(block.arguments), ...(typeof replay.thoughtSignature === "string" ? { thoughtSignature: replay.thoughtSignature } : {}), ...(typeof replay.namespace === "string" ? { namespace: replay.namespace } : {}) };
     throw invalidReplay(`block ${index} has an unsupported type`);
   });
-  return { role: "assistant", content, api: state.response.api, provider: state.response.provider, model: state.response.model, ...(typeof state.response.responseModel === "string" ? { responseModel: state.response.responseModel } : {}), ...(typeof state.response.responseId === "string" ? { responseId: state.response.responseId } : {}), usage: emptyUsage(), stopReason: state.response.stopReason, timestamp: 0 };
+  return { role: "assistant", content, api: state.response.api, provider: state.response.provider, model: state.response.model, ...(typeof state.response.responseModel === "string" ? { responseModel: state.response.responseModel } : {}), ...(typeof state.response.responseId === "string" ? { responseId: state.response.responseId } : {}), ...(typeof state.response.providerThinkingLevel === "string" ? { providerThinkingLevel: state.response.providerThinkingLevel } : {}), usage: emptyUsage(), stopReason: state.response.stopReason, timestamp: 0 };
 }
 
 function toPiAssistant(
@@ -553,9 +574,22 @@ export function isPromptSnapshotMessage(message: RequestMessage): boolean {
   return message.role === "system" && message.source?.kind === "system-prompt";
 }
 
-/** Whether history after the leading head holds a non-empty DSH prompt snapshot (an in-history update). */
+/**
+ * Mirrors the host adapter's `splitSystemPrompt`: the request-level `system` text and every leading system
+ * message form the initial prompt, joined by a blank line; empty parts drop out, on every route.
+ */
+export function splitSystemPrompt(system: string | undefined, messages: readonly RequestMessage[]) {
+  let end = 0;
+  while (messages[end]?.role === "system") end++;
+  const text = [system, ...messages.slice(0, end).map((message) => message.content
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+    .map((block) => block.text).join(""))];
+  return { systemPrompt: text.filter(Boolean).join("\n\n") || undefined, messages: messages.slice(end) };
+}
+
+/** Whether history after the leading system messages holds a non-empty DSH prompt snapshot (an in-history update). */
 export function hasMidHistoryPromptSnapshot(messages: readonly RequestMessage[]): boolean {
-  return messages.slice(1).some((message) =>
+  return splitSystemPrompt(undefined, messages).messages.some((message) =>
     isPromptSnapshotMessage(message) &&
     message.content.some((block) => block.type === "text" && block.text.length > 0));
 }
@@ -570,7 +604,7 @@ function flattenMessageText(message: RequestMessage): string {
 async function dshToPiMessages(
   messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
-  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string; anchoredTools?: readonly PiTool[] },
+  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string; toolUpdateMarker?: string; anchoredTools?: readonly PiTool[] },
   imageMap: Map<string, ImageAttachmentRef>,
   requestImages: RequestImageVersions,
 ): Promise<PiMessage[]> {
@@ -584,15 +618,14 @@ async function dshToPiMessages(
         // role (developer for reasoning models, system otherwise) at this exact position.
         const text = flattenMessageText(message);
         if (text.length > 0) {
-          // A throwaway marker message directly before a DSH prompt snapshot lets the serializer trace the
-          // rendered item back to its source message without inspecting text; it is removed afterwards.
-          if (options.snapshotMarker !== undefined && isPromptSnapshotMessage(message))
-            result.push({ role: "user", content: options.snapshotMarker, timestamp: 0 });
-          result.push({ role: "system", content: text, timestamp: 0 });
+          // A throwaway prefix traces the rendered snapshot without adding a Pi message (message
+          // positions seed Pi's synthetic tool-search and assistant IDs). It is removed afterwards.
+          result.push({ role: "system", content: options.snapshotMarker !== undefined && isPromptSnapshotMessage(message) ? options.snapshotMarker + text : text, timestamp: 0 });
         }
         continue;
       }
-      result.push({ role: "user", content: flattenMessageText(message), timestamp: 0 });
+      const text = flattenMessageText(message);
+      if (text.length > 0) result.push({ role: "user", content: `<system-reminder>\n${text.replaceAll("</system-reminder>", "<\\/system-reminder>")}\n</system-reminder>`, timestamp: 0 });
       continue;
     }
     if (message.role === "developer") {
@@ -600,14 +633,21 @@ async function dshToPiMessages(
       // carries the added declarations; Pi renders it as `additional_tools` at this exact position.
       if (options.anchoredTools === undefined) throw unsupportedContent("developer message");
       const toolsAdded: PiTool[] = [];
+      const toolsRemoved: { name: string }[] = [];
       for (const block of message.content) {
+        if (block.type === "tool-removal") {
+          toolsRemoved.push({ name: block.toolName });
+          continue;
+        }
         if (block.type !== "tool-addition") throw unsupportedContent(block.type);
         const tool = options.anchoredTools.find((candidate) => candidate.name === block.toolName);
         if (tool === undefined)
           throw codedError(`LCX tool update references undeclared tool "${block.toolName}"`, "LCX_RESPONSES_INVALID_INPUT");
         toolsAdded.push(tool);
       }
-      if (toolsAdded.length > 0) result.push({ role: "system", content: [], toolsAdded, timestamp: 0 } as unknown as PiMessage);
+      if (toolsAdded.length > 0 || toolsRemoved.length > 0) {
+        result.push({ role: "system", content: options.toolUpdateMarker ?? "", toolsAdded, toolsRemoved, timestamp: 0 } as unknown as PiMessage);
+      }
       continue;
     }
     if (message.role === "assistant") {
@@ -666,8 +706,8 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     if (message.role === "developer" && !anchored) throw unsupportedContent("developer message");
     for (const block of message.content)
       if (block.type === "tool-addition" || block.type === "tool-removal") {
-        // Removals never reach a serializer: the host projection drops them on an addition-only route.
-        if (!anchored || message.role !== "developer" || block.type === "tool-removal") throw unsupportedContent(block.type);
+        // DSH normally folds removals on addition-only routes; direct transcripts still follow Pi.
+        if (!anchored || message.role !== "developer") throw unsupportedContent(block.type);
       }
   }
   for (const tool of options.tools ?? [])
@@ -678,7 +718,7 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const immediateDeclared: PiTool[] = (Array.isArray(options.tools) ? options.tools : [])
     .filter((tool) => !("deferLoading" in tool && tool.deferLoading === true))
     .map((tool) => withoutDeferLoading(tool as never) as PiTool);
-  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[]; anchoredTools?: readonly PiTool[] } = {
+  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; toolUpdateMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[]; anchoredTools?: readonly PiTool[] } = {
     imageSupport: options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown",
     signal: options.signal instanceof AbortSignal ? options.signal : undefined,
     route: options.route ?? {}, model: options.model, responsesCompat: options.responsesCompat,
@@ -689,6 +729,7 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     maxRequestImageBytes: positiveSafeInteger(options.maxRequestImageBytes, DEFAULT_MAX_REQUEST_IMAGE_BYTES),
     requestImagePixelBudget: positiveSafeInteger(options.requestImagePixelBudget, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
     requestImageMaxBytes: positiveSafeInteger(options.requestImageMaxBytes, DEFAULT_REQUEST_IMAGE_MAX_BYTES),
+    toolUpdateMarker: anchored ? `lcx-tool-update:${globalThis.crypto.randomUUID()}` : undefined,
     tools: immediateDeclared,
     ...(anchored ? { anchoredTools: declaredTools } : {}),
   };
@@ -702,7 +743,9 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     ? 0
     : requiredImageOffload(
         fileProjected,
-        { representation: "base64", maxBytes: normalized.maxRequestImageBytes },
+        { representation: "base64", maxBytes: normalized.maxRequestImageBytes,
+          maxImages: positiveSafeInteger(options.maxRequestImages, 50),
+          countQuantum: positiveSafeInteger(options.imageOffloadCountQuantum, Math.min(10, positiveSafeInteger(options.maxRequestImages, 50))) },
         (block: ImageBlock) => {
           // `requiredImageOffload` applies the base64 expansion itself for a
           // base64 representation, so this reports raw request-version bytes.
@@ -712,7 +755,7 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
       );
   if (offloadImages > 0) {
     throw new LlmError(
-      `LCX request images exceed the configured base64 bound; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
+      `LCX request images exceed the configured byte or count bound; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
       IMAGE_OFFLOAD_REQUIRED_CODE,
       { offloadImages },
     );
@@ -725,6 +768,8 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     ),
   );
   const model = resolvePiResponsesModel(normalized);
+  if (getResponsesToolSupport({ ...(isRecord(model.compat) ? model.compat : {}), supportsMidConvoSystemMessages: normalized.inHistorySystem }) !== "changes")
+    normalized.toolUpdateMarker = undefined;
   const dshContext: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap, requestImages), tools: [...normalized.tools] };
   const compat = isRecord(model.compat) ? model.compat : {};
   const supportsStrictMode = compat.supportsStrictMode === true;
@@ -733,56 +778,91 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const supportsToolSearch = compat.supportsToolSearch === true;
   const deferredToolsMode = supportsAdditionalTools ? "additional-tools" : supportsToolSearch ? "tool-search" : undefined;
   const grammarToolInputProperties = createGrammarToolInputProperties([...(normalized.anchoredTools ?? dshContext.tools)], supportsOpenAIGrammarTools);
-  // Immediate declarations only: on an anchored surface deferred tools are declared by their history additions.
-  const immediateTools = new Map<string, PiTool>();
-  for (const tool of dshContext.tools) if (tool.name) immediateTools.set(tool.name, tool);
   const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };
   const normalizedContext = normalizeContext(dshContext);
   // Pi treats whichever system message is first in the transcript as the leading prompt: it skips it when
   // includeSystemPrompt is false and renders it without the update framing. A serialization batch carrying
   // no caller-owned head (no systemPrompt/tools) must never promote a history update to that slot, so an
   // empty placeholder holds the leading position and renders nothing.
-  const piContext = normalized.inHistorySystem && normalizedContext.messages[0]?.role === "system" && normalizedContext.messages === dshContext.messages
+  let piContext = normalized.inHistorySystem && normalizedContext.messages[0]?.role === "system" && normalizedContext.messages === dshContext.messages
     ? { ...normalizedContext, messages: [{ role: "system" as const, content: "", timestamp: 0 }, ...normalizedContext.messages] }
     : normalizedContext;
+  const preludeMarker = options.tracePrelude && (normalized.systemPrompt || normalized.tools.length > 0)
+    ? `lcx-prelude:${globalThis.crypto.randomUUID()}` : undefined;
+  if (preludeMarker !== undefined) {
+    const head = piContext.messages[0];
+    if (head?.role !== "system" || typeof head.content !== "string")
+      throw codedError("LCX could not trace the request prelude", "LCX_RESPONSES_INVALID_INPUT");
+    piContext = { ...piContext, messages: [{ ...head, content: preludeMarker + head.content }, ...piContext.messages.slice(1)] };
+  }
   const piModel = model as PiModel<"openai-responses">;
   // Pi collapses every system message into the leading one unless the transport accepts mid-conversation
   // system messages, which would drop or reorder in-history updates in batched serialization.
-  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem, toolOptions });
+  const configurationUpdateEffort = typeof options.configurationUpdateEffort === "string" ? options.configurationUpdateEffort : undefined;
+  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem, toolOptions, configurationUpdateEffort });
+  if (configurationUpdateEffort !== undefined) {
+    const tail = convertedInput.pop() as unknown;
+    if (!isConfigurationUpdate(tail, configurationUpdateEffort))
+      throw codedError("LCX could not trace the request's configuration update", "LCX_RESPONSES_INVALID_INPUT");
+  }
   const supersededInstructionItems: number[] = [];
   const unmarkedInput: unknown[] = [];
   let markersFound = 0;
-  for (let position = 0; position < convertedInput.length; position += 1) {
-    const item = convertedInput[position] as unknown;
-    if (normalized.snapshotMarker !== undefined && isMarkerItem(item, normalized.snapshotMarker)) {
-      markersFound += 1;
-      const rendered = convertedInput[position + 1] as unknown;
-      if (!isRecord(rendered) || (rendered.role !== "developer" && rendered.role !== "system"))
-        throw codedError("LCX could not trace a rendered system prompt snapshot", "LCX_RESPONSES_INVALID_INPUT");
-      supersededInstructionItems.push(unmarkedInput.length);
+  let toolUpdatesFound = 0;
+  let preludeItemCount = preludeMarker === undefined ? 0 : -1;
+  let additionalDeclarationsSeen = 0;
+  for (const [position, candidate] of convertedInput.entries()) {
+    if (candidate.type === "additional_tools") additionalDeclarationsSeen += 1;
+    let item: unknown = candidate;
+    const instruction = isRecord(item) && (item.role === "developer" || item.role === "system") &&
+      (item.type === undefined || item.type === "message") && typeof item.content === "string" ? item : undefined;
+    if (instruction && preludeMarker !== undefined && String(instruction.content).startsWith(preludeMarker)) {
+      if (preludeItemCount !== -1) throw codedError("LCX duplicated the request prelude", "LCX_RESPONSES_INVALID_INPUT");
+      const content = String(instruction.content).slice(preludeMarker.length);
+      if (content) unmarkedInput.push({ ...instruction, content });
+      preludeItemCount = unmarkedInput.length;
       continue;
+    }
+    if (instruction && normalized.toolUpdateMarker !== undefined && String(instruction.content).startsWith(normalized.toolUpdateMarker)) {
+      toolUpdatesFound += 1;
+      const content = String(instruction.content).slice(normalized.toolUpdateMarker.length);
+      if (content !== "" && !content.startsWith("\n\n"))
+        throw codedError("LCX could not trace Pi's tool removal output", "LCX_RESPONSES_INVALID_INPUT");
+      // Pi places its own incremental notice immediately before each later declaration. Track
+      // that output by provenance, so it cannot survive as an orphan after checkpoint retention.
+      const declaration = convertedInput[position - 1] as unknown;
+      if (isRecord(declaration) && declaration.type === "additional_tools" && additionalDeclarationsSeen > 1) {
+        const notice = unmarkedInput.at(-2);
+        if (!isRecord(notice) || (notice.role !== "developer" && notice.role !== "system") || notice.type !== undefined)
+          throw codedError("LCX could not trace Pi's incremental tools notice", "LCX_RESPONSES_INVALID_INPUT");
+        supersededInstructionItems.push(unmarkedInput.length - 2);
+      }
+      if (content.length > 0) {
+        supersededInstructionItems.push(unmarkedInput.length);
+        unmarkedInput.push({ ...instruction, content: content.slice(2) });
+      }
+      continue;
+    }
+    if (instruction && normalized.snapshotMarker !== undefined && String(instruction.content).startsWith(normalized.snapshotMarker)) {
+      markersFound += 1;
+      supersededInstructionItems.push(unmarkedInput.length);
+      item = { ...instruction, content: String(instruction.content).slice(normalized.snapshotMarker.length) };
     }
     unmarkedInput.push(item);
   }
-  if (normalized.snapshotMarker !== undefined) {
-    // Markers are inserted only before non-empty snapshots (empty ones render nothing), so each inserted
-    // marker must be found exactly once and none may survive in the output, even if a future Pi merged
-    // adjacent user messages.
-    const inserted = dshContext.messages.filter(
-      (message) => message.role === "user" && message.content === normalized.snapshotMarker,
-    ).length;
-    const nonce = normalized.snapshotMarker.slice(normalized.snapshotMarker.lastIndexOf(":") + 1);
-    if (markersFound !== inserted || JSON.stringify(unmarkedInput).includes(nonce))
-      throw codedError("LCX could not remove a system prompt snapshot marker", "LCX_RESPONSES_INVALID_INPUT");
+  const expectedMarkedSystems = (marker: string) => dshContext.messages.filter(message =>
+    message.role === "system" && typeof message.content === "string" && message.content.startsWith(marker)).length;
+  for (const [marker, found] of [[normalized.snapshotMarker, markersFound], [normalized.toolUpdateMarker, toolUpdatesFound]] as const) {
+    if (marker !== undefined && (found !== expectedMarkedSystems(marker) || JSON.stringify(unmarkedInput).includes(marker)))
+      throw codedError("LCX could not remove instruction provenance markers", "LCX_RESPONSES_INVALID_INPUT");
   }
+  if (preludeItemCount < 0 || (preludeMarker !== undefined && JSON.stringify(unmarkedInput).includes(preludeMarker)))
+    throw codedError("LCX could not remove the prelude marker", "LCX_RESPONSES_INVALID_INPUT");
   const input = restorePortableAssistantPhases(unmarkedInput, dshContext.messages, { provider: model.provider, id: model.id, api: model.api });
-  const tools = options.tools === undefined ? undefined : convertResponsesTools([...immediateTools.values()], toolOptions);
-  return { input, supersededInstructionItems, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
-}
-
-function isMarkerItem(item: unknown, marker: string): boolean {
-  if (!isRecord(item) || item.role !== "user" || !Array.isArray(item.content)) return false;
-  return item.content.length === 1 && isRecord(item.content[0]) && item.content[0].text === marker;
+  const toolSupport = getResponsesToolSupport({ supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem });
+  const { requestTools } = resolveTranscriptTools(resolveTranscript(piContext, normalized.inHistorySystem).messages, toolSupport);
+  const tools = requestTools.length === 0 ? undefined : convertResponsesTools(requestTools, toolOptions);
+  return { input, preludeItemCount, supersededInstructionItems, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
 }
 
 export function responsesTools(tools: readonly PiTool[] | undefined) {
@@ -861,26 +941,31 @@ export function inputImageBase64Lengths(input: unknown): number[] {
  * @param options.fixedBytes base64 length of images DSH cannot offload (checkpoint / replay)
  * @param options.surfaceBytes base64 length of each offloadable image, oldest first
  */
-export function assertAggregateImageBudget(options: { maxBytes: number; fixedBytes: number; surfaceBytes: readonly number[] }): void {
+export function assertAggregateImageBudget(options: { maxBytes: number; fixedBytes: number; surfaceBytes: readonly number[]; fixedCount?: number; maxImages?: number; countQuantum?: number }): void {
   const total = options.surfaceBytes.reduce((sum, bytes) => sum + bytes, options.fixedBytes);
-  if (total <= options.maxBytes) return;
-  const excess = total - options.maxBytes;
+  const maxImages = positiveSafeInteger(options.maxImages, 50);
+  const fixedCount = options.fixedCount ?? 0;
+  const excessCount = Math.max(0, fixedCount + options.surfaceBytes.length - maxImages);
+  const quantum = positiveSafeInteger(options.countQuantum, Math.min(10, maxImages));
+  const removeCount = Math.min(options.surfaceBytes.length, Math.ceil(excessCount / quantum) * quantum);
+  if (total <= options.maxBytes && excessCount === 0) return;
+  const excess = Math.max(0, total - options.maxBytes);
   let removed = 0;
   let count = 0;
   for (const bytes of options.surfaceBytes) {
-    if (removed >= excess) break;
+    if (removed >= excess && count >= removeCount) break;
     removed += bytes;
     count += 1;
   }
-  if (removed >= excess) {
+  if (removed >= excess && count >= excessCount) {
     throw new LlmError(
-      `LCX request images exceed the configured base64 bound once checkpoint images are counted; ${count} more oldest occurrence(s) must be offloaded.`,
+      `LCX request images exceed the configured byte or count bound once checkpoint images are counted; ${count} more oldest occurrence(s) must be offloaded.`,
       IMAGE_OFFLOAD_REQUIRED_CODE,
       { offloadImages: count },
     );
   }
   throw codedError(
-    `Images retained in the compaction checkpoint (${options.fixedBytes} base64 bytes) leave no room within the ${options.maxBytes}-byte request image bound, and offloading new images cannot recover it; start a new session or raise maxRequestImageBytes`,
+    `Images retained in the compaction checkpoint (${options.fixedBytes} base64 bytes) leave no room within the ${options.maxBytes}-byte / ${maxImages}-image request bound, and offloading new images cannot recover it; start a new session or raise maxRequestImageBytes`,
     "LCX_CHECKPOINT_IMAGE_BUDGET",
   );
 }

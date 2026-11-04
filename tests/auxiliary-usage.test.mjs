@@ -1,3 +1,5 @@
+import { executeTool } from './dsh022-tool-fixture.mjs'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {withAuxiliaryUsage, recordHostedUsage} from '../lib/auxiliary-usage.js';
@@ -39,10 +41,10 @@ test('missing or contradictory provider counters are not invented',async()=>{
 });
 test('real DSH ToolRuntime validates, persists billing metadata, and keeps rendered content clean',async t=>{
  const ctx=new Context();
- const fibers=[await ctx.plugin(SystemPrompt),await ctx.plugin(ToolRuntime)];
+ const fibers=[await ctx.plugin(SystemPrompt),await ctx.plugin(ToolRuntime), await ctx.plugin(NativeToolExecutor)];
  t.after(()=>{for(const fiber of fibers.reverse()) fiber.dispose();});
  ctx.tools.register(tool(async()=>{recordHostedUsage(response(50),'real-1','relay','gpt-test');return{text:'answer'};}));
- const result=await ctx.tools.execute({toolCallId:ToolCallId('usage-fixture'),name:'fixture',arguments:{},signal:new AbortController().signal});
+ const result=await executeTool(ctx.tools, {toolCallId:ToolCallId('usage-fixture'),name:'fixture',arguments:{},signal:new AbortController().signal});
  assert.equal(result.isError,false,JSON.stringify(result));
  assert.equal(result.meta.auxiliaryUsage[0].usage.cacheReadTokens,50);
  assert.deepEqual(result.content,[{type:'text',text:'{"text":"answer"}'}]);

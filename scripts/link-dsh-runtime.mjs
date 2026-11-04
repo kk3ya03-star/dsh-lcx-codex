@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
-const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh021'))
+const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh022'))
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
 
@@ -94,13 +94,30 @@ const names = new Set([
   ...Object.keys(pkg.peerDependencies),
   '@deepseek-ai/cosmokit',
 ])
+// The tests also import host packages directly (persistence, agent loop, compaction plugins, ...). Link every
+// DSH package the selected runtime provides, so a gate run resolves one whole DSH, independent of how npm
+// hoisted the root install and of which DSH version that install pins.
+const runtimeScope = join(runtime, 'node_modules/@deepseek-ai')
+for (const entry of existsSync(runtimeScope) ? readdirSync(runtimeScope) : [])
+  if (entry.startsWith('dsh-')) names.add(`@deepseek-ai/${entry}`)
+const currentTarget = path => {
+  try { return realpathSync(path) } catch { return undefined }
+}
+// A link an earlier run made to a package this runtime does not provide would keep another DSH reachable.
+const rootScope = resolve(root, 'node_modules/@deepseek-ai')
+for (const entry of existsSync(rootScope) ? readdirSync(rootScope) : []) {
+  const destination = join(rootScope, entry)
+  if (!entry.startsWith('dsh-') || names.has(`@deepseek-ai/${entry}`) || !lstatSync(destination).isSymbolicLink()) continue
+  if (!(currentTarget(destination) ?? '').startsWith(runtime + sep)) rmSync(destination, { force: true })
+}
 for (const name of names) {
   if (name === '@earendil-works/pi-ai') continue
   const manifest = runtimeRequire.resolve(name + '/package.json')
   const target = dirname(manifest)
   if (name.startsWith('@deepseek-ai/dsh-')) {
     assert.equal(readJson(join(target, 'package.json')).version, runtimeDshVersion, `${name} must match the selected DSH runtime`)
-    assert.equal(pkg.peerDependencies[name], compatibility.dshInstallRange, `${name} peer must use the shared DSH install range`)
+    if (Object.hasOwn(pkg.peerDependencies, name))
+      assert.equal(pkg.peerDependencies[name], compatibility.dshInstallRange, `${name} peer must use the shared DSH install range`)
   }
   const destination = resolve(root, 'node_modules', name)
   assert.ok(destination.startsWith(resolve(root, 'node_modules') + sep))
@@ -109,7 +126,8 @@ for (const name of names) {
   const targetReal = realpathSync(target)
   if (resolve(target) === destination) continue
   const existing = lstatSync(destination, { throwIfNoEntry: false })
-  if (existing && realpathSync(destination) === targetReal) continue
+  // A link left by an earlier run may dangle (its runtime was removed); it is replaced like any other.
+  if (existing && currentTarget(destination) === targetReal) continue
   assert.ok(!targetReal.startsWith(destination + sep), 'Link source must not be inside its replacement destination')
   if (existing) rmSync(destination, { recursive: !existing.isSymbolicLink(), force: true })
   mkdirSync(dirname(destination), { recursive: true })

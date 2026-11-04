@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -5,11 +6,11 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -19,7 +20,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { serializeDshMessages } from '../lib/dsh-responses.js'
-import { loadHostSource, loadSource } from './wp2-source.mjs'
+import { loadSource } from './wp2-source.mjs'
 import { resolveResponsesRouteConfig } from '../lib/route.js'
 
 // Issue #120: native addition-only tool updates on GPT Responses routes. Everything below runs the real DSH
@@ -32,16 +33,19 @@ const routeConfig = { baseURL, portableReplayMaxChars: 200000, responsesCompat: 
 const tool = (name, extra = {}) => ({ name, description: `${name} tool`, parameters: { type: 'object', properties: {}, additionalProperties: false }, ...extra })
 const textOf = item => typeof item.content === 'string' ? item.content : (item.content ?? []).map(part => part.text ?? '').join('')
 const kind = item => item.type === 'additional_tools' ? 'additional_tools' : (item.role ?? item.type)
-const additions = body => body.input.filter(item => item.type === 'additional_tools')
+// Pi 1.5 declares the baseline in the first additional_tools item on changes routes.
+const initialTools = body => body.tools ?? (body.input[0]?.type === 'additional_tools' ? body.input[0].tools : [])
+const additions = body => body.input.filter((item, index) => item.type === 'additional_tools' && !(index === 0 && body.tools === undefined))
 const addedNames = body => additions(body).flatMap(item => item.tools.map(entry => entry.name))
 /** Every tool the model can call: the request `tools` plus everything declared by history additions. */
-const visible = body => [...(body.tools ?? []).map(entry => entry.name), ...addedNames(body)].sort()
+const visible = body => [...initialTools(body).map(entry => entry.name), ...addedNames(body)].sort()
 
-const [checkpoint] = await Promise.all([loadHostSource('native-checkpoint')])
+const references = new WeakMap()
+const toolWire = body => ({ tools: body.tools, input: body.input.filter(item => item.type === 'additional_tools' || item.type === 'tool_search_call' || item.type === 'tool_search_output' || (item.role === 'developer' && !textOf(item).startsWith('PROMPT-'))) })
 
 const loadIndexInternals = () => loadSource('index', 'serializeNativeAware, managedResponsesStream, remoteCompactionStream')
 
-async function harness(root, index) {
+async function harness(root, index, bodies) {
   const ctx = new Context()
   ctx.plugin(Llm)
   ctx.plugin(PiAi, {
@@ -51,12 +55,20 @@ async function harness(root, index) {
       lcxplain: { api: 'openai-responses', baseURL, models: [{ id: 'gpt-5.6-sol', name: 'custom plain' }] },
     },
   })
+  // Independent, real host runtime. The executing agent below is intercepted only to keep its
+  // durable transcript deterministic; request parity uses this un-intercepted Llm + PiAi runtime.
+  const reference = new Context()
+  reference.plugin(Llm)
+  reference.plugin(PiAi, { providers: { openai: { baseURL, apiKeyEnv: 'FIXTURE_KEY' } } })
+  reference.provide('credentials', { resolve: async () => ({ value: 'fixture-only' }) }, true)
+  references.set(ctx, reference)
   ctx.plugin(Sessions)
   ctx.plugin(Jsonl, { root: resolve(root, 'sessions') })
   ctx.plugin(QuerySqlite, { path: ':memory:', openAt: 'never' })
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   ctx.plugin(TokenMeter)
@@ -70,10 +82,13 @@ async function harness(root, index) {
         const route = { provider: options.provider, model: options.model, baseURL, sessionId: String(options.sessionId) }
         const prepared = await index.serializeNativeAware(options.messages, route, routeConfig, ctx, { tools: [...(options.tools ?? [])], toolSurface: { history: options.toolHistory } })
         compactionInputs.push(prepared)
-        const session = ctx.sessions.get(SessionId(String(options.sessionId)))
-        const result = { compaction: { type: 'compaction', encrypted_content: 'FAKE-OPAQUE-PLACEHOLDER' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
-        const block = await checkpoint.createNativeCheckpointBlock({ ctx, session, route, result, input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, supersededItemIndices: prepared.supersededInstructionItems, imageMap: prepared.imageMap, retentionOptions: {} })
-        yield* checkpoint.nativeCheckpointChunks(block, result.usage)
+        for await (const _chunk of reference.llm.stream({ ...options, signal: AbortSignal.timeout(5000) })) void _chunk
+        assert.deepEqual(toolWire(prepared), toolWire(bodies.at(-1)), 'DSH /compact tool surface matches host')
+        const before = bodies.length
+        yield* index.remoteCompactionStream(options, routeConfig, ctx, () => { throw new Error('native compaction must succeed') })
+        assert.equal(bodies.length, before + 1)
+        assert.ok(bodies.at(-1).input.some(item => item.type === 'compaction_trigger'), 'real Native V2 request was captured')
+        assert.deepEqual(toolWire(bodies.at(-1)), toolWire(prepared), 'Native V2 preserves the host tool surface')
       })()
     }
     return (async function* () {
@@ -97,12 +112,14 @@ async function withHarness(run) {
   const originalFetch = globalThis.fetch
   const bodies = []
   globalThis.fetch = async (_url, init) => {
-    bodies.push(JSON.parse(String(init.body)))
-    return new Response('', { status: 500 })
+    const body = JSON.parse(String(init.body))
+    bodies.push(body)
+    const output = body.input.some(item => item.type === 'compaction_trigger') ? [{ type: 'compaction', encrypted_content: 'FAKE-OPAQUE-PLACEHOLDER' }] : []
+    return new Response('data: ' + JSON.stringify({ type: 'response.completed', response: { id: 'resp_fixture', status: 'completed', output, usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
   }
   try {
     const index = await loadIndexInternals()
-    return await run({ root, index, bodies, ...(await harness(root, index)) })
+    return await run({ root, index, bodies, ...(await harness(root, index, bodies)) })
   } finally {
     globalThis.fetch = originalFetch
     await rm(root, { recursive: true, force: true })
@@ -120,9 +137,20 @@ async function startAgent(ctx, root, id, provider, model) {
 }
 
 async function postedBody(index, bodies, request, config = routeConfig, ctx) {
+  const reference = references.get(ctx)
+  let expected
+  // Deliberate opt-outs and inconsistent-history fallback have their own assertions. For supported
+  // history compare the actual host request's tool declarations/notices, including native replay tails.
+  if (reference && config === routeConfig && request.provider === 'openai' && request.toolHistory &&
+      request.toolHistory.updates.every(update => request.messages.some(message => message.id === update.messageId))) {
+    const messages = request.messages.filter(message => !message.content.some(block => block.type === 'compact-checkpoint'))
+    for await (const _chunk of reference.llm.stream({ ...request, messages, signal: AbortSignal.timeout(5000) })) void _chunk
+    expected = toolWire(bodies.at(-1))
+  }
   const before = bodies.length
   for await (const _chunk of index.managedResponsesStream({ ...request, signal: AbortSignal.timeout(5000) }, config, ctx)) void _chunk
   assert.equal(bodies.length, before + 1, 'LCX reached its Responses transport exactly once')
+  if (expected) assert.deepEqual(toolWire(bodies.at(-1)), expected, 'real host request tool declarations/notices match LCX')
   return bodies.at(-1)
 }
 
@@ -145,8 +173,8 @@ test('addition: request tools stay anchored to the initial set and later tools a
     assert.ok(request.tools.some(schema => schema.deferLoading === true), 'host really produced a deferLoading declaration')
     posted.push(await postedBody(index, bodies, request, routeConfig, ctx))
 
-    const toolsWire = posted.map(body => JSON.stringify(body.tools))
-    assert.deepEqual(posted[0].tools.map(entry => entry.name), ['tool_a'])
+    const toolsWire = posted.map(body => JSON.stringify(initialTools(body)))
+    assert.deepEqual(initialTools(posted[0]).map(entry => entry.name), ['tool_a'])
     assert.equal(new Set(toolsWire).size, 1, 'request tools are byte-identical on every request')
     assert.deepEqual(addedNames(posted[0]), [])
     assert.deepEqual(addedNames(posted[1]), ['tool_b'])
@@ -154,9 +182,9 @@ test('addition: request tools stay anchored to the initial set and later tools a
     for (const body of posted) {
       const serialized = JSON.stringify(body)
       assert.doesNotMatch(serialized, /deferLoading|defer_loading|tool-addition|tool-removal|tool_search/u)
-      assert.equal(body.input.filter(item => item.type === undefined && item.role === 'developer').length, 1, 'no developer instruction item other than the head')
+      assert.equal(body.input.filter(item => item.type === undefined && item.role === 'developer').length, additions(body).length + 1, 'Pi adds one incremental notice per later declaration')
     }
-    assert.deepEqual(posted[2].input.map(kind), ['developer', 'user', 'assistant', 'user', 'additional_tools', 'assistant', 'user', 'additional_tools'], 'additions sit at their history position after the turn that introduced the tool')
+    assert.deepEqual(posted[2].input.map(kind), ['additional_tools', 'developer', 'user', 'assistant', 'user', 'developer', 'additional_tools', 'assistant', 'user', 'developer', 'additional_tools'], 'additions sit at their history position after the turn that introduced the tool')
     // Byte stability: each earlier request is an exact prefix of the next one, so the cached prefix survives every addition.
     for (let index2 = 1; index2 < posted.length; index2 += 1) {
       const previous = posted[index2 - 1].input
@@ -184,24 +212,24 @@ test('removal and redefinition fall back to host semantics without errors: the v
     }
     const base = await step('one', [tool('tool_a'), tool('tool_b')])
     const added = await step('two', [tool('tool_a'), tool('tool_b'), tool('tool_c')])
-    assert.deepEqual(added.tools.map(entry => entry.name), ['tool_a', 'tool_b'])
+    assert.deepEqual(initialTools(added).map(entry => entry.name), ['tool_a', 'tool_b'])
     assert.deepEqual(addedNames(added), ['tool_c'])
-    assert.deepEqual(base.tools.map(entry => entry.name), ['tool_a', 'tool_b'])
+    assert.deepEqual(initialTools(base).map(entry => entry.name), ['tool_a', 'tool_b'])
     // Removing an initial tool shrinks the anchored list once; the earlier addition stays in history.
     const removed = await step('three', [tool('tool_a'), tool('tool_c')])
-    assert.deepEqual(removed.tools.map(entry => entry.name), ['tool_a'])
+    assert.deepEqual(initialTools(removed).map(entry => entry.name), ['tool_a'])
     assert.deepEqual(addedNames(removed), ['tool_c'])
     // The shrunk list is the new stable anchor.
     const again = await step('four', [tool('tool_a'), tool('tool_c'), tool('tool_d')])
-    assert.equal(JSON.stringify(again.tools), JSON.stringify(removed.tools))
+    assert.equal(JSON.stringify(initialTools(again)), JSON.stringify(initialTools(removed)))
     assert.deepEqual(addedNames(again), ['tool_c', 'tool_d'])
     // Redefining a tool under the same name starts a new declaration series: the complete current list, no additions.
     const redefined = await step('five', [tool('tool_a', { description: 'changed definition' }), tool('tool_c'), tool('tool_d')])
-    assert.deepEqual(redefined.tools.map(entry => entry.name), ['tool_a', 'tool_c', 'tool_d'])
+    assert.deepEqual(initialTools(redefined).map(entry => entry.name), ['tool_a', 'tool_c', 'tool_d'])
     assert.deepEqual(addedNames(redefined), [])
     // Additions work again on top of the new baseline.
     const after = await step('six', [tool('tool_a', { description: 'changed definition' }), tool('tool_c'), tool('tool_d'), tool('tool_e')])
-    assert.equal(JSON.stringify(after.tools), JSON.stringify(redefined.tools))
+    assert.equal(JSON.stringify(initialTools(after)), JSON.stringify(initialTools(redefined)))
     assert.deepEqual(addedNames(after), ['tool_e'])
     await handle.dispose()
   })
@@ -217,7 +245,7 @@ test('rollback switch, routes without compat and custom-named routes keep the co
     const request = raw.at(-1)
     // Contrast: the same request on the default policy is anchored (the switch below is what changes it).
     const anchored = await postedBody(index, bodies, request, routeConfig, ctx)
-    assert.deepEqual(anchored.tools.map(entry => entry.name), ['tool_a'])
+    assert.deepEqual(initialTools(anchored).map(entry => entry.name), ['tool_a'])
     assert.deepEqual(addedNames(anchored), ['tool_b', 'tool_c'])
     for (const [label, config] of [
       ['toolUpdates=full', { ...routeConfig, toolUpdates: 'full' }],
@@ -225,12 +253,12 @@ test('rollback switch, routes without compat and custom-named routes keep the co
       ['explicit opt-out of additional_tools without tool_search', { baseURL, portableReplayMaxChars: 200000, responsesCompat: { supportsAdditionalTools: false } }],
     ]) {
       const body = await postedBody(index, bodies, request, config, ctx)
-      assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a', 'tool_b', 'tool_c'], label)
-      assert.doesNotMatch(JSON.stringify(body), /deferLoading|defer_loading|tool-addition|additional_tools|tool_search/u, label)
+      assert.deepEqual(initialTools(body).map(entry => entry.name), ['tool_a', 'tool_b', 'tool_c'], label)
+      assert.doesNotMatch(JSON.stringify({ tools: initialTools(body), additions: additions(body) }), /deferLoading|defer_loading|tool-addition|additional_tools|tool_search/u, label)
     }
     // Without the DSH tool history the host cannot vouch for the updates: full list.
     const noHistory = await postedBody(index, bodies, { ...request, toolHistory: undefined }, routeConfig, ctx)
-    assert.deepEqual(noHistory.tools.map(entry => entry.name), ['tool_a', 'tool_b', 'tool_c'])
+    assert.deepEqual(initialTools(noHistory).map(entry => entry.name), ['tool_a', 'tool_b', 'tool_c'])
     assert.equal(additions(noHistory).length, 0)
     await handle.dispose()
 
@@ -242,7 +270,7 @@ test('rollback switch, routes without compat and custom-named routes keep the co
     state.tools = [tool('tool_a'), tool('tool_b')]
     await plain.ask('two')
     const body = await postedBody(index, bodies, raw.at(-1), routeConfig, ctx)
-    assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a', 'tool_b'])
+    assert.deepEqual(initialTools(body).map(entry => entry.name), ['tool_a', 'tool_b'])
     assert.equal(additions(body).length, 0)
     await plain.handle.dispose()
   })
@@ -257,7 +285,7 @@ test('a route that supports only tool_search declares additions as tool_search c
     await ask('two')
     const config = { ...routeConfig, responsesCompat: { supportsAdditionalTools: false, supportsToolSearch: true } }
     const body = await postedBody(index, bodies, raw.at(-1), config, ctx)
-    assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a'])
+    assert.deepEqual(initialTools(body).map(entry => entry.name), ['tool_a'])
     const call = body.input.find(item => item.type === 'tool_search_call')
     const output = body.input.find(item => item.type === 'tool_search_output')
     assert.ok(call && output, 'tool_search call and output are present')
@@ -278,7 +306,7 @@ test('compaction: the request carries additional_tools, the checkpoint keeps non
     assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal), 'real DSH compaction wrote a native checkpoint')
     assert.equal(compactionInputs.length, 1)
     const prepared = compactionInputs[0]
-    assert.deepEqual(prepared.tools.map(entry => entry.name), ['tool_a'], 'the compaction request keeps the anchored tools')
+    assert.deepEqual(initialTools(prepared).map(entry => entry.name), ['tool_a'], 'the compaction request keeps the anchored tools')
     assert.deepEqual(addedNames({ input: prepared.input }), ['tool_b'], 'and declares the addition in its input')
     const session = handle.agent.session
     const summary = session.snapshotEvents().find(event => event.type === 'compaction/summary')
@@ -288,20 +316,34 @@ test('compaction: the request carries additional_tools, the checkpoint keeps non
     await ask('turn three')
     const first = await postedBody(index, bodies, raw.at(-1), routeConfig, ctx)
     assert.ok(first.input.some(item => item.type === 'compaction'), 'native replay item is present')
-    assert.deepEqual(first.tools.map(entry => entry.name), ['tool_a', 'tool_b'], 'the new series declares every active tool up front')
+    assert.deepEqual(initialTools(first).map(entry => entry.name), ['tool_a', 'tool_b'], 'the new series declares every active tool up front')
     assert.equal(additions(first).length, 0)
     state.tools = [tool('tool_a'), tool('tool_b'), tool('tool_c')]
     await ask('turn four')
     const second = await postedBody(index, bodies, raw.at(-1), routeConfig, ctx)
-    assert.equal(JSON.stringify(second.tools), JSON.stringify(first.tools))
+    assert.equal(JSON.stringify(initialTools(second)), JSON.stringify(initialTools(first)))
     assert.deepEqual(addedNames(second), ['tool_c'])
     const previous = first.input.map(item => JSON.stringify(item))
     assert.deepEqual(second.input.slice(0, previous.length).map(item => JSON.stringify(item)), previous, 'post-compaction prefix is byte-stable')
 
     // Portable route migration replays plain history: no developer updates, the migrated route's own tool surface.
-    const migrated = await index.serializeNativeAware(raw.at(-1).messages, { provider: 'openai', model: 'gpt-5.5', baseURL, sessionId: String(raw.at(-1).sessionId) }, routeConfig, ctx, { tools: [...raw.at(-1).tools], toolSurface: { history: raw.at(-1).toolHistory } })
+    const migrated = await index.serializeNativeAware(raw.at(-1).messages, { provider: 'openai', model: 'gpt-5.5', baseURL, sessionId: String(raw.at(-1).sessionId) }, { ...routeConfig, responsesCompat: undefined }, ctx, { tools: [...raw.at(-1).tools], toolSurface: { history: raw.at(-1).toolHistory } })
     assert.equal(migrated.input.some(item => item.type === 'compaction'), false, 'no parent opaque state on migration')
     assert.deepEqual(visible({ tools: migrated.tools, input: migrated.input }), ['tool_a', 'tool_b', 'tool_c'])
+    const reference = references.get(ctx)
+    const migrationRequest = { ...raw.at(-1), model: 'gpt-5.5' }
+    for await (const _chunk of reference.llm.stream({ ...migrationRequest, messages: migrationRequest.messages.filter(message => !message.content.some(block => block.type === 'compact-checkpoint')) })) void _chunk
+    assert.deepEqual(toolWire(migrated), toolWire(bodies.at(-1)), 'route migration follows the real host none-mode surface')
+    // A real fork from a checkpoint cannot reuse the parent's opaque state and declares tools once.
+    const events = session.snapshotEvents()
+    const boundary = events.at(-1).seq
+    const fork = await ctx.agents.create({ sessionId: SessionId('i129-tools-fork'), seed: buildForkSeed(events, boundary), inheritedEventCount: SessionLogOffset(boundary + 1), meta: { cwd: root, parentSession: session.id, isSeeded: true }, agentOptions: { provider: 'openai', model: 'gpt-5.6-sol' } })
+    fork.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'fork tail' }], source: { kind: 'user' } }))
+    await fork.agent.whenIdle()
+    const forked = await postedBody(index, bodies, raw.at(-1), routeConfig, ctx)
+    assert.equal(forked.input.some(item => item.type === 'compaction'), false)
+    assert.deepEqual(visible(forked), ['tool_a', 'tool_b', 'tool_c'])
+    await fork.dispose()
     await handle.dispose()
   })
 })
@@ -316,14 +358,14 @@ test('restart: a resumed session rebuilds the identical anchored request prefix'
     const before = await postedBody(index, bodies, raw.at(-1), routeConfig, ctx)
     await ctx.sessions.flush(first.handle.agent.session)
     await first.handle.dispose()
-    const reopened = await harness(root, index)
+    const reopened = await harness(root, index, bodies)
     const resumed = await reopened.ctx.agents.resume({ resumeSessionId: SessionId('i120-restart'), agentOptions: { provider: 'openai', model: 'gpt-5.6-sol' } })
     assert.ok(resumed.agent.session.toolHistory().updates.length > 0, 'DSH rebuilt the tool history from the log')
     reopened.state.tools = [tool('tool_a'), tool('tool_b'), tool('tool_c')]
     resumed.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'three' }], source: { kind: 'user' } }))
     await resumed.agent.whenIdle()
     const after = await postedBody(index, bodies, reopened.raw.at(-1), routeConfig, reopened.ctx)
-    assert.equal(JSON.stringify(after.tools), JSON.stringify(before.tools))
+    assert.equal(JSON.stringify(initialTools(after)), JSON.stringify(initialTools(before)))
     const previous = before.input.map(item => JSON.stringify(item))
     assert.deepEqual(after.input.slice(0, previous.length).map(item => JSON.stringify(item)), previous, 'restored history re-renders byte for byte')
     assert.deepEqual(addedNames(after), ['tool_b', 'tool_c'])
@@ -345,14 +387,14 @@ test('self check: an inconsistent host projection falls back to the full list an
     // Drop the recorded developer message: the history still names an update the messages no longer hold.
     const stripped = { ...request, messages: request.messages.filter(message => message.role !== 'developer') }
     const body = await postedBody(index, bodies, stripped, routeConfig, ctx)
-    assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a', 'tool_b'], 'the deferred tool stays callable')
+    assert.deepEqual(initialTools(body).map(entry => entry.name), ['tool_a', 'tool_b'], 'the deferred tool stays callable')
     assert.equal(additions(body).length, 0)
     assert.doesNotMatch(JSON.stringify(body), /deferLoading|defer_loading/u)
     await handle.dispose()
   })
 })
 
-test('serializer contract: developer updates need an anchored in-history route, removals and undeclared tools are rejected', async () => {
+test('serializer contract: developer updates need an anchored in-history route, removals follow Pi and undeclared tools are rejected', async () => {
   const developer = (...blocks) => ({ id: 'dev-1', role: 'developer', content: blocks, source: { kind: 'tool-registry' } })
   const user = text => ({ id: 'u-1', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
   const common = { route: { provider: 'openai', model: 'gpt-5.6-sol' }, includeSystemPrompt: false, responsesCompat: ANCHORED }
@@ -361,11 +403,13 @@ test('serializer contract: developer updates need an anchored in-history route, 
   await assert.rejects(serializeDshMessages([update, user('hi')], undefined, { ...common, tools, systemPromptUpdate: 'in-history' }), /developer message/u, 'not anchored')
   await assert.rejects(serializeDshMessages([user('hi')], undefined, { ...common, tools, systemPromptUpdate: 'in-history' }), /deferLoading/u, 'not anchored')
   await assert.rejects(serializeDshMessages([update], undefined, { ...common, tools, toolUpdate: 'addition-only' }), /in-history/u, 'anchoring needs an in-history route')
-  await assert.rejects(serializeDshMessages([developer({ type: 'tool-removal', toolName: 'tool_a' })], undefined, { ...common, tools, toolUpdate: 'addition-only', systemPromptUpdate: 'in-history' }), /tool-removal/u)
+  const removed = await serializeDshMessages([developer({ type: 'tool-removal', toolName: 'tool_a' })], undefined, { ...common, tools, toolUpdate: 'addition-only', systemPromptUpdate: 'in-history' })
+  assert.ok(JSON.stringify(removed.input).includes('tool_a'), 'Pi renders the removal notice')
   await assert.rejects(serializeDshMessages([developer({ type: 'tool-addition', toolName: 'ghost' })], undefined, { ...common, tools, toolUpdate: 'addition-only', systemPromptUpdate: 'in-history' }), /undeclared tool "ghost"/u)
   const ok = await serializeDshMessages([user('hi'), update, user('go')], undefined, { ...common, tools, toolUpdate: 'addition-only', systemPromptUpdate: 'in-history' })
-  assert.deepEqual(ok.tools.map(entry => entry.name), ['tool_a'])
-  assert.deepEqual(ok.input.map(kind), ['user', 'additional_tools', 'user'])
+  assert.equal(ok.tools, undefined)
+  assert.deepEqual(initialTools(ok).map(entry => entry.name), ['tool_a'])
+  assert.deepEqual(ok.input.map(kind), ['additional_tools', 'user', 'developer', 'additional_tools', 'user'])
 })
 
 test('plugin wiring: incrementalToolUpdates is on by default, resolves compat from the real route, and an explicit off sends the full list', async () => {
@@ -396,10 +440,10 @@ test('plugin wiring: incrementalToolUpdates is on by default, resolves compat fr
       return bodies.at(-1)
     }
     const byDefault = await post({})
-    assert.deepEqual(byDefault.tools.map(entry => entry.name), ['tool_a'], 'default: anchored')
+    assert.deepEqual(initialTools(byDefault).map(entry => entry.name), ['tool_a'], 'default: anchored')
     assert.deepEqual(addedNames(byDefault), ['tool_b'])
     const off = await post({ incrementalToolUpdates: false })
-    assert.deepEqual(off.tools.map(entry => entry.name), ['tool_a', 'tool_b'], 'explicit off: complete list')
+    assert.deepEqual(initialTools(off).map(entry => entry.name), ['tool_a', 'tool_b'], 'explicit off: complete list')
     assert.equal(additions(off).length, 0)
     await handle.dispose()
   })
@@ -416,15 +460,15 @@ test('the declaration shape comes from the compat: explicit additional_tools / t
     // Silent about both shapes (nothing the bundled catalog or the profile says): no guess, the complete tool list.
     for (const responsesCompat of [undefined, {}, { supportsStrictMode: true }]) {
       const body = await post(responsesCompat)
-      assert.deepEqual(body.tools.map(entry => entry.name), ['tool_a', 'tool_b'], JSON.stringify(responsesCompat))
+      assert.deepEqual(initialTools(body).map(entry => entry.name), ['tool_a', 'tool_b'], JSON.stringify(responsesCompat))
       assert.equal(additions(body).length, 0, JSON.stringify(responsesCompat))
     }
     // An explicit additional_tools declaration anchors the request tools and adds by additional_tools.
     const additional = await post({ supportsAdditionalTools: true })
-    assert.deepEqual(additional.tools.map(entry => entry.name), ['tool_a'])
+    assert.deepEqual(initialTools(additional).map(entry => entry.name), ['tool_a'])
     assert.deepEqual(addedNames(additional), ['tool_b'])
     // An explicit tool_search declaration selects the tool_search shape.
-    const search = await post({ supportsToolSearch: true })
+    const search = await post({ supportsAdditionalTools: false, supportsToolSearch: true })
     assert.equal(additions(search).length, 0)
     assert.ok(search.input.some(item => item.type === 'tool_search_output'))
     // Both supported: additional_tools wins, as in Pi.
@@ -449,7 +493,7 @@ test('the compat of a route comes from the bundled catalog or the profile; a mod
   const profile = compat => ({ openai: { api: 'openai-responses', baseURL, apiKeyEnv: 'K', models: [{ id: 'gpt-9-unknown', ...(compat === undefined ? {} : { compat }) }] } })
   const context = profiles => ({ llm: { listConfigurableProviders: () => [{ provider: 'openai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'openai'] }] }, settings: { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles } }] } })
   const resolve = (profiles, model) => resolveResponsesRouteConfig(context(profiles), { provider: 'openai', model }, {}).responsesCompat
-  // Catalog-explicit: a Pi 1.1.0 catalog model states both shapes.
+  // Catalog-explicit: a Pi 1.5.0 catalog model states both shapes.
   const catalog = resolve({ openai: { api: 'openai-responses', baseURL, apiKeyEnv: 'K' } }, 'gpt-6-sol')
   assert.equal(catalog.supportsAdditionalTools, true)
   assert.equal(catalog.supportsToolSearch, true)

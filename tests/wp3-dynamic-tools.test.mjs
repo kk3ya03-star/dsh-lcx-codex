@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -8,7 +9,7 @@ import { LlmAdapter, createUserMessage, projectToolUpdates } from '@deepseek-ai/
 import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-session'
 import Llm from '@deepseek-ai/dsh-llm'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -60,6 +61,7 @@ async function harness(root, index, adapter = new StubAdapter()) {
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   ctx.plugin(TokenMeter)

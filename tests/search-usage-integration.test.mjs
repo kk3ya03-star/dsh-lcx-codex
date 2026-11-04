@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -19,7 +20,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop';
 import Llm from '@deepseek-ai/dsh-llm';
 import Tools from '@deepseek-ai/dsh-tools';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -52,7 +53,10 @@ function reply(s,scope='aggregate',turn=1,usage=u,metadata={}){
 }
 test('integration runs against the untouched official token-meter artifact',()=>{
  const digest=createHash('sha256').update(readFileSync(new URL('../node_modules/@deepseek-ai/dsh-token-meter/lib/index.js',import.meta.url))).digest('hex');
- assert.equal(digest,'39ed60a470b240f8bbc82befdb0bbbad1f409732e8ba8d12d41a1059de0dde05');
+ // DSH 0.2.2-alpha.3 moved measurement facts to an awaited projection handle and rebuildable price cache.
+ // Reviewed advanceMeasurement + measure: assistant/message anchor, canonical-header matching,
+ // signed surface delta and immutable TokenMeasurement contract remain unchanged.
+ assert.equal(digest,'0f27f128e12aaecdf360de1f2c974d5d759bc1002c5a3de560322669d200cb9a');
 });
 test('plugin-only aggregate pressure correction preserves exact billing and cold restore',async t=>{
  const{ctx,session}=await fixture(t);reply(session);
@@ -476,7 +480,7 @@ test('QA overlay disables live agent-scoped meters at creation and pre-step and 
  const root=await mkdtemp(join(tmpdir(),'issue62-overlay-'));
  const fibers=[];
  t.after(async()=>{for(const f of fibers.reverse())await f.dispose();await rm(root,{recursive:true,force:true});});
- for(const p of [Llm,Tools,SystemPrompt,Agents,AgentLoop])fibers.push(await ctx.plugin(p));
+ for(const p of [Llm,Tools,SystemPrompt,NativeToolExecutor,Agents,AgentLoop])fibers.push(await ctx.plugin(p));
  fibers.push(await ctx.plugin(Jsonl,{root}));
  // Model metadata only; no model stream/provider calls are permitted in this fixture.
  class NoCalls extends LlmAdapter {
@@ -512,4 +516,16 @@ test('QA overlay disables live agent-scoped meters at creation and pre-step and 
  assert.equal(Object.hasOwn(existingMeter,'measure'),true);
  assert.equal(existingMeter.measure(existing.agent.session).baseline.kind,'estimated');
  await handle.dispose();await existing.dispose();
+});
+
+test('LCX projection and route readers emit no deprecated registry stateOf warnings', async t=>{
+ const {ctx,session}=await fixture(t), warnings=[];
+ t.mock.method(ctx.sessionProjections.ctx.logger,'warn',message=>warnings.push(String(message)));
+ t.mock.method(ctx.sessionProjections,'stateOf',()=>assert.fail('LCX must use its awaited handle'));
+ reply(session);
+ assert.equal(ctx.tokenMeter.measure(session).baseline.kind,'estimated');
+ const {readSelectedAgentRouteState}=await import('../lib/dsh-compat.js');
+ const selection={provider:'relay',model:'gpt-selected'};
+ assert.deepEqual(readSelectedAgentRouteState({session,model:{current:()=>selection}}).requestConfig,selection);
+ assert.deepEqual(warnings,[]);
 });

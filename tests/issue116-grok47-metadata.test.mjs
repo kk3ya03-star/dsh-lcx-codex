@@ -4,8 +4,8 @@ import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { authenticatedGrokHeaders, resolveGrokResponsesRouteConfig } from '../lib/route.js'
 import { providerContext } from './provider-context-fixture.mjs'
 
-// Issue 116: the Grok 4.7 metadata LCX's Grok paths rely on, pinned against the bundled Pi 1.1.0 catalog (the Pi
-// of DSH 0.2.1-alpha.2). LCX hardcodes none of it: the route resolves the descriptor from the catalog and the
+// Issue 116: the Grok 4.7 metadata LCX's Grok paths rely on, pinned against the bundled Pi 1.3.0 catalog (the Pi
+// of DSH 0.2.1-alpha.5 and 0.2.1-rc.2). LCX hardcodes none of it: the route resolves the descriptor from the catalog and the
 // context window that sizes the pressure bands comes from DSH (profile, then catalog). The QA route that copied
 // grok-4.6's 262144 window for grok-4.7 was a profile choice; the catalog says 500000 for both.
 
@@ -13,6 +13,8 @@ const providers = ['xai', 'opencode', 'opencode-go', 'github-copilot']
 const policy = { timeoutMs: 300000, maxAttempts: 3, maxRequestImageBytes: 100, requestImagePixelBudget: 200, requestImageMaxBytes: 300 }
 const entry = (provider, id) => getBuiltinModels(provider).find(model => model.id === id)
 const supported = descriptor => Object.entries(descriptor.thinkingLevelMap).filter(([, wire]) => wire !== null).map(([level]) => level)
+// Pi 1.3.0 removed grok-4.6 from opencode-go; the 4.7 facts are compared with 4.6 wherever 4.6 still ships.
+const ships46 = provider => provider !== 'opencode-go'
 
 for (const provider of providers) {
   test(`${provider}/grok-4.7 catalog metadata matches what the Grok paths assume`, () => {
@@ -23,7 +25,8 @@ for (const provider of providers) {
     // Pressure anchoring reads the context window from DSH; the catalog value DSH starts from is 500000 and
     // is identical to grok-4.6's, so a 262144 copy in a QA profile is a configuration, not a catalog fact.
     assert.equal(model.contextWindow, 500000)
-    assert.equal(model.contextWindow, entry(provider, 'grok-4.6').contextWindow)
+    assert.equal(entry(provider, 'grok-4.6') !== undefined, ships46(provider))
+    if (ships46(provider)) assert.equal(model.contextWindow, entry(provider, 'grok-4.6').contextWindow)
     assert.equal(model.maxTokens, provider === 'github-copilot' ? 128000 : 500000)
     // Reasoning and image input: encrypted reasoning is requested, levels low..xhigh, no off / minimal / max.
     assert.equal(model.reasoning, true)
@@ -33,7 +36,7 @@ for (const provider of providers) {
     for (const flag of ['supportsAdditionalTools', 'supportsToolSearch', 'supportsExplicitPromptCacheMode', 'supportsOpenAIGrammarTools'])
       assert.equal(model.compat?.[flag], undefined, flag)
     assert.notEqual(model.compat?.supportsLongCacheRetention, true)
-    assert.deepEqual(model.thinkingLevelMap, entry(provider, 'grok-4.6').thinkingLevelMap, '4.7 reasons exactly like 4.6')
+    if (ships46(provider)) assert.deepEqual(model.thinkingLevelMap, entry(provider, 'grok-4.6').thinkingLevelMap, '4.7 reasons exactly like 4.6')
   })
 
   test(`${provider}/grok-4.7 resolves on the Grok route from the catalog with the catalog descriptor and short cache retention`, async () => {

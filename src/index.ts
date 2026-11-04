@@ -7,7 +7,6 @@ import type { Agent } from "@deepseek-ai/dsh-agent";
 import { projectToolUpdates, type RequestMessage } from "@deepseek-ai/dsh-llm";
 import type { ToolHistory } from "@deepseek-ai/dsh-llm";
 import type {
-  ContentBlock,
   GenerateOptions,
   Message,
   StreamChunk,
@@ -32,7 +31,7 @@ import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getSupportedThinkingLevels } from "./pi-responses-runtime.js";
 import { fetchJsonWithRetry } from "./transport.js";
-import { DEFAULT_TOOL_UPDATES, planToolSurface, withoutDeferLoading, type ToolUpdatesMode } from "./tool-surface.js";
+import { DEFAULT_TOOL_UPDATES, planToolSurface, type ToolUpdatesMode } from "./tool-surface.js";
 import {
   agentSessionId,
   agentUsesSession,
@@ -74,6 +73,7 @@ import {
   diagnoseResponsesRoute,
   markHostRecognizedModel,
   warmHostRecognizedModels,
+  resolveApiKey,
   resolveResponsesRouteConfig,
   routeFingerprint,
 } from "./route.js";
@@ -90,9 +90,10 @@ import {
   hasMidHistoryPromptSnapshot,
   responseInputItems,
   serializeDshMessages,
+  splitSystemPrompt,
 } from "./dsh-responses.js";
 import { mergeFeatureHeader, requestNativeCompaction } from "./compact-v2.js";
-import { buildResponsesBody } from "./responses-request.js";
+import { buildResponsesBody, configurationUpdateEffort } from "./responses-request.js";
 import {
   managedFailureChunk,
   streamResponsesRequest,
@@ -159,6 +160,8 @@ const ADVANCED_HOSTED_TOOL = "websearch_gpt_advanced";
 const ALPHA_TOOL = "websearch_alpha";
 const hostedSearchRouteContext = new AsyncLocalStorage<RouteRequest>();
 const WEB_SEARCH_TIMEOUT_MS = 240_000;
+// DSH 0.2.2 defaults to 800; its root export does not expose this constant.
+const WEB_SEARCH_SUMMARY_MAX_CHARS = 800;
 const AUTO_COMPACTION_THRESHOLD_PERCENT = 90;
 const EMERGENCY_PRUNE_THRESHOLD_PERCENT = 95;
 
@@ -488,6 +491,8 @@ function requestImageOptions(
   routeConfig: Pick<
     ResponsesRouteConfig,
     | "maxRequestImageBytes"
+    | "maxRequestImages"
+    | "imageOffloadCountQuantum"
     | "requestImageMaxBytes"
     | "requestImagePixelBudget"
   >,
@@ -501,6 +506,8 @@ function requestImageOptions(
     signal,
     imageMap,
     maxRequestImageBytes: routeConfig.maxRequestImageBytes,
+    maxRequestImages: routeConfig.maxRequestImages,
+    imageOffloadCountQuantum: routeConfig.imageOffloadCountQuantum,
     requestImagePixelBudget: routeConfig.requestImagePixelBudget,
     requestImageMaxBytes: routeConfig.requestImageMaxBytes,
     ...extra,
@@ -641,6 +648,7 @@ function createScopedGptWebSearchTool(
     composition as unknown as HostContext,
     getConfig().webMaxResults,
     WEB_SEARCH_MAX_QUERIES,
+    WEB_SEARCH_SUMMARY_MAX_CHARS,
     WEB_SEARCH_TIMEOUT_MS,
     fetchEnabled,
   );
@@ -1181,13 +1189,18 @@ async function serializeNativeAware(
   route: { provider: string; model: string; baseURL: string; sessionId: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
-  options: Pick<GenerateOptions, "signal" | "tools"> & {
+  options: Pick<GenerateOptions, "signal" | "tools" | "system"> & {
     grokNativeReplayRoute?: GrokNativeReplayRoute;
     /**
      * Present on GPT routes: `rawMessages`/`tools` are DSH's unprojected request and this function chooses
      * the tool surface (addition-only or full list). Absent (Grok): the caller already projected them.
      */
     toolSurface?: { history: ToolHistory | undefined };
+    /**
+     * Ordinary GPT requests only: decides, from the resolved model descriptor, the effort sent as
+     * `configuration_update` items (see `configurationUpdateEffort`). Compaction and Grok requests omit it.
+     */
+    configurationUpdate?: (model: SerializedDshMessages["model"]) => Promise<string | undefined>;
   },
 ) {
   const session = sessionFor(ctx, route.sessionId);
@@ -1201,7 +1214,6 @@ async function serializeNativeAware(
   let messages: readonly RequestMessage[] = rawMessages;
   let tools = options.tools;
   let anchoredTools = false;
-  let toolSurfaceCompat: Record<string, boolean> | undefined;
   if (options.toolSurface !== undefined) {
     const surface = planToolSurface({
       mode: routeConfig.toolUpdates ?? DEFAULT_TOOL_UPDATES,
@@ -1214,7 +1226,6 @@ async function serializeNativeAware(
     messages = surface.messages;
     tools = surface.tools as typeof tools;
     anchoredTools = surface.anchored;
-    toolSurfaceCompat = surface.compat;
     if (surface.fallbackReason !== undefined) reportToolSurfaceFallback(ctx, route, surface);
   }
   // An unreadable model mode must not demote instructions: history that holds a DSH prompt snapshot after
@@ -1232,153 +1243,106 @@ async function serializeNativeAware(
   let nativeTools: SerializedDshMessages["tools"];
   let nativeModel: SerializedDshMessages["model"];
   let grammarToolInputProperties: SerializedDshMessages["grammarToolInputProperties"];
-  let normal: RequestMessage[] = [];
-  /** Absolute `input` positions rendered from DSH prompt snapshots that a checkpoint supersedes. */
+  /** Absolute input positions rendered from prompt snapshots superseded by a checkpoint. */
   const supersededInstructionItems: number[] = [];
-  const serializeOptions = (
-    imageMapOverride: ImageAttachmentMap | undefined = undefined,
-    extra: Record<string, unknown> = {},
-  ) =>
-    requestImageOptions(
-      routeConfig,
-      imageSupport,
-      options.signal,
-      imageMapOverride,
-      {
-        route,
-        tools,
-        responsesCompat: toolSurfaceCompat === undefined
-          ? routeConfig.responsesCompat
-          : { ...routeConfig.responsesCompat, ...toolSurfaceCompat },
-        systemPromptUpdate,
-        ...(anchoredTools ? { toolUpdate: "addition-only" } : {}),
-        ...(modelOverride === undefined ? {} : { model: modelOverride }),
-        ...extra,
-      },
-    );
-  const firstMessage = messages[0];
-  const systemHead = firstMessage?.role === "system" ? firstMessage : undefined;
-  const surfaceMessages = systemHead ? messages.slice(1) : messages;
-  const systemPrompt = systemHead?.content
-    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("") || undefined;
-  const prelude = await serializeDshMessages(
-    [],
-    ctx,
-    serializeOptions(undefined, {
-      systemPrompt,
-      includeSystemPrompt: true,
-    }),
+  const serializeOptions = (extra: Record<string, unknown> = {}) => requestImageOptions(
+    routeConfig, imageSupport, options.signal, undefined, {
+      route, tools,
+      responsesCompat: routeConfig.responsesCompat,
+      systemPromptUpdate,
+      ...(anchoredTools ? { toolUpdate: "addition-only" } : {}),
+      ...(modelOverride === undefined ? {} : { model: modelOverride }),
+      ...extra,
+    },
   );
-  const ephemeralPreludeItemCount = prelude.input.length;
-  input.push(...prelude.input);
-  nativeTools = prelude.tools;
-  nativeModel = prelude.model;
-  grammarToolInputProperties = prelude.grammarToolInputProperties;
-  /** Base64 length of images DSH cannot offload (hydrated checkpoint, portable replay). */
-  let fixedImageBytes = 0;
-  /** Base64 length of each offloadable surface image, oldest first, across all batches. */
-  const surfaceImageBytes: number[] = [];
-  const flush = async () => {
-    if (!normal.length) return;
-    const batch = normal;
-    normal = [];
-    const serialized = await serializeDshMessages(
-      batch,
-      ctx,
-      serializeOptions(),
-    );
-    surfaceImageBytes.push(...inputImageBase64Lengths(serialized.input));
-    // Every batch derives its request tools from the same immediate declarations; a difference would
-    // change the cached prefix between batches of one request.
-    if (anchoredTools && JSON.stringify(serialized.tools) !== JSON.stringify(nativeTools))
-      throw Object.assign(
-        new Error("LCX anchored tool declarations diverged between serialization batches"),
-        { code: "LCX_RESPONSES_INVALID_INPUT" },
-      );
-    nativeTools = serialized.tools ?? nativeTools;
-    nativeModel = serialized.model ?? nativeModel;
-    grammarToolInputProperties =
-      serialized.grammarToolInputProperties ?? grammarToolInputProperties;
-    const restored = restoreGrokNativeReplay(
-      serialized.input,
-      batch.filter(isPersistedMessage),
-      options.grokNativeReplayRoute,
-    ) as SerializedDshMessages["input"];
-    const base = input.length;
-    supersededInstructionItems.push(
-      ...locateSupersededItems(serialized.input, restored, serialized.supersededInstructionItems).map(
-        (position) => base + position,
-      ),
-    );
-    input.push(...restored);
-    mergeMap(imageMap, serialized.imageMap);
-  };
-  for (const message of surfaceMessages ?? []) {
+  const { systemPrompt, messages: surfaceMessages } = splitSystemPrompt(options.system, messages);
+  // Resolve the descriptor before selecting effort. This conversion has no tool-bearing transcript.
+  const descriptor = await serializeDshMessages([], ctx, serializeOptions({ tools: undefined }));
+  const configurationUpdateEffort = await options.configurationUpdate?.(descriptor.model);
+  const nonce = `lcx-request-boundary:${globalThis.crypto.randomUUID()}:`;
+  const marker = (id: string): RequestMessage => ({
+    role: "user", content: [{ type: "text", text: nonce + id }],
+  });
+  // Checkpoint bodies are already serialized. Hold their positions while ONE Pi conversion handles
+  // the entire tool-bearing surface; Pi alone owns declarations, removals and incremental notices.
+  const transcript: RequestMessage[] = [];
+  const replacements = new Map<string, SerializedDshMessages["input"]>();
+  for (const message of surfaceMessages) {
     assertSupportedCheckpointMessage(message);
-    const state = session && isPersistedMessage(message) && compactCheckpointId(message)
-      ? await checkpointStateForMessage(ctx, session, message)
-      : undefined;
-    if (state && session) {
-      const checkpointId = compactCheckpointId(message);
-      if (!checkpointId) {
-        normal.push(message);
-        continue;
-      }
-      await flush();
-      if (stateRouteCompatible(state, route, ctx)) {
-        const nativeOutput = state.nativeOutput;
-        const hydratedMap = new Map();
-        const hydrated = await hydrateNativeImageReferences(
-          nativeOutput,
-          ctx,
-          requestImageOptions(
-            routeConfig,
-            imageSupport,
-            options.signal,
-            hydratedMap,
-          ),
-        );
-        const hydratedItems = responseInputItems(hydrated);
-        for (const bytes of inputImageBase64Lengths(hydratedItems)) fixedImageBytes += bytes;
-        input.push(...hydratedItems);
-        mergeMap(imageMap, hydratedMap);
-      } else {
-        const portable = await portableMessagesForCheckpoint(
-          ctx,
-          session,
-          checkpointId,
-          { maxChars: routeConfig.portableReplayMaxChars },
-        );
-        // Shadowed history is superseded by the head DSH re-rendered when the compaction began its new
-        // series, so its old system messages stay ordinary context instead of regaining instruction
-        // authority behind the current prompt.
-        const serialized = await serializeDshMessages(
-          portable,
-          ctx,
-          // Portable history is plain context: it carries no developer updates, and deferred declarations are
-          // only meaningful to the anchored surface itself.
-          serializeOptions(undefined, {
-            systemPromptUpdate: undefined,
-            toolUpdate: undefined,
-            tools: tools?.map((tool) => withoutDeferLoading(tool as never)),
-          }),
-        );
-        for (const bytes of inputImageBase64Lengths(serialized.input)) fixedImageBytes += bytes;
-        input.push(...serialized.input);
-        mergeMap(imageMap, serialized.imageMap);
-      }
+    const checkpointId = session && isPersistedMessage(message) ? compactCheckpointId(message) : undefined;
+    const state = checkpointId && session && isPersistedMessage(message) ? await checkpointStateForMessage(ctx, session, message) : undefined;
+    if (!state || !session || !checkpointId) {
+      transcript.push(message);
       continue;
     }
-    normal.push(message);
+    let items: SerializedDshMessages["input"];
+    if (stateRouteCompatible(state, route, ctx)) {
+      const hydratedMap = new Map();
+      items = responseInputItems(await hydrateNativeImageReferences(
+        state.nativeOutput, ctx,
+        requestImageOptions(routeConfig, imageSupport, options.signal, hydratedMap),
+      ));
+      mergeMap(imageMap, hydratedMap);
+    } else {
+      const portable = await portableMessagesForCheckpoint(ctx, session, checkpointId, {
+        maxChars: routeConfig.portableReplayMaxChars,
+      });
+      // Shadowed history is plain context. Its old tools and prompt snapshots cannot re-declare
+      // the current series' surface or regain instruction authority on a different route.
+      const serialized = await serializeDshMessages(portable, ctx, serializeOptions({
+        systemPromptUpdate: undefined, toolUpdate: undefined, tools: undefined,
+        // Fixed replay images cannot be offloaded by the surface owner; check the assembled request below.
+        maxRequestImageBytes: Number.MAX_SAFE_INTEGER, maxRequestImages: Number.MAX_SAFE_INTEGER,
+      }));
+      items = serialized.input;
+      mergeMap(imageMap, serialized.imageMap);
+    }
+    const id = String(replacements.size);
+    replacements.set(id, items);
+    transcript.push(marker(id));
   }
-  await flush();
+  const serialized = await serializeDshMessages(transcript, ctx, serializeOptions({
+    systemPrompt, includeSystemPrompt: true, tracePrelude: true,
+    ...(configurationUpdateEffort === undefined ? {} : { configurationUpdateEffort }),
+  }));
+  const surfaceImageBytes = inputImageBase64Lengths(serialized.input);
+  nativeTools = serialized.tools;
+  nativeModel = serialized.model;
+  grammarToolInputProperties = serialized.grammarToolInputProperties;
+  mergeMap(imageMap, serialized.imageMap);
+  const restored = restoreGrokNativeReplay(
+    serialized.input, surfaceMessages.filter(isPersistedMessage), options.grokNativeReplayRoute,
+  ) as SerializedDshMessages["input"];
+  const snapshotPositions = new Set(locateSupersededItems(
+    serialized.input, restored, serialized.supersededInstructionItems,
+  ));
+  const ephemeralPreludeItemCount = serialized.preludeItemCount;
+  const seen = new Set<string>();
+  for (const [position, item] of restored.entries()) {
+    const text = isRecord(item) && item.role === "user" && Array.isArray(item.content) && item.content.length === 1
+      && isRecord(item.content[0]) ? item.content[0].text : undefined;
+    if (typeof text === "string" && text.startsWith(nonce)) {
+      const id = text.slice(nonce.length);
+      if (seen.has(id) || !replacements.has(id))
+        throw Object.assign(new Error("LCX could not trace a request boundary"), { code: "LCX_RESPONSES_INVALID_INPUT" });
+      seen.add(id);
+      input.push(...replacements.get(id)!);
+      continue;
+    }
+    if (snapshotPositions.has(position)) supersededInstructionItems.push(input.length);
+    input.push(item);
+  }
+  if (ephemeralPreludeItemCount < 0 || seen.size !== replacements.size || JSON.stringify(input).includes(nonce))
+    throw Object.assign(new Error("LCX could not remove request boundary markers"), { code: "LCX_RESPONSES_INVALID_INPUT" });
+  const assembledImages = inputImageBase64Lengths(input);
   assertAggregateImageBudget({
     maxBytes: Number.isSafeInteger(routeConfig.maxRequestImageBytes) && Number(routeConfig.maxRequestImageBytes) > 0
       ? Number(routeConfig.maxRequestImageBytes)
       : DEFAULT_MAX_REQUEST_IMAGE_BYTES,
-    fixedBytes: fixedImageBytes,
+    fixedBytes: assembledImages.reduce((sum, bytes) => sum + bytes, 0) - surfaceImageBytes.reduce((sum, bytes) => sum + bytes, 0),
+    fixedCount: assembledImages.length - surfaceImageBytes.length,
+    maxImages: routeConfig.maxRequestImages,
+    countQuantum: routeConfig.imageOffloadCountQuantum,
     surfaceBytes: surfaceImageBytes,
   });
   if (!nativeModel)
@@ -1386,8 +1350,12 @@ async function serializeNativeAware(
       new Error("LCX could not resolve the Pi Responses model descriptor"),
       { code: "LCX_RESPONSES_MODEL_UNAVAILABLE" },
     );
+  // Pi ends the input with the request's own level, after everything else it serializes.
+  if (configurationUpdateEffort !== undefined)
+    input.push({ type: "configuration_update", reasoning: { effort: configurationUpdateEffort } } as SerializedDshMessages["input"][number]);
   return {
     input,
+    configurationUpdateEffort,
     ephemeralPreludeItemCount,
     supersededInstructionItems,
     imageMap,
@@ -1426,6 +1394,7 @@ async function* remoteCompactionStream(
       ctx,
       {
         signal: options.signal,
+        system: options.system,
         tools: options.tools && [...options.tools],
         toolSurface: { history: options.toolHistory },
       },
@@ -1438,6 +1407,7 @@ async function* remoteCompactionStream(
       cacheSessionId === undefined ? null : route.sessionId,
       providerDynamicHeaders(routeConfig.provider, options.messages),
       route.sessionId || undefined,
+      options,
     );
     const generation = generationControlsFromSession(
       sessionFor(ctx, route.sessionId),
@@ -1863,8 +1833,10 @@ async function* managedResponsesStream(
       ctx,
       {
         signal: options.signal,
+        system: options.system,
         tools: options.tools && [...options.tools],
         toolSurface: { history: options.toolHistory },
+        configurationUpdate: (model) => configurationUpdateEffort(model, options.reasoningEffort, () => resolveApiKey(ctx, routeConfig)),
       },
     );
     assertSupportedReasoningEffort(options.reasoningEffort, prepared.modelFacts);
@@ -1876,6 +1848,7 @@ async function* managedResponsesStream(
       cacheSessionId === undefined ? null : route.sessionId,
       providerDynamicHeaders(routeConfig.provider, options.messages),
       route.sessionId || undefined,
+      options,
     );
     const body = buildResponsesBody({
       model: prepared.model,
@@ -1888,6 +1861,7 @@ async function* managedResponsesStream(
       reasoningEffort: options.reasoningEffort,
       temperature: options.temperature,
       maxTokens: options.maxTokens,
+      ...(prepared.configurationUpdateEffort === undefined ? {} : { configurationUpdateEffort: prepared.configurationUpdateEffort }),
     });
     const nativeReplay = inputHasNativeState(prepared.input);
     if (nativeReplay) {
@@ -1906,6 +1880,7 @@ async function* managedResponsesStream(
       timeoutMs: routeConfig.timeoutMs,
       maxAttempts: 1,
       maxResponseBytes: routeConfig.maxResponseBytes,
+      ...(prepared.configurationUpdateEffort === undefined ? {} : { providerThinkingLevel: prepared.configurationUpdateEffort }),
       onFailure: (info) => logStreamFailure(ctx, "gpt", info),
     });
   } catch (error) {
@@ -1937,6 +1912,7 @@ async function* managedGrokNativeSearchStream(
       ctx,
       {
         signal: options.signal,
+        system: options.system,
         tools: visibleTools,
         grokNativeReplayRoute: nativeReplayRoute,
       },
@@ -2148,7 +2124,7 @@ function installInjected(
     (session: Session, event: SessionEvent) => {
       recordAgentRouteEvent(session, event);
       // DSH 0.2 session/selectModel appends model/selection before the next
-      // prompt assembly projects tools (dsh-api-session-controller/lib/index.js:320).
+      // prompt assembly projects tools (dsh-api-session-controller `selectModel`).
       if (event.type === "model/selection" || event.type === "request/header")
         for (const agent of managedAgents)
           if (agentUsesSession(agent, session)) syncAgentTools(agent);

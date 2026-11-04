@@ -1,9 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-export { convertResponsesMessages, convertResponsesTools, processResponsesStream, } from "@earendil-works/pi-ai/api/openai-responses-shared";
+export { getResponsesToolSupport, convertResponsesMessages, convertResponsesTools, processResponsesStream, } from "@earendil-works/pi-ai/api/openai-responses-shared";
 export { createGrammarToolInputProperties } from "@earendil-works/pi-ai/api/constrained-sampling";
 export { clampOpenAIPromptCacheKey } from "@earendil-works/pi-ai/api/openai-prompt-cache";
 export { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-export { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+export { normalizeContext, resolveTranscriptTools, resolveTranscript } from "@earendil-works/pi-ai/utils/transcript";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "@earendil-works/pi-ai/api/github-copilot-headers";
 export { withOpenCodeSessionHeader } from "@earendil-works/pi-ai/providers/opencode-headers";

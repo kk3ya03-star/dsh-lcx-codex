@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -9,7 +10,7 @@ import { SessionId, SessionLogOffset, buildForkSeed } from '@deepseek-ai/dsh-ses
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -55,6 +56,7 @@ async function harness(root, index) {
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   ctx.plugin(TokenMeter)
@@ -313,7 +315,7 @@ test('portable replay (fork) drops superseded prompt snapshots before the budget
     const everything = JSON.stringify(body.input)
     assert.doesNotMatch(everything, /PROMPT-V[123]/u, 'no superseded snapshot in any role or text form')
     assert.equal(body.input.some(item => item.type === 'compaction'), false, 'a fork never receives parent opaque state')
-    assert.match(instructionTexts(body.input, 'developer')[0], /PROMPT-V\d$/u, 'the child head is a current prompt')
+    assert.match(instructionTexts(body.input.filter(item => item.type !== 'additional_tools'), 'developer')[0], /PROMPT-V\d$/u, 'the child head is a current prompt')
     const users = wire(body.input).filter(([role]) => role === 'user').map(([, text]) => text)
     assert.ok(users.some(text => text.startsWith('turn one')), 'ordinary history is replayed')
     assert.ok(users.some(text => text.startsWith('turn two uses a tool')))
@@ -511,6 +513,6 @@ test('empty system messages render nothing; legacy modes keep the user mapping',
   assert.deepEqual(wire(inHistory.input), [['user', 'a'], ['developer', 'UPDATE'], ['user', 'b']])
   for (const mode of [undefined, 'something-else']) {
     const legacy = await serializeDshMessages([sys('UPDATE'), usr('b')], {}, { model: piModel(), systemPromptUpdate: mode })
-    assert.deepEqual(wire(legacy.input), [['user', 'UPDATE'], ['user', 'b']], String(mode))
+    assert.deepEqual(wire(legacy.input), [['user', '<system-reminder>\nUPDATE\n</system-reminder>'], ['user', 'b']], String(mode))
   }
 })

@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -9,7 +10,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import Llm from '@deepseek-ai/dsh-llm'
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import Sessions from '@deepseek-ai/dsh-session'
-import Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import QuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -32,7 +33,7 @@ const baseURL = 'https://fixture.invalid/v1'
 const index = await loadSource('index', 'serializeNativeAware, managedResponsesStream')
 const checkpoint = await loadSource('native-checkpoint')
 
-async function harness(t, bound) {
+async function harness(t, bound, imageBytes = IMG) {
   const routeConfig = { baseURL, portableReplayMaxChars: 200000, maxRequestImageBytes: bound }
   const root = await mkdtemp(resolve(tmpdir(), 'lcx-119-img-'))
   const ctx = new Context()
@@ -44,6 +45,7 @@ async function harness(t, bound) {
   ctx.plugin(Projections)
   ctx.plugin(SystemPrompt)
   ctx.plugin(Tools)
+  ctx.plugin(NativeToolExecutor)
   ctx.plugin(Agents)
   ctx.plugin(AgentLoop)
   ctx.plugin(TokenMeter)
@@ -52,7 +54,7 @@ async function harness(t, bound) {
   ctx.provide('attachments', {
     imageHostPath: () => 'F:/dsh/attachments/x.png',
     async readImageRequest(ref) {
-      return { variantId: `v:${ref.attachmentId}`, attachment: ref, data: new Uint8Array(IMG).fill(7), mediaType: 'image/png', bytes: IMG, width: 8, height: 8, depth: 'uchar', space: 'srgb', hasAlpha: false }
+      return { variantId: `v:${ref.attachmentId}`, attachment: ref, data: new Uint8Array(imageBytes).fill(7), mediaType: 'image/png', bytes: imageBytes, width: 8, height: 8, depth: 'uchar', space: 'srgb', hasAlpha: false }
     },
   }, true)
   ctx.provide('credentials', { resolve: async () => ({ value: 'fixture-only' }) }, true)
@@ -65,7 +67,7 @@ async function harness(t, bound) {
         const prepared = await index.serializeNativeAware(options.messages, route, routeConfig, ctx, { tools: [] })
         const session = ctx.sessions.get(SessionId(String(options.sessionId)))
         const result = { compaction: { type: 'compaction', encrypted_content: 'FAKE-OPAQUE' }, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } }
-        const block = await checkpoint.createNativeCheckpointBlock({ ctx, session, route, result, input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, supersededItemIndices: prepared.supersededInstructionItems, imageMap: prepared.imageMap, retentionOptions: {} })
+        const block = await checkpoint.createNativeCheckpointBlock({ ctx, session, route, result, input: prepared.input, ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount, supersededItemIndices: prepared.supersededInstructionItems, imageMap: prepared.imageMap, retentionOptions: { tokenBudget: 1000000 } })
         yield* checkpoint.nativeCheckpointChunks(block, result.usage)
       })()
     }
@@ -83,7 +85,7 @@ async function harness(t, bound) {
     return new Response('', { status: 500 })
   })
   let counter = 0
-  const images = (count) => Array.from({ length: count }, () => ({ type: 'image', attachment: { attachmentId: `sha256:img${counter++}`, mediaType: 'image/png', bytes: IMG, width: 8, height: 8 } }))
+  const images = (count) => Array.from({ length: count }, () => ({ type: 'image', attachment: { attachmentId: `sha256:img${counter++}`, mediaType: 'image/png', bytes: imageBytes, width: 8, height: 8 } }))
   const handle = await ctx.agents.create({ sessionId: SessionId(`i119-${Math.random().toString(36).slice(2)}`), meta: { cwd: root }, agentOptions: { provider: 'openai', model: 'gpt-5.6-sol' } })
   const ask = async (content) => {
     handle.agent.followup(createUserMessage({ content, source: { kind: 'user' } }))
@@ -182,4 +184,25 @@ test('checkpoint images that alone exceed the bound fail with a clear, non-offlo
   assert.equal(finish.reason.failure.code, 'INVALID_REQUEST')
   assert.match(finish.reason.failure.message, /checkpoint/iu)
   assert.ok(!('offloadImages' in finish.reason.failure), 'offloading cannot help, so DSH is not asked to try')
+})
+
+for (const migrated of [false, true]) test(`aggregate count includes fixed ${migrated ? 'portable' : 'native'} replay images although both batches fit`, async t => {
+  const h = await harness(t, 20 * MiB, 3)
+  h.routeConfig.portableReplayMaxChars = 10000000
+  await h.ask([{type:'text',text:'first'}, ...h.images(30)])
+  assert.ok(await h.ctx.compaction.compactNow(h.handle.agent,new AbortController().signal))
+  await h.ask([{type:'text',text:'tail'}, ...h.images(25)])
+  const request = {...h.raw.at(-1), ...(migrated ? {model:'gpt-5.4'} : {})}
+  const before = h.bodies.length
+  const finish = await send(h,request)
+  assert.equal(h.bodies.length,before)
+  assert.equal(finish.reason.failure.code,IMAGE_OFFLOAD_REQUIRED_CODE)
+  assert.equal(finish.reason.failure.offloadImages,10,'host default count quantum')
+  const retried = await send(h,request,offloadOldest(request.messages,10))
+  assert.equal(retried.reason.failure.code,'SERVER')
+  assert.equal(imageChars(h.bodies.at(-1).input).count,45)
+  h.routeConfig.maxRequestImages=20
+  const impossible = await send(h,request,offloadOldest(request.messages,25))
+  assert.equal(impossible.reason.failure.code,'INVALID_REQUEST','fixed 30 images alone exceed the lowered count bound')
+  assert.equal(impossible.reason.failure.offloadImages,undefined)
 })

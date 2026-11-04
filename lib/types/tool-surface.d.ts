@@ -3,7 +3,7 @@ import type { ToolHistory, ToolSchema } from "@deepseek-ai/dsh-llm";
 /**
  * The route-policy value of `toolUpdates`: `"addition-only"` anchors the request `tools` to the initial
  * declaration set and renders later additions at their history position (DSH 0.2.1 host semantics);
- * `"full"` sends the complete current tool set on every request (the 0.5.1 behaviour).
+ * `"full"` projects the complete current set; Pi chooses its wire declaration mode.
  */
 export type ToolUpdatesMode = "addition-only" | "full";
 export declare const DEFAULT_TOOL_UPDATES: ToolUpdatesMode;
@@ -24,14 +24,6 @@ export type ToolSurface = {
     tools: ToolSchema[] | undefined;
     /** True only when the request carries host-style addition-only updates (deferred tools + developer additions). */
     anchored: boolean;
-    /**
-     * Compat flags the serializer must use for this request when anchored. The declaration item is chosen here
-     * (`additional_tools` wins over `tool_search`, as in Pi), independent of what LCX's own route compat knows.
-     */
-    compat?: {
-        supportsAdditionalTools: boolean;
-        supportsToolSearch?: boolean;
-    };
     /** Why the full-list path was used although anchoring was requested; undefined when anchored or not requested. */
     fallbackReason?: string;
     /** True when the host declared addition-only for this route yet LCX could not follow: worth a warning. */
@@ -54,7 +46,7 @@ export declare function withoutDeferLoading(tool: ToolSchema): ToolSchema;
 /**
  * Decide the tool surface of one GPT Responses request.
  *
- * Addition-only is used only when every condition holds, otherwise the full current list is sent:
+ * DSH history projection is used only when every condition holds; Pi owns the wire tool state:
  * the policy is on, DSH reports `toolUpdate: "addition-only"` with an in-history system prompt, the route
  * compat names a supported declaration shape (`additional_tools` or `tool_search`; silence is not guessed
  * at, see `declarationKind`), and DSH supplied its tool history. The host
