@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import { getCatalogModels } from "./pi-responses-runtime.js";
+import { getCatalogModelMaxTokens, getCatalogModels } from "./pi-responses-runtime.js";
 
 /**
  * What LCX knows about a route model when the provider profile does not say. DSH does not hand the resolved
@@ -27,6 +27,8 @@ export type CatalogModelFacts = {
   baseUrl: string | undefined;
   /** The exact catalog entry, only when it is an `openai-responses` model (descriptor, compat, reasoning map). */
   descriptor: Model<"openai-responses"> | undefined;
+  /** Catalog `maxTokens` when described by any Pi catalog (bundled non-Responses entries and unbundled Pi catalogs). */
+  maxTokens?: number;
 };
 
 type ProviderDefaults = { api: string | undefined; baseUrl: string | undefined };
@@ -61,13 +63,20 @@ export function resolveCatalogModel(provider: unknown, modelId: unknown, dshServ
   const providerName = String(provider ?? "");
   const id = String(modelId ?? "");
   const exact = getCatalogModels(providerName).find((model) => model.id === id);
-  if (exact !== undefined)
+  if (exact !== undefined) {
+    const maxTokens =
+      typeof exact.maxTokens === "number" && Number.isInteger(exact.maxTokens) && exact.maxTokens > 0
+        ? exact.maxTokens
+        : undefined;
     return {
       source: "catalog-model",
       api: exact.api,
       baseUrl: exact.baseUrl,
       descriptor: exact.api === "openai-responses" ? (exact as Model<"openai-responses">) : undefined,
+      ...(maxTokens === undefined ? {} : { maxTokens }),
     };
+  }
+  const nonBundledMaxTokens = getCatalogModelMaxTokens(providerName, id);
   const defaults = providerDefaults(providerName);
   if (dshServes && defaults.api !== undefined)
     return {
@@ -75,6 +84,13 @@ export function resolveCatalogModel(provider: unknown, modelId: unknown, dshServ
       api: defaults.api,
       baseUrl: defaults.baseUrl,
       descriptor: undefined,
+      ...(nonBundledMaxTokens === undefined ? {} : { maxTokens: nonBundledMaxTokens }),
     };
-  return { source: "unknown", api: undefined, baseUrl: undefined, descriptor: undefined };
+  return {
+    source: "unknown",
+    api: undefined,
+    baseUrl: undefined,
+    descriptor: undefined,
+    ...(nonBundledMaxTokens === undefined ? {} : { maxTokens: nonBundledMaxTokens }),
+  };
 }

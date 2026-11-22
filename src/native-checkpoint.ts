@@ -15,7 +15,7 @@ import {
   type StreamChunk,
   type TokenUsage,
 } from "@deepseek-ai/dsh-llm";
-import { baseURLFingerprint, routeCompatible } from "./route.js";
+import { baseURLFingerprint, resolveRouteHeaderAuthorityFingerprint, routeCompatible } from "./route.js";
 import { persistNativeImageReferences, responseInputItems } from "./dsh-responses.js";
 import {
   estimateBudgetItem,
@@ -39,6 +39,7 @@ type RouteIdentity = {
   model: string;
   baseURL: string;
   sessionId: string;
+  headerAuthorityFingerprint?: string;
 };
 type CompactionSummaryEvent = SessionEvent<"compaction/summary">;
 type RetentionOptions = {
@@ -63,6 +64,7 @@ type NativeCheckpointBase = {
   model: string;
   baseURLFingerprint: string;
   sourceSessionId: string;
+  headerAuthorityFingerprint?: string;
   nativeOutput: NativeOutputItem[];
   nativeCompaction?: CompactionItem;
   retainedInputCount?: number;
@@ -92,6 +94,7 @@ type NativeCheckpointCandidate = {
   model?: unknown;
   baseURLFingerprint?: unknown;
   sourceSessionId?: unknown;
+  headerAuthorityFingerprint?: unknown;
   retainedInputCount?: unknown;
   retainedClientCount?: unknown;
   retainedAssistantCount?: unknown;
@@ -104,6 +107,7 @@ type CheckpointRouteRecord = {
   model: unknown;
   baseURLFingerprint: unknown;
   sourceSessionId: unknown;
+  headerAuthorityFingerprint?: unknown;
 };
 type CreateCheckpointOptions = {
   ctx: SessionQueryContext;
@@ -448,6 +452,14 @@ export async function createNativeCheckpointBlock({
     [...retention.items, structuredClone(result.compaction)],
     imageMap ?? new Map<string, ImageAttachmentRef>(),
   ) as NativeOutputItem[];
+  const headerAuthorityFingerprint =
+    typeof route.headerAuthorityFingerprint === "string" &&
+    route.headerAuthorityFingerprint.length > 0
+      ? route.headerAuthorityFingerprint
+      : await resolveRouteHeaderAuthorityFingerprint(
+          ctx as unknown as Parameters<typeof resolveRouteHeaderAuthorityFingerprint>[0],
+          route,
+        );
   return {
     type: NATIVE_BLOCK_TYPE,
     version: NATIVE_BLOCK_VERSION,
@@ -457,6 +469,7 @@ export async function createNativeCheckpointBlock({
     model: route.model,
     baseURLFingerprint: baseURLFingerprint(route.baseURL),
     sourceSessionId: route.sessionId,
+    headerAuthorityFingerprint,
     nativeOutput,
     nativeCompaction: structuredClone(result.compaction),
     retainedInputCount: retention.items.length,
@@ -561,6 +574,12 @@ export function stateFromSummaryEvent(
   )
     return undefined;
   if (
+    block.headerAuthorityFingerprint !== undefined &&
+    (typeof block.headerAuthorityFingerprint !== "string" ||
+      block.headerAuthorityFingerprint.length === 0)
+  )
+    return undefined;
+  if (
     !validateCount(block.retainedInputCount) ||
     !validateCount(block.retainedClientCount) ||
     !validateCount(block.retainedAssistantCount)
@@ -611,6 +630,9 @@ export function stateFromSummaryEvent(
     model: block.model,
     baseURLFingerprint: block.baseURLFingerprint,
     sourceSessionId: block.sourceSessionId,
+    ...(block.headerAuthorityFingerprint === undefined
+      ? {}
+      : { headerAuthorityFingerprint: block.headerAuthorityFingerprint }),
     nativeOutput: structuredClone(block.nativeOutput) as NativeOutputItem[],
     nativeCompaction: structuredClone(nativeCompaction),
     ...(block.retainedInputCount === undefined

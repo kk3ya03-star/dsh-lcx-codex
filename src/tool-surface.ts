@@ -108,6 +108,13 @@ export function planToolSurface(input: {
       facts.toolUpdate === "addition-only" && reason !== COMPAT_OPT_OUT,
     );
   if (mode !== "addition-only") return full(messages, tools, toolHistory);
+  if (
+    (tools === undefined || tools.length === 0) &&
+    toolHistory === undefined &&
+    !messages.some((message) => message.role === "developer")
+  ) {
+    return full(messages, tools, toolHistory);
+  }
   if (tools === undefined) return fallback("no tools");
   if (!facts.resolved) return fallback("model information unavailable");
   if (facts.toolUpdate !== "addition-only") return fallback("route does not declare addition-only tool updates");
@@ -118,6 +125,12 @@ export function planToolSurface(input: {
       compat?.supportsAdditionalTools === false || compat?.supportsToolSearch === false ? COMPAT_OPT_OUT : COMPAT_SILENT,
     );
   if (toolHistory === undefined) return fallback("no DSH tool history");
+
+  const developerIds = new Set(
+    messages.flatMap((message) => (message.role === "developer" && typeof message.id === "string" ? [message.id] : [])),
+  );
+  if (toolHistory.updates.some((update) => !developerIds.has(update.messageId)))
+    return fallback("tool history references missing developer updates");
 
   const projected = projectToolUpdates(messages, tools, "addition-only", toolHistory);
   const projectedTools = projected.tools as ToolSchema[] | undefined;
@@ -136,16 +149,40 @@ export function planToolSurface(input: {
   for (const tool of projectedTools) {
     if ((tool as ToolSchema & { deferLoading?: boolean }).deferLoading === true) deferred.add(tool.name);
   }
-  // Without any deferred tool or retained addition the request equals the full list; use the ordinary path
-  // so the common no-change turn stays byte-identical with the 0.5.1 behaviour.
-  if (deferred.size === 0 && added.size === 0) return full(messages, tools, toolHistory);
   if (deferred.size !== added.size || [...deferred].some((name) => !added.has(name)))
     return fallback("deferred tools and retained additions disagree");
-  // The declared surface must equal the active surface; a mismatch means the history fold and the live
-  // header diverged (restore, fork or migration), where only the full list is known to be correct.
-  const active = new Set(tools.map((tool) => tool.name));
-  if (active.size !== projectedTools.length || projectedTools.some((tool) => !active.has(tool.name)))
+  // The declared surface must match the active normalized definitions (ignoring projection-owned
+  // `deferLoading`); a name or schema mismatch means history and live header diverged, where only
+  // the full active tool list is safe to send.
+  const canonicalJsonValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) return ["a", ...value.map(canonicalJsonValue)];
+    if (value !== null && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const entries: [string, unknown][] = [];
+      for (const key of Object.keys(record).sort()) {
+        if (!Object.hasOwn(record, key)) continue;
+        const child = record[key];
+        if (child !== undefined) entries.push([key, canonicalJsonValue(child)]);
+      }
+      return ["o", entries];
+    }
+    return value;
+  };
+  const canonicalToolSignature = (tool: ToolSchema): string => {
+    const copy = { ...(tool as ToolSchema & { deferLoading?: unknown }) };
+    delete copy.deferLoading;
+    return JSON.stringify(canonicalJsonValue(copy));
+  };
+  const active = new Map(tools.map((tool) => [tool.name, canonicalToolSignature(tool)]));
+  if (
+    active.size !== tools.length ||
+    active.size !== projectedTools.length ||
+    projectedTools.some((tool) => active.get(tool.name) !== canonicalToolSignature(tool))
+  )
     return fallback("declared tools differ from the active tools");
+  // Without any deferred tool or retained addition the verified request equals the full list; use the
+  // ordinary path so the common no-change turn stays byte-identical with the 0.5.1 behaviour.
+  if (deferred.size === 0 && added.size === 0) return full(messages, tools, toolHistory);
   return {
     messages: projected.messages as RequestMessage[],
     tools: projectedTools,

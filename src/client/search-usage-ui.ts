@@ -64,6 +64,56 @@ function tokenCount(value: number): string {
   return String(value);
 }
 
+function isSafeCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+export type CacheHitRate = {
+  readonly percent: number;
+  readonly cacheReadTokens: number;
+  readonly promptTokens: number;
+};
+
+/**
+ * Pure presentation helper: derive integer prompt-cache hit percentage from
+ * DSH TurnTokenUsage or session TokenUsage counters without side effects.
+ */
+export function promptCacheHitRate(usage: unknown): CacheHitRate | null {
+  if (!object(usage)) return null;
+  const cacheReadTokens = usage.cacheReadTokens;
+  if (!isSafeCount(cacheReadTokens)) return null;
+
+  let promptTokens: number;
+  if (usage.totalTokens !== undefined) {
+    if (!isSafeCount(usage.totalTokens) || !isSafeCount(usage.outputTokens)) return null;
+    if (usage.totalTokens < usage.outputTokens) return null;
+    promptTokens = usage.totalTokens - usage.outputTokens;
+    const hasUncached = usage.uncachedInputTokens !== undefined;
+    const hasWrite = usage.cacheWriteTokens !== undefined;
+    if (hasUncached && !isSafeCount(usage.uncachedInputTokens)) return null;
+    if (hasWrite && !isSafeCount(usage.cacheWriteTokens)) return null;
+    const knownPrompt = BigInt(hasUncached ? usage.uncachedInputTokens : 0) +
+      BigInt(cacheReadTokens) +
+      BigInt(hasWrite ? usage.cacheWriteTokens : 0);
+    if (knownPrompt > BigInt(promptTokens)) return null;
+  } else {
+    if (!isSafeCount(usage.uncachedInputTokens)) return null;
+    if (usage.cacheWriteTokens !== undefined && !isSafeCount(usage.cacheWriteTokens)) return null;
+    const sum = BigInt(usage.uncachedInputTokens) + BigInt(cacheReadTokens) + BigInt(usage.cacheWriteTokens ?? 0);
+    if (sum > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    promptTokens = Number(sum);
+  }
+
+  if (promptTokens <= 0 || cacheReadTokens > promptTokens) return null;
+  if (cacheReadTokens === promptTokens) {
+    return { percent: 100, cacheReadTokens, promptTokens };
+  }
+  const numerator = BigInt(cacheReadTokens);
+  const denominator = BigInt(promptTokens);
+  const rounded = Number((numerator * 100n + denominator / 2n) / denominator);
+  return { percent: rounded >= 100 ? 99 : rounded, cacheReadTokens, promptTokens };
+}
+
 function recordsTotal(records: readonly SearchUsage[]): number {
   let total = 0;
   for (const record of records) {
@@ -97,10 +147,32 @@ function usageView(createElement: CreateElement, scope: 'turn' | 'session', tota
   }, `${label}: ${tokenCount(total)}`);
 }
 
+function cacheHitView(createElement: CreateElement, usage: unknown, t?: Translator): unknown {
+  const rate = promptCacheHitRate(usage);
+  if (!rate) return null;
+  const label = t?.('cacheHitTurn') ?? 'Cache';
+  const titleLabel = t?.('cacheHitTurnTitle') ?? 'Prompt cache hit rate';
+  return createElement('span', {
+    className: 'lcx-cache-hit lcx-cache-hit-turn',
+    'data-lcx-cache-hit': 'turn',
+    title: `${titleLabel}: ${rate.percent}% (${tokenCount(rate.cacheReadTokens)} / ${tokenCount(rate.promptTokens)})`,
+  }, `${label} ${rate.percent}%`);
+}
+
 /** Additive turn-local usage contribution; the DSH turn-tail renderer remains the owner. */
 function TurnTailUsage({ turn, t }: TurnTailUsageProps, createElement?: CreateElement): unknown {
   if (!createElement) return null;
-  return usageView(createElement, 'turn', recordsTotal(turn.data.get('lcx-search-usage') ?? []), t);
+  const rawSearch = turn?.data?.get?.('lcx-search-usage');
+  const searchEl = usageView(createElement, 'turn', recordsTotal(Array.isArray(rawSearch) ? rawSearch : []), t);
+  const rawTail = turn?.data?.get?.('turn-tail');
+  const cacheEl = cacheHitView(createElement, object(rawTail) ? rawTail.tokenUsage : undefined, t);
+  if (searchEl && cacheEl) {
+    return createElement('span', {
+      className: 'lcx-turn-usage',
+      'data-lcx-turn-usage': 'turn',
+    }, searchEl, cacheEl);
+  }
+  return searchEl ?? cacheEl ?? null;
 }
 
 /** Separate session-level LCX surface; the built-in StatsPills projection is untouched. */

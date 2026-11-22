@@ -29,7 +29,12 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { getSupportedThinkingLevels } from "./pi-responses-runtime.js";
+import {
+  clampMaxTokensToContext,
+  clampOpenAIPromptCacheKey,
+  getSupportedThinkingLevels,
+  normalizeContext,
+} from "./pi-responses-runtime.js";
 import { fetchJsonWithRetry } from "./transport.js";
 import { DEFAULT_TOOL_UPDATES, planToolSurface, type ToolUpdatesMode } from "./tool-surface.js";
 import {
@@ -61,15 +66,23 @@ import { InvocationPolicyScope } from "./invocation-policy-scope.js";
 import { providerDynamicHeaders } from "./provider-headers.js";
 import { resolveCatalogModel } from "./model-catalog.js";
 import {
-  authenticatedGrokHeaders,
+  authenticatedGrokRequestHeaders,
   authenticatedHeaders,
+  authenticatedRequestHeaders,
+  baseURLFingerprint,
   currentRoute,
+  diagnoseGrokContextBudget,
+  diagnoseGrokContextBudgetAsync,
+  grokBudgetInputSignature,
+  grokRouteMayNeedHostBudgetLookup,
   generationControlsFromSession,
   grokPromptCacheSessionId,
+  isGrokModelId,
   promptCacheKey,
   promptCacheRetention,
   promptCacheSessionId,
   resolveGrokResponsesRouteConfig,
+  resolveRouteHeaderAuthorityFingerprint,
   diagnoseResponsesRoute,
   markHostRecognizedModel,
   warmHostRecognizedModels,
@@ -86,6 +99,7 @@ import {
   hydrateNativeImageReferences,
   inputImageBase64Lengths,
   resolveRouteModelFacts,
+  resolvePiResponsesModel,
   routeModelOverride,
   hasMidHistoryPromptSnapshot,
   responseInputItems,
@@ -93,7 +107,7 @@ import {
   splitSystemPrompt,
 } from "./dsh-responses.js";
 import { mergeFeatureHeader, requestNativeCompaction } from "./compact-v2.js";
-import { buildResponsesBody, configurationUpdateEffort } from "./responses-request.js";
+import { buildResponsesBody, configurationUpdateEffort, isChatGPTSignInCredential } from "./responses-request.js";
 import {
   managedFailureChunk,
   streamResponsesRequest,
@@ -144,6 +158,7 @@ import { AlphaRefStore, type AlphaRefRecord } from "./web-search-ref-store.js";
 import { ServiceMutex } from "./service-mutex.js";
 import {
   GROK_NATIVE_SERVER_TOOL_TYPES,
+  grokNativeReplayRouteFingerprint,
   grokNativeSearchEnabled,
   grokVisibleFunctionTools,
   isGrokNativeServerToolItem,
@@ -168,6 +183,8 @@ const EMERGENCY_PRUNE_THRESHOLD_PERCENT = 95;
 type ConfigInput = {
   supportsLongCacheRetention?: unknown;
   supportsExplicitPromptCacheMode?: unknown;
+  promptCacheKeyMode?: unknown;
+  gatewayCompatibilityFallback?: unknown;
   alphaCapabilityPath?: unknown;
   alphaRefPath?: unknown;
   alphaProfile?: unknown;
@@ -197,11 +214,15 @@ type LiveSettingsConfig = {
   searchMediaPreview: Volatile<boolean>;
   /** Defaults to true: addition-only tool updates on routes that support them. */
   incrementalToolUpdates: Volatile<boolean>;
+  /** Defaults to false: opt-in gateway fallback to standard top-level tools and reasoning.effort. */
+  gatewayCompatibilityFallback: Volatile<boolean>;
 };
 
 type NormalizedConfig = {
   supportsLongCacheRetention: boolean;
   supportsExplicitPromptCacheMode: boolean;
+  promptCacheKeyMode: "auto" | "disabled" | "enabled";
+  gatewayCompatibilityFallback: boolean;
   alphaCapabilityPath: string;
   alphaRefPath: string;
   alphaProfile: string;
@@ -231,6 +252,7 @@ type ResponsesRouteConfig = ResolvedResponsesRoute &
     | "alphaProfile"
     | "assistantRetentionPerMessageTokenCap"
     | "assistantRetentionTokenReserve"
+    | "gatewayCompatibilityFallback"
     | "maxRequestImageBytes"
     | "maxResponseBytes"
     | "nativeRetentionTokenBudget"
@@ -269,12 +291,17 @@ function routeWithPolicies(
     assistantRetentionPerMessageTokenCap:
       config.assistantRetentionPerMessageTokenCap,
     assistantRetentionTokenReserve: config.assistantRetentionTokenReserve,
+    gatewayCompatibilityFallback: config.gatewayCompatibilityFallback,
     maxRequestImageBytes: route.maxRequestImageBytes ?? config.maxRequestImageBytes,
     maxResponseBytes: config.maxResponseBytes,
     nativeRetentionTokenBudget: config.nativeRetentionTokenBudget,
     portableReplayMaxChars: config.portableReplayMaxChars,
     requestImageMaxBytes: route.requestImageMaxBytes ?? config.requestImageMaxBytes,
     requestImagePixelBudget: route.requestImagePixelBudget ?? config.requestImagePixelBudget,
+    responsesCompat:
+      config.promptCacheKeyMode === "disabled" || config.promptCacheKeyMode === "enabled"
+        ? { ...(route.responsesCompat ?? {}), promptCacheKeyMode: config.promptCacheKeyMode }
+        : route.responsesCompat,
     toolUpdates: config.toolUpdates,
     webMaxResults: config.webMaxResults,
   };
@@ -364,8 +391,10 @@ export const Config = z.object({
   grokNativeXSearch: z.boolean().default(false).volatile(),
   searchMediaPreview: z.boolean().default(false).volatile(),
   incrementalToolUpdates: z.boolean().default(true).volatile(),
+  gatewayCompatibilityFallback: z.boolean().default(DEFAULTS.gatewayCompatibilityFallback).volatile(),
   supportsLongCacheRetention: z.boolean().default(false),
   supportsExplicitPromptCacheMode: z.boolean().default(false),
+  promptCacheKeyMode: z.union(["auto", "disabled", "enabled"]).default("auto"),
   alphaCapabilityPath: z.string().default(""),
   alphaRefPath: z.string().default(""),
   alphaProfile: z.string().default(""),
@@ -392,6 +421,14 @@ function normalizeConfig(input: ConfigInput = {}): NormalizedConfig {
     supportsLongCacheRetention: input.supportsLongCacheRetention === true,
     supportsExplicitPromptCacheMode:
       input.supportsExplicitPromptCacheMode === true,
+    promptCacheKeyMode:
+      input.promptCacheKeyMode === "disabled" || input.promptCacheKeyMode === "enabled"
+        ? input.promptCacheKeyMode
+        : "auto",
+    gatewayCompatibilityFallback:
+      input.gatewayCompatibilityFallback === true ||
+      (input.gatewayCompatibilityFallback === undefined &&
+        DEFAULTS.gatewayCompatibilityFallback),
     alphaCapabilityPath: stringValue(
       input.alphaCapabilityPath,
       defaultAlphaCapabilityPath(),
@@ -527,15 +564,20 @@ async function executeHostedSearch(
     { provider: routeConfig.provider, model: routeConfig.model, sessionId },
     routeConfig,
   );
+  const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
   const headers = await authenticatedHeaders(
     ctx,
     routeConfig,
-    sessionId,
+    cacheSessionId,
     requestId,
+    {},
+    sessionId || undefined,
   );
-  const searchCacheKey = sessionId
-    ? `dsh-lcx-search:${routeFingerprint(route)}`
-    : undefined;
+  const searchCacheKey =
+    cacheSessionId &&
+    routeConfig.responsesCompat?.promptCacheKeyMode !== "disabled"
+      ? clampOpenAIPromptCacheKey(`dsh-lcx-search:${routeFingerprint(route)}`)
+      : undefined;
   const body = buildHostedSearchBody(normalized, routeConfig.model, {
     promptCacheKey: searchCacheKey,
   });
@@ -1130,18 +1172,168 @@ function locateSupersededItems(
   return located;
 }
 
-/** Refuse an effort DSH does not offer for this model, the way the DSH adapter and the Grok route do. */
+function resolveEffectiveReasoningEffort(
+  requestedEffort: unknown,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+  routeConfig: Pick<ResponsesRouteConfig, "profileReasoning">,
+): unknown {
+  return (
+    requestedEffort ??
+    routeConfig.profileReasoning ??
+    (facts.resolved ? facts.reasoning?.defaultEffort : undefined)
+  );
+}
+
+function assertValidPositiveMaxTokens(value: unknown): void {
+  if (value !== undefined && (!Number.isSafeInteger(value) || Number(value) <= 0)) {
+    throw Object.assign(
+      new Error("Responses maxTokens must be a positive safe integer"),
+      { code: "LCX_RESPONSES_INVALID_INPUT" },
+    );
+  }
+}
+
+function assertValidTemperature(value: unknown): void {
+  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+    throw Object.assign(
+      new Error("Responses temperature must be finite"),
+      { code: "LCX_RESPONSES_INVALID_INPUT" },
+    );
+  }
+}
+
+/** Resolve request maxTokens (caller -> DSH defaultMaxTokens -> Pi model.maxTokens) clamped to context room. */
+function resolveEffectiveMaxTokens(
+  requestedMaxTokens: unknown,
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "defaultMaxTokens">,
+  model: Parameters<typeof clampMaxTokensToContext>[0],
+  piContext: SerializedDshMessages["piContext"],
+): number | undefined {
+  assertValidPositiveMaxTokens(requestedMaxTokens);
+  const candidate =
+    (requestedMaxTokens as number | undefined) ??
+    (facts.resolved ? facts.defaultMaxTokens : undefined) ??
+    (typeof model.maxTokens === "number" && Number.isFinite(model.maxTokens) && model.maxTokens > 0
+      ? model.maxTokens
+      : undefined);
+  if (candidate === undefined) return undefined;
+  return clampMaxTokensToContext(
+    model,
+    normalizeContext(piContext as never) as unknown as Parameters<typeof clampMaxTokensToContext>[1],
+    candidate,
+  );
+}
+
+function estimateContentArrayToPiParts(parts: readonly unknown[]) {
+  const result: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+  for (const part of parts) {
+    if (!isRecord(part)) {
+      const text = JSON.stringify(part);
+      if (text) result.push({ type: "text", text });
+      continue;
+    }
+    if (part.type === "input_image") {
+      result.push({ type: "image", data: "", mimeType: "image/png" });
+      continue;
+    }
+    if (
+      (part.type === "input_text" || part.type === "output_text" || part.type === "text") &&
+      typeof part.text === "string"
+    ) {
+      if (part.text) result.push({ type: "text", text: part.text });
+      continue;
+    }
+    const text = JSON.stringify(part);
+    if (text) result.push({ type: "text", text });
+  }
+  return result;
+}
+
+function extractVisibleReasoningText(parts: unknown): string[] {
+  if (!Array.isArray(parts)) return [];
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (typeof part === "string" && part) texts.push(part);
+    else if (isRecord(part) && typeof part.text === "string" && part.text) texts.push(part.text);
+  }
+  return texts;
+}
+
+function estimateItemsToPiMessages(items: readonly unknown[]): SerializedDshMessages["piContext"]["messages"] {
+  const projected: SerializedDshMessages["piContext"]["messages"] = [];
+  for (const item of items) {
+    if (!isRecord(item) || item.type === "compaction") continue;
+    if (item.type === "reasoning") {
+      // Never count opaque encrypted_content ciphertext toward visible prompt-token budgets.
+      const visibleText = [
+        ...(typeof item.text === "string" && item.text ? [item.text] : []),
+        ...extractVisibleReasoningText(item.summary),
+        ...extractVisibleReasoningText(item.content),
+      ].join("\n\n");
+      if (visibleText) projected.push({ role: "user", content: [{ type: "text", text: visibleText }], timestamp: 0 });
+      continue;
+    }
+    if (Array.isArray(item.content)) {
+      const content = estimateContentArrayToPiParts(item.content);
+      if (content.length > 0) projected.push({ role: "user", content, timestamp: 0 });
+      continue;
+    }
+    if (Array.isArray(item.output)) {
+      const content = estimateContentArrayToPiParts(item.output);
+      if (content.length > 0) projected.push({ role: "user", content, timestamp: 0 });
+      continue;
+    }
+    const text =
+      typeof item.content === "string"
+        ? item.content
+        : typeof item.arguments === "string"
+          ? `${String(item.name ?? "")}${item.arguments}`
+          : typeof item.output === "string"
+            ? item.output
+            : JSON.stringify(item);
+    if (text) projected.push({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
+  }
+  return projected;
+}
+
+/** Refuse an effort unsupported by either DSH facts or the resolved Pi model descriptor. */
 function assertSupportedReasoningEffort(
   effort: unknown,
   facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning">,
+  model?: Parameters<typeof getSupportedThinkingLevels>[0],
+  routeConfig?: Pick<ResponsesRouteConfig, "modelControls">,
 ): void {
-  if (effort === undefined || !facts.resolved) return;
-  const supported = facts.reasoning === undefined ? ["off"] : facts.reasoning.efforts;
-  if (supported.includes(String(effort))) return;
-  throw Object.assign(
-    new Error(`Responses route does not support reasoning effort "${String(effort)}"`),
-    { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
-  );
+  if (effort === undefined) return;
+  const requested = String(effort);
+  let dshAllowsOff = false;
+  if (facts.resolved) {
+    const supported = facts.reasoning === undefined ? ["off"] : facts.reasoning.efforts;
+    dshAllowsOff = supported.includes("off");
+    if (!supported.includes(requested)) {
+      throw Object.assign(
+        new Error(`Responses route does not support reasoning effort "${requested}"`),
+        { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+      );
+    }
+  }
+  if (model !== undefined) {
+    const omitOffExemption =
+      requested === "off" &&
+      dshAllowsOff &&
+      routeConfig?.modelControls?.offOmitsReasoning === true &&
+      model.thinkingLevelMap?.off === null;
+    const explicitNullMapping =
+      (model.thinkingLevelMap as Record<string, string | null | undefined> | undefined)?.[requested] === null;
+    if (
+      (explicitNullMapping && !omitOffExemption) ||
+      (!omitOffExemption && !getSupportedThinkingLevels(model).some((level) => level === requested))
+    ) {
+      throw Object.assign(
+        new Error(`Responses route does not support reasoning effort "${requested}"`),
+        { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
+      );
+    }
+  }
 }
 
 const reportedToolSurfaceFallbacks = new Set<string>();
@@ -1184,13 +1376,68 @@ function reportCatalogGap(ctx: HostContext, route: { provider: string; model: st
   );
 }
 
+async function resolveAssistantReplayScope(
+  ctx: HostContext,
+  session: Session | undefined,
+  route: { provider: string; model: string; baseURL: string; sessionId: string; headerAuthorityFingerprint?: string },
+  grokNativeReplayRoute?: GrokNativeReplayRoute,
+  headerAuthorityFingerprint?: string,
+) {
+  const inheritedMessageIds = new Set<string>();
+  let disallowUnstampedReplay = false;
+  if (session && (session.header?.isSeeded === true || session.header?.parentSession !== undefined)) {
+    const query = resolveContextService(ctx, "sessionQuery") as
+      | { observeSession?: (id: string, options: { projectionMode: "none" }) => Promise<{ events: readonly SessionEvent[]; [Symbol.dispose]?: () => void }> }
+      | undefined;
+    if (typeof query?.observeSession !== "function" || typeof session.isOwnSeq !== "function") {
+      disallowUnstampedReplay = true;
+    } else {
+      let lease: { events: readonly SessionEvent[]; [Symbol.dispose]?: () => void } | undefined;
+      try {
+        lease = await query.observeSession(session.id, { projectionMode: "none" });
+        for (const event of lease.events) {
+          if (event.type === "assistant/message" && !session.isOwnSeq(event.seq)) {
+            const msgId = (event.data as { message?: { id?: unknown } } | undefined)?.message?.id;
+            if (typeof msgId === "string" && msgId.length > 0) inheritedMessageIds.add(msgId);
+          }
+        }
+      } catch {
+        disallowUnstampedReplay = true;
+      } finally {
+        lease?.[Symbol.dispose]?.();
+      }
+    }
+  }
+  const effectiveHeaderAuthorityFingerprint =
+    headerAuthorityFingerprint ?? route.headerAuthorityFingerprint;
+  return {
+    ...(route.provider ? { provider: route.provider } : {}),
+    ...(route.model ? { model: route.model } : {}),
+    ...(route.sessionId ? { sessionId: route.sessionId } : {}),
+    ...(route.baseURL ? { baseURLFingerprint: baseURLFingerprint(route.baseURL) } : {}),
+    ...(effectiveHeaderAuthorityFingerprint
+      ? { headerAuthorityFingerprint: effectiveHeaderAuthorityFingerprint }
+      : {}),
+    ...(grokNativeReplayRoute
+      ? { grokRouteAuthorityFingerprint: grokNativeReplayRouteFingerprint(grokNativeReplayRoute) }
+      : {}),
+    ...(inheritedMessageIds.size > 0 ? { inheritedMessageIds } : {}),
+    ...(disallowUnstampedReplay ? { disallowUnstampedReplay: true } : {}),
+  };
+}
+
 async function serializeNativeAware(
   rawMessages: readonly RequestMessage[],
-  route: { provider: string; model: string; baseURL: string; sessionId: string },
+  route: { provider: string; model: string; baseURL: string; sessionId: string; headerAuthorityFingerprint?: string },
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
   options: Pick<GenerateOptions, "signal" | "tools" | "system"> & {
     grokNativeReplayRoute?: GrokNativeReplayRoute;
+    validateBeforeAuth?: (
+      model: SerializedDshMessages["model"],
+      modelFacts: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
+    ) => Promise<void> | void;
+    resolveHeaderAuthorityFingerprint?: () => Promise<string | undefined>;
     /**
      * Present on GPT routes: `rawMessages`/`tools` are DSH's unprojected request and this function chooses
      * the tool surface (addition-only or full list). Absent (Grok): the caller already projected them.
@@ -1200,23 +1447,41 @@ async function serializeNativeAware(
      * Ordinary GPT requests only: decides, from the resolved model descriptor, the effort sent as
      * `configuration_update` items (see `configurationUpdateEffort`). Compaction and Grok requests omit it.
      */
-    configurationUpdate?: (model: SerializedDshMessages["model"]) => Promise<string | undefined>;
+    configurationUpdate?: (
+      model: SerializedDshMessages["model"],
+      modelFacts: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
+    ) => Promise<string | undefined>;
+    /**
+     * Ordinary GPT requests only: resolves the mapped thinking level to record on the assistant
+     * replay state even while `gatewayCompatibilityFallback` omits `configuration_update` items.
+     */
+    persistedThinkingLevel?: (
+      model: SerializedDshMessages["model"],
+      modelFacts: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
+    ) => Promise<string | undefined>;
+    /** Pre-resolved model facts from host recognition so streams never query `resolveModelInfo` twice. */
+    prefetchedModelFacts?: Awaited<ReturnType<typeof resolveRouteModelFacts>>;
   },
 ) {
   const session = sessionFor(ctx, route.sessionId);
   // One adapter-owned lookup supplies image support and the route's system-prompt update mode. On an
   // "in-history" route DSH appends a changed prompt as a later full system message; it must reach the
   // model in place with instruction authority instead of being demoted to user context.
-  const modelFacts = await resolveRouteModelFacts(ctx, route, options.signal);
+  const modelFacts =
+    options.prefetchedModelFacts ?? (await resolveRouteModelFacts(ctx, route, options.signal));
   if (options.grokNativeReplayRoute === undefined) reportCatalogGap(ctx, route);
   const { imageSupport, systemPromptUpdate, resolved } = modelFacts;
   const modelOverride = routeModelOverride(routeConfig, modelFacts, options.grokNativeReplayRoute !== undefined);
   let messages: readonly RequestMessage[] = rawMessages;
   let tools = options.tools;
   let anchoredTools = false;
+  const gatewayCompatibilityFallback =
+    routeConfig.gatewayCompatibilityFallback === true;
   if (options.toolSurface !== undefined) {
     const surface = planToolSurface({
-      mode: routeConfig.toolUpdates ?? DEFAULT_TOOL_UPDATES,
+      mode: gatewayCompatibilityFallback
+        ? "full"
+        : (routeConfig.toolUpdates ?? DEFAULT_TOOL_UPDATES),
       messages: rawMessages,
       tools: options.tools as never,
       toolHistory: options.toolSurface.history,
@@ -1245,20 +1510,66 @@ async function serializeNativeAware(
   let grammarToolInputProperties: SerializedDshMessages["grammarToolInputProperties"];
   /** Absolute input positions rendered from prompt snapshots superseded by a checkpoint. */
   const supersededInstructionItems: number[] = [];
-  const serializeOptions = (extra: Record<string, unknown> = {}) => requestImageOptions(
+  const baseSerializeOptions = (extra: Record<string, unknown> = {}) => requestImageOptions(
     routeConfig, imageSupport, options.signal, undefined, {
-      route, tools,
+      route:
+        routeConfig.profileDefaultMaxTokens === undefined && routeConfig.catalogMaxTokens === undefined
+          ? route
+          : {
+              ...route,
+              ...(routeConfig.catalogMaxTokens === undefined ? {} : { catalogMaxTokens: routeConfig.catalogMaxTokens }),
+              ...(routeConfig.profileDefaultMaxTokens === undefined ? {} : { profileDefaultMaxTokens: routeConfig.profileDefaultMaxTokens }),
+            },
+      tools,
       responsesCompat: routeConfig.responsesCompat,
       systemPromptUpdate,
       ...(anchoredTools ? { toolUpdate: "addition-only" } : {}),
+      ...(gatewayCompatibilityFallback ? { gatewayCompatibilityFallback: true } : {}),
       ...(modelOverride === undefined ? {} : { model: modelOverride }),
       ...extra,
     },
   );
   const { systemPrompt, messages: surfaceMessages } = splitSystemPrompt(options.system, messages);
   // Resolve the descriptor before selecting effort. This conversion has no tool-bearing transcript.
-  const descriptor = await serializeDshMessages([], ctx, serializeOptions({ tools: undefined }));
-  const configurationUpdateEffort = await options.configurationUpdate?.(descriptor.model);
+  const descriptor = await serializeDshMessages([], ctx, baseSerializeOptions({ tools: undefined }));
+  await options.validateBeforeAuth?.(descriptor.model, modelFacts);
+  const configurationUpdateEffort = gatewayCompatibilityFallback
+    ? undefined
+    : await options.configurationUpdate?.(descriptor.model, modelFacts);
+  const providerThinkingLevel =
+    configurationUpdateEffort ??
+    (gatewayCompatibilityFallback ? await options.persistedThinkingLevel?.(descriptor.model, modelFacts) : undefined);
+  const headerAuthorityFingerprint =
+    options.resolveHeaderAuthorityFingerprint !== undefined
+      ? await options.resolveHeaderAuthorityFingerprint()
+      : route.headerAuthorityFingerprint ??
+        (await resolveRouteHeaderAuthorityFingerprint(ctx, route, routeConfig, {
+          sessionId: route.sessionId || undefined,
+        }));
+  const effectiveRoute =
+    headerAuthorityFingerprint === undefined
+      ? route
+      : { ...route, headerAuthorityFingerprint };
+  const assistantReplayScope = await resolveAssistantReplayScope(
+    ctx,
+    session,
+    effectiveRoute,
+    options.grokNativeReplayRoute,
+    headerAuthorityFingerprint,
+  );
+  const serializeOptions = (extra: Record<string, unknown> = {}) =>
+    baseSerializeOptions({
+      route:
+        routeConfig.profileDefaultMaxTokens === undefined && routeConfig.catalogMaxTokens === undefined
+          ? effectiveRoute
+          : {
+              ...effectiveRoute,
+              ...(routeConfig.catalogMaxTokens === undefined ? {} : { catalogMaxTokens: routeConfig.catalogMaxTokens }),
+              ...(routeConfig.profileDefaultMaxTokens === undefined ? {} : { profileDefaultMaxTokens: routeConfig.profileDefaultMaxTokens }),
+            },
+      assistantReplayScope,
+      ...extra,
+    });
   const nonce = `lcx-request-boundary:${globalThis.crypto.randomUUID()}:`;
   const marker = (id: string): RequestMessage => ({
     role: "user", content: [{ type: "text", text: nonce + id }],
@@ -1267,6 +1578,7 @@ async function serializeNativeAware(
   // the entire tool-bearing surface; Pi alone owns declarations, removals and incremental notices.
   const transcript: RequestMessage[] = [];
   const replacements = new Map<string, SerializedDshMessages["input"]>();
+  const replacementContexts = new Map<string, SerializedDshMessages["piContext"]["messages"]>();
   for (const message of surfaceMessages) {
     assertSupportedCheckpointMessage(message);
     const checkpointId = session && isPersistedMessage(message) ? compactCheckpointId(message) : undefined;
@@ -1276,13 +1588,14 @@ async function serializeNativeAware(
       continue;
     }
     let items: SerializedDshMessages["input"];
-    if (stateRouteCompatible(state, route, ctx)) {
+    if (stateRouteCompatible(state, effectiveRoute, ctx)) {
       const hydratedMap = new Map();
       items = responseInputItems(await hydrateNativeImageReferences(
         state.nativeOutput, ctx,
         requestImageOptions(routeConfig, imageSupport, options.signal, hydratedMap),
       ));
       mergeMap(imageMap, hydratedMap);
+      replacementContexts.set(String(replacements.size), estimateItemsToPiMessages(items));
     } else {
       const portable = await portableMessagesForCheckpoint(ctx, session, checkpointId, {
         maxChars: routeConfig.portableReplayMaxChars,
@@ -1291,18 +1604,27 @@ async function serializeNativeAware(
       // the current series' surface or regain instruction authority on a different route.
       const serialized = await serializeDshMessages(portable, ctx, serializeOptions({
         systemPromptUpdate: undefined, toolUpdate: undefined, tools: undefined,
+        assistantReplayScope: { disallowAllNativeReplay: true },
         // Fixed replay images cannot be offloaded by the surface owner; check the assembled request below.
         maxRequestImageBytes: Number.MAX_SAFE_INTEGER, maxRequestImages: Number.MAX_SAFE_INTEGER,
       }));
       items = serialized.input;
       mergeMap(imageMap, serialized.imageMap);
+      const portableMessages =
+        serialized.piContext.systemPrompt !== undefined && serialized.piContext.systemPrompt.length > 0
+          ? [
+              { role: "system" as const, content: serialized.piContext.systemPrompt, timestamp: 0 },
+              ...serialized.piContext.messages,
+            ]
+          : serialized.piContext.messages;
+      replacementContexts.set(String(replacements.size), portableMessages);
     }
     const id = String(replacements.size);
     replacements.set(id, items);
     transcript.push(marker(id));
   }
   const serialized = await serializeDshMessages(transcript, ctx, serializeOptions({
-    systemPrompt, includeSystemPrompt: true, tracePrelude: true,
+    systemPrompt, tracePrelude: true,
     ...(configurationUpdateEffort === undefined ? {} : { configurationUpdateEffort }),
   }));
   const surfaceImageBytes = inputImageBase64Lengths(serialized.input);
@@ -1310,9 +1632,83 @@ async function serializeNativeAware(
   nativeModel = serialized.model;
   grammarToolInputProperties = serialized.grammarToolInputProperties;
   mergeMap(imageMap, serialized.imageMap);
+  const grokRestored = new Map<Message, readonly unknown[]>();
+  const expectedGrokRouteFingerprint =
+    options.grokNativeReplayRoute === undefined
+      ? undefined
+      : grokNativeReplayRouteFingerprint(options.grokNativeReplayRoute);
+  const grokNativeEligibleMessages = surfaceMessages
+    .filter(isPersistedMessage)
+    .filter((message) => {
+      if (message.role !== "assistant" || message.source.kind !== "model") return false;
+      const lcxReplay = isRecord(message.source.replayState)
+        ? message.source.replayState.lcxReplay
+        : undefined;
+      return (
+        isRecord(lcxReplay) &&
+        lcxReplay.version === 1 &&
+        typeof lcxReplay.sourceSessionId === "string" &&
+        lcxReplay.sourceSessionId.length > 0 &&
+        lcxReplay.sourceSessionId === effectiveRoute.sessionId &&
+        typeof lcxReplay.headerAuthorityFingerprint === "string" &&
+        lcxReplay.headerAuthorityFingerprint.length > 0 &&
+        typeof headerAuthorityFingerprint === "string" &&
+        headerAuthorityFingerprint.length > 0 &&
+        lcxReplay.headerAuthorityFingerprint === headerAuthorityFingerprint &&
+        expectedGrokRouteFingerprint !== undefined &&
+        typeof lcxReplay.grokRouteAuthorityFingerprint === "string" &&
+        lcxReplay.grokRouteAuthorityFingerprint.length > 0 &&
+        lcxReplay.grokRouteAuthorityFingerprint === expectedGrokRouteFingerprint
+      );
+    });
+  const effectiveGrokNativeReplayRoute =
+    options.grokNativeReplayRoute === undefined
+      ? undefined
+      : {
+          ...options.grokNativeReplayRoute,
+          ...(headerAuthorityFingerprint ? { headerAuthorityFingerprint } : {}),
+        };
   const restored = restoreGrokNativeReplay(
-    serialized.input, surfaceMessages.filter(isPersistedMessage), options.grokNativeReplayRoute,
+    serialized.input,
+    grokNativeEligibleMessages,
+    effectiveGrokNativeReplayRoute,
+    (message, output) => {
+      grokRestored.set(message, output);
+    },
   ) as SerializedDshMessages["input"];
+  const surfaceAssistants = surfaceMessages.filter((message) => message.role === "assistant");
+  let assistantIndex = 0;
+  const piContext: SerializedDshMessages["piContext"] =
+    replacementContexts.size === 0 && grokRestored.size === 0
+      ? serialized.piContext
+      : {
+          ...serialized.piContext,
+          messages: serialized.piContext.messages.flatMap((msg) => {
+            if (msg.role === "assistant") {
+              const surfaceAssistant = surfaceAssistants[assistantIndex++];
+              const restoredOutput =
+                surfaceAssistant !== undefined && isPersistedMessage(surfaceAssistant)
+                  ? grokRestored.get(surfaceAssistant)
+                  : undefined;
+              if (restoredOutput !== undefined) {
+                return estimateItemsToPiMessages(restoredOutput);
+              }
+              return [msg];
+            }
+            if (
+              msg.role === "user" &&
+              Array.isArray(msg.content) &&
+              msg.content.length === 1 &&
+              msg.content[0]?.type === "text" &&
+              typeof msg.content[0].text === "string" &&
+              msg.content[0].text.startsWith(nonce)
+            ) {
+              const id = msg.content[0].text.slice(nonce.length);
+              return replacementContexts.get(id) ?? [msg];
+            }
+            return [msg];
+          }),
+        };
   const snapshotPositions = new Set(locateSupersededItems(
     serialized.input, restored, serialized.supersededInstructionItems,
   ));
@@ -1356,14 +1752,17 @@ async function serializeNativeAware(
   return {
     input,
     configurationUpdateEffort,
+    providerThinkingLevel,
     ephemeralPreludeItemCount,
     supersededInstructionItems,
     imageMap,
     imageSupport,
     tools: nativeTools,
     model: nativeModel,
+    piContext,
     grammarToolInputProperties,
     modelFacts,
+    headerAuthorityFingerprint,
   };
 }
 
@@ -1383,10 +1782,56 @@ async function* remoteCompactionStream(
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
   next: () => AsyncIterable<StreamChunk>,
+  prefetchedModelFacts?: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
 ): AsyncGenerator<StreamChunk> {
   const history = stripCompactionDirective(options.messages);
   const route = currentRoute(options, routeConfig);
   try {
+    assertValidTemperature(options.temperature);
+    assertValidPositiveMaxTokens(options.maxTokens);
+    const generation = generationControlsFromSession(
+      sessionFor(ctx, route.sessionId),
+      route,
+    );
+    const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
+    let cachedAuthHeaders:
+      | Promise<{
+          apiKey: string;
+          headers: Record<string, string>;
+          headerAuthorityFingerprint: string;
+        }>
+      | undefined;
+    const getAuthHeaders = () =>
+      (cachedAuthHeaders ??= (async () => {
+        const apiKey = await resolveApiKey(ctx, routeConfig);
+        const headerRouteConfig = routeConfig.apiKeyEnv
+          ? routeConfig
+          : {
+              ...routeConfig,
+              provider: routeConfig.provider ?? route.provider,
+              model: routeConfig.model ?? route.model,
+              apiKeyEnv:
+                resolveResponsesRouteConfig(ctx, { provider: route.provider, model: route.model }, {})
+                  ?.apiKeyEnv ?? "",
+            };
+        const { headers, headerAuthorityFingerprint } = await authenticatedRequestHeaders(
+          ctx,
+          headerRouteConfig,
+          cacheSessionId,
+          cacheSessionId === undefined ? null : route.sessionId,
+          providerDynamicHeaders(routeConfig.provider, options.messages),
+          route.sessionId || undefined,
+          options,
+          apiKey,
+        );
+        return {
+          apiKey,
+          headers,
+          headerAuthorityFingerprint,
+        };
+      })());
+    let effectiveCompactionReasoning: ReturnType<typeof resolveEffectiveReasoningEffort> | undefined;
+    let effectiveCompactionTemperature: unknown;
     const prepared = await serializeNativeAware(
       history,
       route,
@@ -1397,22 +1842,48 @@ async function* remoteCompactionStream(
         system: options.system,
         tools: options.tools && [...options.tools],
         toolSurface: { history: options.toolHistory },
+        ...(prefetchedModelFacts === undefined ? {} : { prefetchedModelFacts }),
+        validateBeforeAuth: (model, modelFacts) => {
+          effectiveCompactionReasoning = resolveEffectiveReasoningEffort(
+            options.reasoningEffort ?? generation.reasoningEffort,
+            modelFacts,
+            routeConfig,
+          );
+          assertSupportedReasoningEffort(
+            effectiveCompactionReasoning,
+            modelFacts,
+            model,
+            routeConfig,
+          );
+          effectiveCompactionTemperature =
+            options.temperature ?? generation.temperature;
+          assertValidTemperature(effectiveCompactionTemperature);
+        },
+        resolveHeaderAuthorityFingerprint: async () =>
+          (await getAuthHeaders()).headerAuthorityFingerprint,
       },
     );
-    const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
-    const headers = await authenticatedHeaders(
-      ctx,
+    effectiveCompactionReasoning ??= resolveEffectiveReasoningEffort(
+      options.reasoningEffort ?? generation.reasoningEffort,
+      prepared.modelFacts,
       routeConfig,
-      cacheSessionId,
-      cacheSessionId === undefined ? null : route.sessionId,
-      providerDynamicHeaders(routeConfig.provider, options.messages),
-      route.sessionId || undefined,
-      options,
     );
-    const generation = generationControlsFromSession(
-      sessionFor(ctx, route.sessionId),
-      route,
+    assertSupportedReasoningEffort(
+      effectiveCompactionReasoning,
+      prepared.modelFacts,
+      prepared.model,
+      routeConfig,
     );
+    effectiveCompactionTemperature ??=
+      options.temperature ?? generation.temperature;
+    assertValidTemperature(effectiveCompactionTemperature);
+    const effectiveCompactionMaxTokens = resolveEffectiveMaxTokens(
+      options.maxTokens ?? generation.maxTokens,
+      prepared.modelFacts,
+      prepared.model,
+      prepared.piContext,
+    );
+    const { apiKey, headers } = await getAuthHeaders();
     const result = await requestNativeCompaction({
       baseURL: routeConfig.baseURL,
       model: route.model,
@@ -1422,9 +1893,12 @@ async function* remoteCompactionStream(
       promptCacheKey: promptCacheKey(route, routeConfig, ctx),
       promptCacheRetention: promptCacheRetention(routeConfig),
       cacheRetention: routeConfig.cacheRetention,
-      reasoningEffort: generation.reasoningEffort,
-      temperature: generation.temperature,
-      maxTokens: generation.maxTokens,
+      reasoningEffort: effectiveCompactionReasoning,
+      temperature: effectiveCompactionTemperature,
+      maxTokens: effectiveCompactionMaxTokens,
+      gatewayCompatibilityFallback:
+        routeConfig.gatewayCompatibilityFallback === true,
+      omitUnsupportedFields: isChatGPTSignInCredential(prepared.model, apiKey),
       idempotencyKey: randomUUID(),
       headers,
       signal: options.signal,
@@ -1441,7 +1915,10 @@ async function* remoteCompactionStream(
     const block = await createNativeCheckpointBlock({
       ctx,
       session,
-      route,
+      route:
+        prepared.headerAuthorityFingerprint === undefined
+          ? route
+          : { ...route, headerAuthorityFingerprint: prepared.headerAuthorityFingerprint },
       result,
       input: prepared.input,
       ephemeralPreludeItemCount: prepared.ephemeralPreludeItemCount,
@@ -1818,6 +2295,7 @@ async function* managedResponsesStream(
   options: GenerateOptions,
   routeConfig: ResponsesRouteConfig,
   ctx: HostContext,
+  prefetchedModelFacts?: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
 ): AsyncGenerator<StreamChunk> {
   const route = currentRoute(options, routeConfig);
   try {
@@ -1826,6 +2304,47 @@ async function* managedResponsesStream(
         new Error("LCX Responses does not support GenerateOptions.stop"),
         { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
       );
+    assertValidTemperature(options.temperature);
+    assertValidPositiveMaxTokens(options.maxTokens);
+    let cachedApiKey: Promise<string> | undefined;
+    const getApiKey = () => (cachedApiKey ??= resolveApiKey(ctx, routeConfig));
+    const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
+    let cachedAuthHeaders:
+      | Promise<{
+          apiKey: string;
+          headers: Record<string, string>;
+          headerAuthorityFingerprint: string;
+        }>
+      | undefined;
+    const getAuthHeaders = () =>
+      (cachedAuthHeaders ??= (async () => {
+        const apiKey = await getApiKey();
+        const headerRouteConfig = routeConfig.apiKeyEnv
+          ? routeConfig
+          : {
+              ...routeConfig,
+              provider: routeConfig.provider ?? route.provider,
+              model: routeConfig.model ?? route.model,
+              apiKeyEnv:
+                resolveResponsesRouteConfig(ctx, { provider: route.provider, model: route.model }, {})
+                  ?.apiKeyEnv ?? "",
+            };
+        const { headers, headerAuthorityFingerprint } = await authenticatedRequestHeaders(
+          ctx,
+          headerRouteConfig,
+          cacheSessionId,
+          cacheSessionId === undefined ? null : route.sessionId,
+          providerDynamicHeaders(routeConfig.provider, options.messages),
+          route.sessionId || undefined,
+          options,
+          apiKey,
+        );
+        return {
+          apiKey,
+          headers,
+          headerAuthorityFingerprint,
+        };
+      })());
     const prepared = await serializeNativeAware(
       options.messages,
       route,
@@ -1836,20 +2355,56 @@ async function* managedResponsesStream(
         system: options.system,
         tools: options.tools && [...options.tools],
         toolSurface: { history: options.toolHistory },
-        configurationUpdate: (model) => configurationUpdateEffort(model, options.reasoningEffort, () => resolveApiKey(ctx, routeConfig)),
+        ...(prefetchedModelFacts === undefined ? {} : { prefetchedModelFacts }),
+        validateBeforeAuth: (model, modelFacts) => {
+          const effectiveEffort = resolveEffectiveReasoningEffort(options.reasoningEffort, modelFacts, routeConfig);
+          assertSupportedReasoningEffort(effectiveEffort, modelFacts, model, routeConfig);
+        },
+        resolveHeaderAuthorityFingerprint: async () =>
+          (await getAuthHeaders()).headerAuthorityFingerprint,
+        configurationUpdate: (model, modelFacts) => {
+          const effectiveEffort = resolveEffectiveReasoningEffort(options.reasoningEffort, modelFacts, routeConfig);
+          assertSupportedReasoningEffort(effectiveEffort, modelFacts, model, routeConfig);
+          return configurationUpdateEffort(
+            model,
+            effectiveEffort,
+            getApiKey,
+            {
+              gatewayCompatibilityFallback:
+                routeConfig.gatewayCompatibilityFallback === true,
+            },
+          );
+        },
+        persistedThinkingLevel: (model, modelFacts) => {
+          const effectiveEffort = resolveEffectiveReasoningEffort(options.reasoningEffort, modelFacts, routeConfig);
+          assertSupportedReasoningEffort(effectiveEffort, modelFacts, model, routeConfig);
+          return configurationUpdateEffort(
+            model,
+            effectiveEffort,
+            getApiKey,
+            { gatewayCompatibilityFallback: false },
+          );
+        },
       },
     );
-    assertSupportedReasoningEffort(options.reasoningEffort, prepared.modelFacts);
-    const cacheSessionId = promptCacheSessionId(route, routeConfig, ctx);
-    const headers = await authenticatedHeaders(
-      ctx,
+    const effectiveReasoningEffort = resolveEffectiveReasoningEffort(
+      options.reasoningEffort,
+      prepared.modelFacts,
       routeConfig,
-      cacheSessionId,
-      cacheSessionId === undefined ? null : route.sessionId,
-      providerDynamicHeaders(routeConfig.provider, options.messages),
-      route.sessionId || undefined,
-      options,
     );
+    assertSupportedReasoningEffort(
+      effectiveReasoningEffort,
+      prepared.modelFacts,
+      prepared.model,
+      routeConfig,
+    );
+    const effectiveMaxTokens = resolveEffectiveMaxTokens(
+      options.maxTokens,
+      prepared.modelFacts,
+      prepared.model,
+      prepared.piContext,
+    );
+    const { apiKey, headers, headerAuthorityFingerprint } = await getAuthHeaders();
     const body = buildResponsesBody({
       model: prepared.model,
       input: prepared.input,
@@ -1858,9 +2413,12 @@ async function* managedResponsesStream(
       promptCacheKey: promptCacheKey(route, routeConfig, ctx),
       promptCacheRetention: promptCacheRetention(routeConfig),
       cacheRetention: routeConfig.cacheRetention,
-      reasoningEffort: options.reasoningEffort,
+      reasoningEffort: effectiveReasoningEffort,
       temperature: options.temperature,
-      maxTokens: options.maxTokens,
+      maxTokens: effectiveMaxTokens,
+      gatewayCompatibilityFallback:
+        routeConfig.gatewayCompatibilityFallback === true,
+      omitUnsupportedFields: isChatGPTSignInCredential(prepared.model, apiKey),
       ...(prepared.configurationUpdateEffort === undefined ? {} : { configurationUpdateEffort: prepared.configurationUpdateEffort }),
     });
     const nativeReplay = inputHasNativeState(prepared.input);
@@ -1872,6 +2430,8 @@ async function* managedResponsesStream(
       baseURL: routeConfig.baseURL,
       provider: route.provider,
       model: route.model,
+      sessionId: route.sessionId || undefined,
+      headerAuthorityFingerprint,
       piModel: prepared.model,
       body,
       grammarToolInputProperties: prepared.grammarToolInputProperties,
@@ -1880,7 +2440,7 @@ async function* managedResponsesStream(
       timeoutMs: routeConfig.timeoutMs,
       maxAttempts: 1,
       maxResponseBytes: routeConfig.maxResponseBytes,
-      ...(prepared.configurationUpdateEffort === undefined ? {} : { providerThinkingLevel: prepared.configurationUpdateEffort }),
+      ...(prepared.providerThinkingLevel === undefined ? {} : { providerThinkingLevel: prepared.providerThinkingLevel }),
       onFailure: (info) => logStreamFailure(ctx, "gpt", info),
     });
   } catch (error) {
@@ -1888,23 +2448,306 @@ async function* managedResponsesStream(
   }
 }
 
+type GrokBudgetScope = "profile" | "request";
+type GrokBudgetPendingEntry = { signature: string; generation: number; promise: Promise<void> };
+type GrokBudgetScopeStores = {
+  warnings: WeakMap<object, Map<string, string>>;
+  generations: WeakMap<object, Map<string, number>>;
+  pending: WeakMap<object, Map<string, GrokBudgetPendingEntry>>;
+};
+
+function createGrokBudgetScopeStores(): GrokBudgetScopeStores {
+  return {
+    warnings: new WeakMap<object, Map<string, string>>(),
+    generations: new WeakMap<object, Map<string, number>>(),
+    pending: new WeakMap<object, Map<string, GrokBudgetPendingEntry>>(),
+  };
+}
+
+const grokBudgetProfileStores = createGrokBudgetScopeStores();
+const grokBudgetRequestStores = createGrokBudgetScopeStores();
+const grokBudgetInFlightCounts = new WeakMap<object, number>();
+let grokBudgetNextToken = 0;
+
+function grokBudgetScope(requestMaxTokens?: unknown): GrokBudgetScope {
+  return requestMaxTokens === undefined ? "profile" : "request";
+}
+
+function grokBudgetStoresForScope(scope: GrokBudgetScope): GrokBudgetScopeStores {
+  return scope === "profile" ? grokBudgetProfileStores : grokBudgetRequestStores;
+}
+
+function contextMap<V>(store: WeakMap<object, Map<string, V>>, ctx: HostContext): Map<string, V> | undefined {
+  if (ctx === null || typeof ctx !== "object") return undefined;
+  let existing = store.get(ctx);
+  if (!existing) {
+    existing = new Map<string, V>();
+    store.set(ctx, existing);
+  }
+  return existing;
+}
+
+function grokBudgetKey(route: { provider: string; model: string }): string {
+  return `${route.provider}\u001f${route.model}`;
+}
+
+const MAX_PENDING_GROK_LOOKUPS = 4096;
+
+function evictOldestNonPending(
+  cache: Map<string, unknown>,
+  pending: Map<string, GrokBudgetPendingEntry> | undefined,
+  maxSize = 256,
+): void {
+  if (cache.size < maxSize) return;
+  for (const existingKey of cache.keys()) {
+    if (!pending?.has(existingKey)) {
+      cache.delete(existingKey);
+      if (cache.size < maxSize) return;
+    }
+  }
+}
+
+function nextGrokBudgetGeneration(ctx: HostContext, scope: GrokBudgetScope, key: string): number {
+  const stores = grokBudgetStoresForScope(scope);
+  const generations = contextMap(stores.generations, ctx);
+  if (!generations) return 0;
+  evictOldestNonPending(generations, contextMap(stores.pending, ctx));
+  grokBudgetNextToken += 1;
+  generations.set(key, grokBudgetNextToken);
+  return grokBudgetNextToken;
+}
+
+function recordGrokBudgetWarning(
+  ctx: HostContext,
+  route: { provider: string; model: string },
+  warning: string | undefined,
+  options?: { scope?: GrokBudgetScope; key?: string; expectedGeneration?: number },
+): void {
+  const scope = options?.scope ?? "profile";
+  const key = options?.key ?? grokBudgetKey(route);
+  const stores = grokBudgetStoresForScope(scope);
+  if (options?.expectedGeneration !== undefined) {
+    const generations = contextMap(stores.generations, ctx);
+    const currentGeneration = generations?.get(key);
+    const pendingGeneration = contextMap(stores.pending, ctx)?.get(key)?.generation;
+    if (currentGeneration !== undefined) {
+      if (currentGeneration !== options.expectedGeneration) return;
+    } else if (pendingGeneration !== options.expectedGeneration) {
+      return;
+    }
+  }
+  const targetCache = contextMap(stores.warnings, ctx);
+  if (warning === undefined) {
+    targetCache?.delete(key);
+    return;
+  }
+  if (targetCache?.get(key) === warning) return;
+  if (targetCache) {
+    evictOldestNonPending(targetCache, contextMap(stores.pending, ctx));
+    targetCache.set(key, warning);
+  }
+  try {
+    ctx.logger?.warn?.(warning);
+  } catch {
+    // Diagnostic logging failures must never affect caller lifecycle or stream outcome.
+  }
+}
+
+function recordGrokBudgetFromModelFacts(
+  ctx: HostContext,
+  route: { provider: string; model: string },
+  facts: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
+  requestMaxTokens?: unknown,
+): void {
+  const scope = grokBudgetScope(requestMaxTokens);
+  const key = grokBudgetKey(route);
+  const generation = nextGrokBudgetGeneration(ctx, scope, key);
+  contextMap(grokBudgetStoresForScope(scope).pending, ctx)?.delete(key);
+  recordGrokBudgetWarning(
+    ctx,
+    route,
+    diagnoseGrokContextBudget(ctx, route, {
+      requestMaxTokens,
+      resolvedModelInfo: facts.resolved
+        ? {
+            contextWindow: facts.contextWindow,
+            defaultMaxTokens: facts.defaultMaxTokens,
+          }
+        : undefined,
+    }),
+    { scope, key, expectedGeneration: generation },
+  );
+}
+
+function reportGrokBudgetDiagnosis(
+  ctx: HostContext,
+  route: { provider: string; model: string },
+  options?: { requestMaxTokens?: unknown; skipAsyncLookup?: boolean },
+): void {
+  if (!route.provider || !route.model || !isGrokModelId(route.model)) return;
+  const scope = grokBudgetScope(options?.requestMaxTokens);
+  const key = grokBudgetKey(route);
+  const stores = grokBudgetStoresForScope(scope);
+  const canLookup =
+    !options?.skipAsyncLookup &&
+    typeof ctx?.llm?.resolveModelInfo === "function" &&
+    grokRouteMayNeedHostBudgetLookup(ctx, route, options?.requestMaxTokens);
+  if (canLookup) {
+    const signature = grokBudgetInputSignature(ctx, route, options?.requestMaxTokens);
+    const pending = contextMap(stores.pending, ctx);
+    const existing = pending?.get(key);
+    if (existing && existing.signature === signature) return;
+    const owner: unknown = ctx;
+    const activeInFlight =
+      owner !== null && typeof owner === "object"
+        ? (grokBudgetInFlightCounts.get(owner) ?? 0)
+        : 0;
+    if (
+      activeInFlight >= MAX_PENDING_GROK_LOOKUPS ||
+      (pending && !existing && pending.size >= MAX_PENDING_GROK_LOOKUPS)
+    ) {
+      return;
+    }
+    if (owner !== null && typeof owner === "object") {
+      grokBudgetInFlightCounts.set(owner, activeInFlight + 1);
+    }
+    const generation = nextGrokBudgetGeneration(ctx, scope, key);
+    let promise: Promise<void>;
+    try {
+      promise = diagnoseGrokContextBudgetAsync(ctx, route, {
+        requestMaxTokens: options?.requestMaxTokens,
+      })
+        .then((warning) => {
+          recordGrokBudgetWarning(ctx, route, warning, { scope, key, expectedGeneration: generation });
+        })
+        .catch(() => {
+          // Pre-flight diagnostic lookup must never affect caller lifecycle.
+        })
+        .finally(() => {
+          if (owner !== null && typeof owner === "object") {
+            const current = grokBudgetInFlightCounts.get(owner) ?? 0;
+            if (current <= 1) grokBudgetInFlightCounts.delete(owner);
+            else grokBudgetInFlightCounts.set(owner, current - 1);
+          }
+          if (pending?.get(key)?.generation === generation) pending.delete(key);
+        });
+    } catch (error) {
+      if (owner !== null && typeof owner === "object") {
+        const current = grokBudgetInFlightCounts.get(owner) ?? 0;
+        if (current <= 1) grokBudgetInFlightCounts.delete(owner);
+        else grokBudgetInFlightCounts.set(owner, current - 1);
+      }
+      throw error;
+    }
+    if (pending) {
+      pending.set(key, { signature, generation, promise });
+    }
+    return;
+  }
+  const generation = nextGrokBudgetGeneration(ctx, scope, key);
+  contextMap(stores.pending, ctx)?.delete(key);
+  let warning: string | undefined;
+  try {
+    warning = diagnoseGrokContextBudget(ctx, route, {
+      requestMaxTokens: options?.requestMaxTokens,
+    });
+  } catch {
+    return;
+  }
+  recordGrokBudgetWarning(ctx, route, warning, { scope, key, expectedGeneration: generation });
+}
+
 async function* managedGrokNativeSearchStream(
   options: GenerateOptions,
   routeConfig: ResponsesRouteConfig,
   nativeSearch: GrokNativeSearchState,
   ctx: HostContext,
+  prefetchedModelFacts?: Awaited<ReturnType<typeof resolveRouteModelFacts>>,
 ): AsyncGenerator<StreamChunk> {
   const route = currentRoute(options, routeConfig);
-  const nativeReplayRoute = grokReplayRoute(route, routeConfig);
   try {
     if (options.stop !== undefined)
       throw Object.assign(
         new Error("LCX Responses does not support GenerateOptions.stop"),
         { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
       );
+    assertValidTemperature(options.temperature);
+    assertValidPositiveMaxTokens(options.maxTokens);
     const projected = projectToolUpdates(options.messages, options.tools, undefined, options.toolHistory);
     const visibleTools = grokVisibleFunctionTools(projected.tools, nativeSearch);
     const declaredToolNames = new Set(visibleTools?.map((tool) => tool.name) ?? []);
+    const modelFacts =
+      prefetchedModelFacts ?? (await resolveRouteModelFacts(ctx, route, options.signal));
+    if (!modelFacts.resolved && hasMidHistoryPromptSnapshot(projected.messages))
+      throw Object.assign(
+        new Error(
+          "LCX could not read the route's model information, so in-history system prompt updates cannot be sent safely; retry once the route is available",
+        ),
+        { code: "LCX_SYSTEM_PROMPT_MODE_UNKNOWN" },
+      );
+    const modelOverride = routeModelOverride(routeConfig, modelFacts, true);
+    const preflightBaseModel = resolvePiResponsesModel({
+      imageSupport: modelFacts.imageSupport,
+      route:
+        routeConfig.profileDefaultMaxTokens === undefined && routeConfig.catalogMaxTokens === undefined
+          ? route
+          : {
+              ...route,
+              ...(routeConfig.catalogMaxTokens === undefined ? {} : { catalogMaxTokens: routeConfig.catalogMaxTokens }),
+              ...(routeConfig.profileDefaultMaxTokens === undefined ? {} : { profileDefaultMaxTokens: routeConfig.profileDefaultMaxTokens }),
+            },
+      responsesCompat: routeConfig.responsesCompat,
+      ...(modelOverride === undefined ? {} : { model: modelOverride }),
+    }) as unknown as SerializedDshMessages["model"];
+    const model = {
+      ...preflightBaseModel,
+      ...routeConfig.modelDefaults,
+      ...routeConfig.modelControls,
+      ...(routeConfig.responsesCompat === undefined
+        ? {}
+        : {
+            compat: {
+              ...(isRecord(preflightBaseModel.compat) ? preflightBaseModel.compat : {}),
+              ...routeConfig.responsesCompat,
+            },
+          }),
+      id: route.model,
+      provider: route.provider,
+      baseUrl: routeConfig.rawBaseURL ?? routeConfig.baseURL,
+      api: "openai-responses" as const,
+    };
+    const effectiveReasoning = resolveEffectiveReasoningEffort(
+      options.reasoningEffort,
+      modelFacts,
+      routeConfig,
+    );
+    assertSupportedReasoningEffort(
+      effectiveReasoning,
+      modelFacts,
+      model,
+      routeConfig,
+    );
+    // Reuse the single `resolveModelInfo` answer instead of querying DSH twice.
+    recordGrokBudgetFromModelFacts(ctx, route, modelFacts, options.maxTokens);
+    const cacheSessionId = grokPromptCacheSessionId(route, routeConfig);
+    const apiKey = await resolveApiKey(ctx, routeConfig);
+    const {
+      headers,
+      replayAuthorityHeaders,
+      headerAuthorityFingerprint: grokHeaderAuthorityFingerprint,
+    } = await authenticatedGrokRequestHeaders(
+      ctx,
+      routeConfig,
+      cacheSessionId,
+      providerDynamicHeaders(routeConfig.provider, options.messages),
+      route.sessionId || undefined,
+      options,
+      apiKey,
+    );
+    const nativeReplayRoute = grokReplayRoute(route, {
+      apiKeyEnv: routeConfig.apiKeyEnv,
+      headers: replayAuthorityHeaders,
+    });
     const prepared = await serializeNativeAware(
       projected.messages,
       route,
@@ -1915,37 +2758,16 @@ async function* managedGrokNativeSearchStream(
         system: options.system,
         tools: visibleTools,
         grokNativeReplayRoute: nativeReplayRoute,
+        resolveHeaderAuthorityFingerprint: async () => grokHeaderAuthorityFingerprint,
+        prefetchedModelFacts: modelFacts,
       },
     );
-    const cacheSessionId = grokPromptCacheSessionId(route, routeConfig);
-    const headers = await authenticatedGrokHeaders(
-      ctx,
-      routeConfig,
-      cacheSessionId,
-      providerDynamicHeaders(routeConfig.provider, options.messages),
-      route.sessionId || undefined,
+    const effectiveMaxTokens = resolveEffectiveMaxTokens(
+      options.maxTokens,
+      prepared.modelFacts,
+      model,
+      prepared.piContext,
     );
-    const model = {
-      ...prepared.model,
-      ...routeConfig.modelDefaults,
-      ...routeConfig.modelControls,
-      id: route.model,
-      provider: route.provider,
-      baseUrl: routeConfig.baseURL,
-      api: "openai-responses" as const,
-    };
-    const effectiveReasoning = options.reasoningEffort ?? routeConfig.profileReasoning;
-    if (
-      effectiveReasoning !== undefined &&
-      !getSupportedThinkingLevels(model).some((level) => level === effectiveReasoning) &&
-      !(effectiveReasoning === "off" && routeConfig.modelControls?.offOmitsReasoning === true)
-    )
-      throw Object.assign(
-        new Error(
-          `Grok route does not support reasoning effort "${String(effectiveReasoning)}"`,
-        ),
-        { code: "LCX_RESPONSES_UNSUPPORTED_OPTION" },
-      );
     const body = buildResponsesBody({
       model,
       input: prepared.input,
@@ -1955,7 +2777,10 @@ async function* managedGrokNativeSearchStream(
       cacheRetention: routeConfig.cacheRetention,
       reasoningEffort: effectiveReasoning,
       temperature: options.temperature,
-      maxTokens: options.maxTokens,
+      maxTokens: effectiveMaxTokens,
+      gatewayCompatibilityFallback:
+        routeConfig.gatewayCompatibilityFallback === true,
+      omitUnsupportedFields: isChatGPTSignInCredential(model, apiKey),
     });
     if (nativeSearch.web) {
       const include = new Set(Array.isArray(body.include) ? body.include : []);
@@ -1979,6 +2804,8 @@ async function* managedGrokNativeSearchStream(
       serverToolTypes: GROK_NATIVE_SERVER_TOOL_TYPES,
       isServerToolItem: (item) => isGrokNativeServerToolItem(item, nativeSearch, declaredToolNames),
       declaredToolNames,
+      sessionId: route.sessionId || undefined,
+      headerAuthorityFingerprint: grokHeaderAuthorityFingerprint,
       nativeReplayRoute,
       onFailure: (info) => logStreamFailure(ctx, "grok-native", info),
       onServerToolUsage(usage) {
@@ -2035,8 +2862,8 @@ async function* hostRecognizedRouteStream(
     return;
   }
   yield* options.purpose === "compaction"
-    ? remoteCompactionStream(options, routeWithPolicies(routeConfig, policy()), ctx, next)
-    : managedResponsesStream(options, routeWithPolicies(routeConfig, policy()), ctx);
+    ? remoteCompactionStream(options, routeWithPolicies(routeConfig, policy()), ctx, next, facts)
+    : managedResponsesStream(options, routeWithPolicies(routeConfig, policy()), ctx, facts);
 }
 
 /** The Grok counterpart of `hostRecognizedRouteStream`: DSH not resolving the model is DSH's to report. */
@@ -2050,9 +2877,17 @@ async function* hostRecognizedGrokStream(
   const facts = await resolveRouteModelFacts(ctx, options, options.signal);
   if (facts.resolved) markHostRecognizedModel(ctx, options.provider, options.model);
   const grokRoute = facts.resolved ? resolveGrokResponsesRouteConfig(ctx, options, policy()) : undefined;
-  yield* grokRoute
-    ? managedGrokNativeSearchStream(options, routeWithPolicies(grokRoute, policy()), nativeSearch, ctx)
-    : next();
+  if (!grokRoute) {
+    recordGrokBudgetFromModelFacts(
+      ctx,
+      { provider: String(options.provider ?? ""), model: String(options.model ?? "") },
+      facts,
+      options.maxTokens,
+    );
+    yield* next();
+    return;
+  }
+  yield* managedGrokNativeSearchStream(options, routeWithPolicies(grokRoute, policy()), nativeSearch, ctx, facts);
 }
 
 function installInjected(
@@ -2085,6 +2920,9 @@ function installInjected(
   const compactionPatchRecords: CompactionPatchRecords = new Map();
 
   const syncAgentTools = (agent: object & HostAgent) => {
+    try {
+      reportGrokBudgetDiagnosis(ctx, selectedAgentRoute(agent));
+    } catch {}
     syncGptToolsForAgent(
       ctx,
       agent,
@@ -2141,10 +2979,17 @@ function installInjected(
     state.grokNativeWebSearch = configInput.grokNativeWebSearch.get();
     state.grokNativeXSearch = configInput.grokNativeXSearch.get();
     // Absent (older config shapes) means the default: addition-only. Only an explicit false selects the full list.
-    runtimeConfig =
+    const toolUpdates: ToolUpdatesMode =
       configInput.incrementalToolUpdates?.get() === false
-        ? { ...baseConfig, toolUpdates: "full" }
-        : baseConfig;
+        ? "full"
+        : DEFAULT_TOOL_UPDATES;
+    const gatewayCompatibilityFallback =
+      configInput.gatewayCompatibilityFallback?.get() === true;
+    runtimeConfig = {
+      ...baseConfig,
+      toolUpdates,
+      gatewayCompatibilityFallback,
+    };
     refreshTools();
   };
   /**
@@ -2255,12 +3100,31 @@ function installInjected(
         web: state.grokNativeWebSearch,
         x: state.grokNativeXSearch,
       };
-      if (options.purpose === undefined && grokNativeSearchEnabled(grokNativeSearch)) {
-        const grokRoute = resolveGrokResponsesRouteConfig(
+      const grokRoute =
+        options.purpose === undefined && grokNativeSearchEnabled(grokNativeSearch)
+          ? resolveGrokResponsesRouteConfig(ctx, options, runtimeConfig)
+          : undefined;
+      const hostGrokPending =
+        options.purpose === undefined &&
+        grokNativeSearchEnabled(grokNativeSearch) &&
+        !grokRoute &&
+        isGrokModelId(options.model) &&
+        diagnoseResponsesRoute(ctx, options) === "api-unresolved";
+      const streamHandlesGrokFacts = Boolean(grokRoute) || hostGrokPending;
+      if (!(streamHandlesGrokFacts && grokRouteMayNeedHostBudgetLookup(ctx, options, options.maxTokens))) {
+        reportGrokBudgetDiagnosis(
           ctx,
-          options,
-          runtimeConfig,
+          {
+            provider: String(options.provider ?? ""),
+            model: String(options.model ?? ""),
+          },
+          {
+            requestMaxTokens: options.maxTokens,
+            skipAsyncLookup: streamHandlesGrokFacts,
+          },
         );
+      }
+      if (options.purpose === undefined && grokNativeSearchEnabled(grokNativeSearch)) {
         if (grokRoute)
           return managedGrokNativeSearchStream(
             options,
@@ -2269,7 +3133,7 @@ function installInjected(
             ctx,
           );
         // A Grok model only DSH's own catalog may know: ask DSH now, so the first request is not left to a race.
-        if (/^grok/iu.test(String(options.model ?? "")) && diagnoseResponsesRoute(ctx, options) === "api-unresolved")
+        if (hostGrokPending)
           return hostRecognizedGrokStream(options, ctx, () => runtimeConfig, grokNativeSearch, next);
       }
       if (!state.enabled || !isGptLifecycleTarget(options)) return next();

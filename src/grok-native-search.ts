@@ -19,6 +19,7 @@ export type GrokNativeReplayRoute = {
   baseURL: string;
   apiKeyEnv: string;
   headers?: Record<string, string>;
+  headerAuthorityFingerprint?: string;
 };
 
 type WireTool = Record<string, unknown>;
@@ -382,6 +383,24 @@ function replayForMessage(
     return undefined;
   const replayState = message.source.replayState;
   if (!isRecord(replayState)) return undefined;
+  const lcxReplay = replayState.lcxReplay;
+  const expectedRouteFingerprint = grokNativeReplayRouteFingerprint(route);
+  if (
+    !isRecord(lcxReplay) ||
+    lcxReplay.version !== 1 ||
+    typeof lcxReplay.sourceSessionId !== "string" ||
+    lcxReplay.sourceSessionId.length === 0 ||
+    lcxReplay.sourceSessionId !== route.sessionId ||
+    typeof lcxReplay.headerAuthorityFingerprint !== "string" ||
+    lcxReplay.headerAuthorityFingerprint.length === 0 ||
+    typeof route.headerAuthorityFingerprint !== "string" ||
+    route.headerAuthorityFingerprint.length === 0 ||
+    lcxReplay.headerAuthorityFingerprint !== route.headerAuthorityFingerprint ||
+    typeof lcxReplay.grokRouteAuthorityFingerprint !== "string" ||
+    lcxReplay.grokRouteAuthorityFingerprint.length === 0 ||
+    lcxReplay.grokRouteAuthorityFingerprint !== expectedRouteFingerprint
+  )
+    return undefined;
   const envelope = readGrokNativeReplayEnvelope(replayState.grokNative, route);
   if (!envelope) return undefined;
   const serverSearchEchoCallIds = new Set(envelope.serverSearchEchoCallIds ?? []);
@@ -416,6 +435,7 @@ export function restoreGrokNativeReplay(
   input: readonly unknown[],
   messages: readonly Message[],
   route: GrokNativeReplayRoute | undefined,
+  onRestore?: (message: Message, output: readonly WireItem[]) => void,
 ): unknown[] {
   const restored = structuredClone(input) as unknown[];
   if (!route) return restored;
@@ -437,6 +457,7 @@ export function restoreGrokNativeReplay(
     }
     if (start < 0) continue;
     restored.splice(start, replacedLength, ...structuredClone(envelope.output));
+    onRestore?.(message, envelope.output);
     cursor = start + envelope.output.length;
   }
   return restored;

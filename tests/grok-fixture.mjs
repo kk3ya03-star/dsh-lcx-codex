@@ -1,6 +1,38 @@
 import apply from '../lib/index.js'
 import { updateVolatile } from '@deepseek-ai/cosmokit'
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai'
+import { XAI_MODELS } from '@earendil-works/pi-ai/providers/xai.models'
 import { pluginConfig, providerContext } from './provider-context-fixture.mjs'
+
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+function fixtureReasoningFor(profiles, provider, model) {
+  const profile = profiles?.[provider]
+  const entry = Array.isArray(profile?.models) ? profile.models.find((m) => m?.id === model) : undefined
+  let efforts
+  if (entry?.reasoningEfforts === false) {
+    return undefined
+  }
+  if (entry?.reasoningEfforts && typeof entry.reasoningEfforts === 'object') {
+    efforts = THINKING_LEVELS.filter((level) => {
+      const wire = entry.reasoningEfforts[level]
+      return wire !== undefined && (wire !== null || level === 'off')
+    })
+  } else if (provider === 'xai' && Object.hasOwn(XAI_MODELS, model)) {
+    const builtin = XAI_MODELS[model]
+    if (!builtin?.reasoning) return undefined
+    efforts = getSupportedThinkingLevels(builtin)
+  } else {
+    return undefined
+  }
+  const defaultEffort = typeof profile?.reasoning === 'string' && efforts.includes(profile.reasoning)
+    ? profile.reasoning
+    : undefined
+  return {
+    efforts: efforts.map((id) => ({ id, label: id })),
+    ...(defaultEffort === undefined ? {} : { defaultEffort }),
+  }
+}
 
 export const xaiProfile = {
   api: 'openai-responses',
@@ -60,9 +92,11 @@ export function grokHarness({
       ...provider.llm,
       resolveModelInfo: async (provider, model) => {
         modelInfoRequests.push({ provider, model })
+        const reasoning = fixtureReasoningFor(profiles, provider, model)
         return {
           inputModalities: ['text', 'image'],
           context: { contextWindow: 500000 },
+          ...(reasoning === undefined ? {} : { reasoning }),
         }
       },
       fileRequestText: () => 'file fixture',

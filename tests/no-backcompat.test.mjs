@@ -77,7 +77,7 @@ test('removed config and stored settings fields are absent, not migration aliase
   assert.deepEqual(Object.entries(Config.dict)
     .filter(([, schema]) => schema.meta?.volatile === true)
     .map(([field]) => field).sort(),
-    ['advancedHostedSearch', 'alphaSearch', 'enabled', 'grokNativeWebSearch', 'grokNativeXSearch', 'incrementalToolUpdates', 'searchMediaPreview', 'webSearch'])
+    ['advancedHostedSearch', 'alphaSearch', 'enabled', 'gatewayCompatibilityFallback', 'grokNativeWebSearch', 'grokNativeXSearch', 'incrementalToolUpdates', 'searchMediaPreview', 'webSearch'])
   for (const path of ['src/legacy-v3.ts', 'lib/legacy-v3.js', 'lib/types/legacy-v3.d.ts']) {
     assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, path)
   }
@@ -176,11 +176,12 @@ test('current first-checkpoint retryable failure still invokes Basic fallback ev
   } finally { globalThis.fetch = oldFetch }
 })
 
-test('DSH explicit cache opt-out overrides plugin capability and image policy resolves from DSH', () => {
-  const configured = { ...profile, maxRequestImageBytes: 7, requestImagePixelBudget: 8, requestImageMaxBytes: 9, compat: { supportsExplicitPromptCacheMode: false } }
+test('DSH offered compat overrides plugin capability, withheld profile compat is ignored, and image policy resolves from DSH', () => {
+  const configured = { ...profile, maxRequestImageBytes: 7, requestImagePixelBudget: 8, requestImageMaxBytes: 9, compat: { supportsLongCacheRetention: false, supportsExplicitPromptCacheMode: false } }
   const ctx = providerContext({ lcx: configured })
-  const route = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, { supportsExplicitPromptCacheMode: true, maxRequestImageBytes: 100 })
-  assert.equal(route.responsesCompat.supportsExplicitPromptCacheMode, false)
+  const route = resolveResponsesRouteConfig(ctx, { provider: 'lcx', model: 'gpt-5.6-sol' }, { supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: true, maxRequestImageBytes: 100 })
+  assert.equal(route.responsesCompat.supportsLongCacheRetention, false)
+  assert.equal(route.responsesCompat.supportsExplicitPromptCacheMode, true)
   assert.equal(route.maxRequestImageBytes, 7)
   assert.equal(route.requestImagePixelBudget, 8)
   assert.equal(route.requestImageMaxBytes, 9)

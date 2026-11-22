@@ -1,8 +1,8 @@
-name: Verify public source
+name: Verify candidate source
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'stable/**', 'work/**']
   pull_request:
   workflow_dispatch:
 
@@ -26,13 +26,20 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npm ci --prefix scripts/runtime-dsh022 --ignore-scripts --no-audit --no-fund
-          node scripts/link-dsh-runtime.mjs scripts/runtime-dsh022
+          node scripts/link-dsh-runtime.mjs
       - name: Verify generated code, strict types, tests, schemas and package
         run: |
+          node --test scripts/release-policy.test.mjs scripts/link-dsh-runtime.test.mjs scripts/finalize-workflow.test.mjs scripts/publish-workflow.test.mjs scripts/pack-local.test.mjs
           node scripts/check-generated.mjs
           npm run typecheck
-          npm test
-          node --test scripts/release-policy.test.mjs scripts/link-dsh-runtime.test.mjs
-          npm run test:schema
-          git diff --exit-code
-          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          if [[ "${{ github.repository }}" == "kk3ya03-star/dsh-lcx-codex" ]]; then
+            LCX_EXPECT_PUBLIC_CHECKOUT=1 npm test
+            npm run test:schema
+            git diff --exit-code
+            npm run pack:local -- --public --pack-destination "$RUNNER_TEMP"
+          else
+            npm test
+            npm run test:schema
+            git diff --exit-code
+            npm run pack:local -- --private --pack-destination "$RUNNER_TEMP"
+          fi

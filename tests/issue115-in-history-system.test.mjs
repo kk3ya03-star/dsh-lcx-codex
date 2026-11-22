@@ -486,7 +486,7 @@ const sys = text => ({ role: 'system', content: [{ type: 'text', text }] })
 const usr = text => ({ role: 'user', content: [{ type: 'text', text }] })
 
 test('a serialization batch that starts with a system update never treats it as the leading prompt', async () => {
-  const options = { model: piModel(), systemPromptUpdate: 'in-history', includeSystemPrompt: false }
+  const options = { model: piModel(), systemPromptUpdate: 'in-history' }
   for (const tools of [undefined, [tool('probe_tool')]]) {
     const batch = await serializeDshMessages([sys('UPDATE-A'), usr('hello'), sys('UPDATE-B'), usr('again')], {}, { ...options, tools })
     assert.deepEqual(wire(batch.input), [['developer', 'UPDATE-A'], ['user', 'hello'], ['developer', 'UPDATE-B'], ['user', 'again']], `tools=${tools?.length ?? 0}`)
@@ -499,10 +499,10 @@ test('a serialization batch that starts with a system update never treats it as 
 
 test('prelude plus independently serialized batches equals one pass; updates are neither merged nor dropped', async () => {
   const options = { model: piModel(), systemPromptUpdate: 'in-history' }
-  const prelude = await serializeDshMessages([], {}, { ...options, systemPrompt: 'HEAD', includeSystemPrompt: true })
+  const prelude = await serializeDshMessages([], {}, { ...options, systemPrompt: 'HEAD' })
   const batchOne = await serializeDshMessages([usr('one'), sys('UPDATE-1'), usr('two')], {}, options)
   const batchTwo = await serializeDshMessages([sys('UPDATE-2'), usr('three')], {}, options)
-  const whole = await serializeDshMessages([usr('one'), sys('UPDATE-1'), usr('two'), sys('UPDATE-2'), usr('three')], {}, { ...options, systemPrompt: 'HEAD', includeSystemPrompt: true })
+  const whole = await serializeDshMessages([usr('one'), sys('UPDATE-1'), usr('two'), sys('UPDATE-2'), usr('three')], {}, { ...options, systemPrompt: 'HEAD' })
   assert.deepEqual([...prelude.input, ...batchOne.input, ...batchTwo.input], whole.input)
   assert.deepEqual(wire(whole.input), [['developer', 'HEAD'], ['user', 'one'], ['developer', 'UPDATE-1'], ['user', 'two'], ['developer', 'UPDATE-2'], ['user', 'three']])
 })

@@ -129,18 +129,20 @@ function richPiFixture() {
 
 test('parent_child_never_sends_opaque_native_state', () => {
   const ctx = sessionContext()
-  const parentRoute = route('session-parent-fixture')
-  const childRoute = route('session-child-fixture')
+  const parentRoute = { ...route('session-parent-fixture'), headerAuthorityFingerprint: 'fixture-authority' }
+  const childRoute = { ...route('session-child-fixture'), headerAuthorityFingerprint: 'fixture-authority' }
   const state = {
     version: 5,
     provider: PROVIDER_ID,
     model: MODEL_ID,
     baseURLFingerprint: baseURLFingerprint(BASE_URL),
     sourceSessionId: parentRoute.sessionId,
+    headerAuthorityFingerprint: 'fixture-authority',
     nativeOutput: [textMessage('user', 'retained'), { type: 'compaction' }],
   }
 
   assert.equal(stateRouteCompatible(state, parentRoute, ctx), true)
+  assert.equal(stateRouteCompatible({ ...state, headerAuthorityFingerprint: undefined }, parentRoute, ctx), false)
   const childMayReplayNative = stateRouteCompatible(state, childRoute, ctx)
   assert.equal(childMayReplayNative, false, 'child ancestry permits portable migration only')
   assert.equal(childMayReplayNative ? state.nativeOutput : undefined, undefined, 'child request must omit parent native output')
@@ -168,7 +170,6 @@ test('normal_to_compact_preserves_serialized_public_prefix', async () => {
     route: { provider: PROVIDER_ID, model: MODEL_ID, baseURL: BASE_URL },
     model,
     systemPrompt: context.systemPrompt,
-    includeSystemPrompt: true,
     tools: context.tools,
   })
   const nativeBody = buildNativeCompactionBody({

@@ -294,6 +294,7 @@ for (const fixture of [
     globalThis.fetch.mock.mockImplementation(async (_url, init) => {
       const body = JSON.parse(String(init.body))
       assert.equal(body.input.some(item => item?.type === 'web_search_call'), false)
+      assert.equal(body.input.some(item => item?.type === 'reasoning'), false)
       assert.equal(body.input.filter(item => item?.type === 'function_call').length, 1)
       return finalAnswer()
     })
@@ -389,4 +390,98 @@ test('ordinary DSH Pi Grok history conversion ignores extra native state', async
   })
   assert.deepEqual(serialized.input.map(item => item.type), ['function_call', 'function_call_output'])
   assert.equal(serialized.input.some(item => item.type === 'web_search_call' || item.type === 'x_search_call'), false)
+})
+
+test('request-header contributor tenant changes invalidate Grok native replay while unchanged headers restore it', async t => {
+  const originalOutput = [reasoningItem, serverItem('web_search_call', 71), clientCall]
+  const requests = []
+  let activeTenant = 'tenant-a'
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(String(init.body)))
+    return requests.length === 1 ? sseResponse([completed(originalOutput)]) : finalAnswer()
+  })
+  const h = grokHarness({ nativeWeb: true })
+  const requestHeaders = h.handlers.get('llm-pi-ai/request-headers')
+  h.ctx.waterfall = (event, _req, headers, next) => {
+    if (event === 'llm-pi-ai/request-headers') {
+      headers.set('x-gateway-token', activeTenant)
+      return next()
+    }
+    return requestHeaders ? requestHeaders(_req, headers, next) : next()
+  }
+
+  const prompt = user('search under gateway tenant')
+  const first = await collect(h.stream(options([prompt]), () => { throw new Error('DSH adapter must not run') }))
+  const history = JSON.parse(JSON.stringify([prompt, assistantFrom(first), toolResult()]))
+
+  // Matching contributor tenant restores Grok native replay
+  const sameTenant = await collect(h.stream(options(history), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(sameTenant.at(-1).reason.kind, 'stop')
+  assert.equal(requests[1].input.some(item => item?.type === 'web_search_call'), true)
+  assert.equal(requests[1].input.some(item => item?.type === 'reasoning' && item?.encrypted_content), true)
+
+  // Changed contributor tenant strips Grok native search and encrypted reasoning
+  activeTenant = 'tenant-b'
+  const changedTenant = await collect(h.stream(options(history), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(changedTenant.at(-1).reason.kind, 'stop')
+  assert.equal(requests[2].input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(requests[2].input.some(item => item?.type === 'reasoning' || 'encrypted_content' in (item ?? {})), false)
+  assert.equal(requests[2].input.filter(item => item?.type === 'function_call').length, 1)
+})
+
+test('same-env key rotation and unstamped 0.6.0 grokNative envelopes fail closed to portable history', async t => {
+  const originalOutput = [reasoningItem, serverItem('web_search_call', 73), clientCall]
+  const requests = []
+  let activeKey = 'synthetic-xai-key-alpha'
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    requests.push(JSON.parse(String(init.body)))
+    return requests.length === 1 ? sseResponse([completed(originalOutput)]) : finalAnswer()
+  })
+  const h = grokHarness({ nativeWeb: true })
+  h.ctx.credentials.resolve = async () => ({ value: activeKey })
+
+  const prompt = user('search then rotate key')
+  const first = await collect(h.stream(options([prompt]), () => { throw new Error('DSH adapter must not run') }))
+  const history = JSON.parse(JSON.stringify([prompt, assistantFrom(first), toolResult()]))
+
+  // Matching credential with lcxReplay restores native search & encrypted reasoning
+  const sameKey = await collect(h.stream(options(history), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(sameKey.at(-1).reason.kind, 'stop')
+  assert.equal(requests[1].input.some(item => item?.type === 'web_search_call'), true)
+  assert.equal(requests[1].input.some(item => item?.type === 'reasoning' && item?.encrypted_content), true)
+
+  // Rotating credential under identical XAI_FIXTURE_KEY fails closed to portable history
+  activeKey = 'synthetic-xai-key-beta'
+  const rotatedKey = await collect(h.stream(options(history), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(rotatedKey.at(-1).reason.kind, 'stop')
+  assert.equal(requests[2].input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(requests[2].input.some(item => item?.type === 'reasoning' || 'encrypted_content' in (item ?? {})), false)
+  assert.equal(requests[2].input.filter(item => item?.type === 'function_call').length, 1)
+
+  // Unstamped 0.6.0 grokNative envelope without lcxReplay fails closed both before and after key rotation
+  const legacyHistory = JSON.parse(JSON.stringify(history))
+  delete legacyHistory[1].source.replayState.lcxReplay
+  activeKey = 'synthetic-xai-key-alpha'
+  const legacySameKey = await collect(h.stream(options(legacyHistory), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(legacySameKey.at(-1).reason.kind, 'stop')
+  assert.equal(requests[3].input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(requests[3].input.some(item => item?.type === 'reasoning' || 'encrypted_content' in (item ?? {})), false)
+  assert.equal(requests[3].input.filter(item => item?.type === 'function_call').length, 1)
+
+  activeKey = 'synthetic-xai-key-beta'
+  const legacyRotatedKey = await collect(h.stream(options(legacyHistory), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(legacyRotatedKey.at(-1).reason.kind, 'stop')
+  assert.equal(requests[4].input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(requests[4].input.some(item => item?.type === 'reasoning' || 'encrypted_content' in (item ?? {})), false)
+  assert.equal(requests[4].input.filter(item => item?.type === 'function_call').length, 1)
+
+  // Mismatched lcxReplay.grokRouteAuthorityFingerprint fails closed even when grokNative.routeAuthorityFingerprint matches
+  const mismatchedRouteStampHistory = JSON.parse(JSON.stringify(history))
+  mismatchedRouteStampHistory[1].source.replayState.lcxReplay.grokRouteAuthorityFingerprint = 'mismatch'
+  activeKey = 'synthetic-xai-key-alpha'
+  const mismatchedRouteStamp = await collect(h.stream(options(mismatchedRouteStampHistory), () => { throw new Error('DSH adapter must not run') }))
+  assert.equal(mismatchedRouteStamp.at(-1).reason.kind, 'stop')
+  assert.equal(requests[5].input.some(item => item?.type === 'web_search_call'), false)
+  assert.equal(requests[5].input.some(item => item?.type === 'reasoning' || 'encrypted_content' in (item ?? {})), false)
+  assert.equal(requests[5].input.filter(item => item?.type === 'function_call').length, 1)
 })

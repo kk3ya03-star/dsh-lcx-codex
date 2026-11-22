@@ -215,14 +215,14 @@ test('removal and redefinition fall back to host semantics without errors: the v
     assert.deepEqual(initialTools(added).map(entry => entry.name), ['tool_a', 'tool_b'])
     assert.deepEqual(addedNames(added), ['tool_c'])
     assert.deepEqual(initialTools(base).map(entry => entry.name), ['tool_a', 'tool_b'])
-    // Removing an initial tool shrinks the anchored list once; the earlier addition stays in history.
+    // Removing an initial tool rebases the anchored list to the full surviving tools in DSH 0.2.2-rc.5.
     const removed = await step('three', [tool('tool_a'), tool('tool_c')])
-    assert.deepEqual(initialTools(removed).map(entry => entry.name), ['tool_a'])
-    assert.deepEqual(addedNames(removed), ['tool_c'])
-    // The shrunk list is the new stable anchor.
+    assert.deepEqual(initialTools(removed).map(entry => entry.name), ['tool_a', 'tool_c'])
+    assert.deepEqual(addedNames(removed), [])
+    // The rebased list is the new stable anchor.
     const again = await step('four', [tool('tool_a'), tool('tool_c'), tool('tool_d')])
     assert.equal(JSON.stringify(initialTools(again)), JSON.stringify(initialTools(removed)))
-    assert.deepEqual(addedNames(again), ['tool_c', 'tool_d'])
+    assert.deepEqual(addedNames(again), ['tool_d'])
     // Redefining a tool under the same name starts a new declaration series: the complete current list, no additions.
     const redefined = await step('five', [tool('tool_a', { description: 'changed definition' }), tool('tool_c'), tool('tool_d')])
     assert.deepEqual(initialTools(redefined).map(entry => entry.name), ['tool_a', 'tool_c', 'tool_d'])
@@ -397,7 +397,7 @@ test('self check: an inconsistent host projection falls back to the full list an
 test('serializer contract: developer updates need an anchored in-history route, removals follow Pi and undeclared tools are rejected', async () => {
   const developer = (...blocks) => ({ id: 'dev-1', role: 'developer', content: blocks, source: { kind: 'tool-registry' } })
   const user = text => ({ id: 'u-1', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
-  const common = { route: { provider: 'openai', model: 'gpt-5.6-sol' }, includeSystemPrompt: false, responsesCompat: ANCHORED }
+  const common = { route: { provider: 'openai', model: 'gpt-5.6-sol' }, responsesCompat: ANCHORED }
   const tools = [tool('tool_a'), tool('tool_b', { deferLoading: true })]
   const update = developer({ type: 'tool-addition', toolName: 'tool_b' })
   await assert.rejects(serializeDshMessages([update, user('hi')], undefined, { ...common, tools, systemPromptUpdate: 'in-history' }), /developer message/u, 'not anchored')
@@ -497,9 +497,10 @@ test('the compat of a route comes from the bundled catalog or the profile; a mod
   const catalog = resolve({ openai: { api: 'openai-responses', baseURL, apiKeyEnv: 'K' } }, 'gpt-6-sol')
   assert.equal(catalog.supportsAdditionalTools, true)
   assert.equal(catalog.supportsToolSearch, true)
-  // Profile-explicit (read from the profile as written; DSH itself does not let a profile set these two).
-  assert.equal(resolve(profile({ supportsToolSearch: true }), 'gpt-9-unknown').supportsToolSearch, true)
-  assert.equal(resolve(profile({ supportsAdditionalTools: true }), 'gpt-9-unknown').supportsAdditionalTools, true)
+  // Profile-explicit: only the 4 DSH RESPONSES_COMPAT_GATE offered fields pass from profile.compat; withheld fields stay ignored (P3-A).
+  assert.equal(resolve(profile({ supportsDeveloperRole: false, supportsMaxOutputTokens: false, supportsStrictMode: false, supportsLongCacheRetention: false }), 'gpt-9-unknown').supportsLongCacheRetention, false)
+  assert.equal(resolve(profile({ supportsToolSearch: true }), 'gpt-9-unknown').supportsToolSearch, undefined)
+  assert.equal(resolve(profile({ supportsAdditionalTools: true }), 'gpt-9-unknown').supportsAdditionalTools, undefined)
   // Unknown: no catalog entry and nothing in the profile.
   const unknown = resolve(profile(), 'gpt-9-unknown')
   assert.equal(unknown.supportsAdditionalTools, undefined)

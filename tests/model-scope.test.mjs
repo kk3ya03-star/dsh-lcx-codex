@@ -95,7 +95,7 @@ function modelScopeHarness(settings = {}, config = {}) {
         }
       },
     }
-    const session = { id, requestHeader: () => ({ config: requestConfig }) }
+    const session = { id, requestHeader: () => ({ config: requestConfig }), requestContext: () => ({ provider: requestConfig.provider, model: requestConfig.model }) }
     const value = {
       options: { provider, model },
       session,

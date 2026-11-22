@@ -41,6 +41,10 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   const sessionId = 'session-19104ea5-757f-4d2f-8c02-3601a6b8de31'
   assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'short' }), sessionId)
   assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'none' }), undefined)
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'short', responsesCompat: { promptCacheKeyMode: 'disabled' } }), undefined)
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'long', responsesCompat: { promptCacheKeyMode: 'disabled' } }), undefined)
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'short', responsesCompat: { promptCacheKeyMode: 'enabled' } }), sessionId)
+  assert.equal(promptCacheKey({ sessionId }, { cacheRetention: 'short', responsesCompat: { promptCacheKeyMode: 'auto' } }), sessionId)
   assert.equal(promptCacheKey({ sessionId: 'x'.repeat(80) }, { cacheRetention: 'short' }), 'x'.repeat(64))
   assert.equal(promptCacheRetention({ cacheRetention: 'long', supportsLongCacheRetention: true }), '24h')
   assert.equal(promptCacheRetention({ cacheRetention: 'long' }), undefined)
@@ -50,8 +54,8 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
   {
     const headers = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, sessionId)
     assert.equal(headers['x-client-request-id'], sessionId)
-    assert.equal(headers.session_id, sessionId)
-    assert.equal(headers['session-id'], undefined)
+    assert.equal(headers['session-id'], sessionId)
+    assert.equal(headers.session_id, undefined)
     const noAffinity = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, undefined, null)
     assert.equal(noAffinity['x-client-request-id'], undefined)
     assert.equal(noAffinity.session_id, undefined)
@@ -59,6 +63,7 @@ test('Native cache namespace matches the DSH/Pi session cache identity', async (
     const openrouter = await authenticatedHeaders(credentials, { apiKeyEnv: envName, provider: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', headers: {} }, sessionId)
     assert.equal(openrouter['x-session-id'], sessionId)
     assert.equal(openrouter.session_id, undefined)
+    assert.equal(openrouter['session-id'], undefined)
     assert.equal(openrouter['x-client-request-id'], undefined)
   }
 })
@@ -81,7 +86,8 @@ test('root and authoritative DSH subagents share cache identity without sharing 
   const envName = 'LCX_TEST_CHILD_CORRELATION_KEY'
   {
     const headers = await authenticatedHeaders(credentials, { apiKeyEnv: envName, headers: {} }, root.id, child.id)
-    assert.equal(headers.session_id, root.id)
+    assert.equal(headers['session-id'], root.id)
+    assert.equal(headers.session_id, undefined)
     assert.equal(headers['x-client-request-id'], child.id)
   }
 })
@@ -252,11 +258,11 @@ test('explicit cache overrides win and unsupported long retention defaults to sh
   }
 })
 
-test('unknown long-cache capability stays on the conservative short path', () => {
+test('unknown long-cache capability defaults capability like Pi while keeping unset retention on the conservative short path', () => {
   const profile = { api: 'openai-responses', baseURL: 'https://relay.example/v1', apiKeyEnv: 'LCX_API_KEY' }
   const { ctx, fallback } = responsesRouteFixture({ relay: profile })
   const resolved = resolveResponsesRouteConfig(ctx, { provider: 'relay', model: 'gpt-unknown-without-metadata' }, fallback)
-  assert.equal(resolved?.supportsLongCacheRetention, false)
+  assert.equal(resolved?.supportsLongCacheRetention, true)
   assert.equal(resolved?.cacheRetention, 'short')
   assert.equal(promptCacheRetention(resolved), undefined)
 })

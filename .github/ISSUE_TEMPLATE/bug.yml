@@ -1,50 +1,41 @@
-name: Bug 反馈 / Bug report
-description: 插件出现错误或行为不符合预期 / Something does not work as expected
-labels: [bug]
+name: Bug report
+description: Report an issue with dsh-lcx-codex on DeepSeek Harness
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        请不要粘贴 API Key、完整请求内容或未脱敏的会话日志。
-        Do not paste API keys, full requests, or unredacted session logs.
-  - type: input
-    id: plugin
+        Do not paste API keys, Authorization headers, credentials, encrypted provider state, or complete unredacted session logs.
+  - type: textarea
+    id: summary
     attributes:
-      label: 插件版本 / Plugin version
-      placeholder: "0.7.0-pre.1"
+      label: What happened?
+      description: Briefly explain what you expected and what happened instead.
     validations:
       required: true
   - type: input
-    id: dsh
+    id: versions
     attributes:
-      label: DSH 版本 / DSH version (`dsh --version`)
-      placeholder: "0.2.2-alpha.3"
+      label: Plugin, DSH, and Node.js versions
+      placeholder: "dsh-lcx-codex 0.7.0 | @deepseek-ai/dsh 0.2.2-rc.5 | Node v24.x"
     validations:
       required: true
-  - type: input
-    id: node
-    attributes:
-      label: Node.js 版本 / Node.js version
-      placeholder: "24.x"
   - type: input
     id: model
     attributes:
-      label: 模型和网关类型 / Model and gateway type
-      placeholder: "gpt-5.6 via official API / grok-4.6 via gateway ..."
-  - type: textarea
-    id: steps
-    attributes:
-      label: 复现步骤 / Steps to reproduce
+      label: Model / provider profile shape (redacted)
+      placeholder: "e.g. openai / gpt-6.2-sol, xai / grok-4.6, Responses gateway without secrets"
     validations:
       required: true
   - type: textarea
-    id: expected
+    id: steps
     attributes:
-      label: 期望结果与实际结果 / Expected vs actual
+      label: Reproduction steps
+      description: Clear steps to reproduce the issue.
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: 错误信息（已脱敏）/ Error messages (redacted)
-      render: text
+      label: Redacted error or log snippet
+      description: Remove URLs with tokens, credentials, and private paths.

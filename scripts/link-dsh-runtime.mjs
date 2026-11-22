@@ -3,69 +3,12 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { createRequire } from 'node:module'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseStrictComparatorSet, satisfiesStrictRange } from './semver-range.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const runtime = realpathSync(process.argv[2] ?? join(root, 'scripts/runtime-dsh022'))
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'))
 const runtimeRequire = createRequire(join(runtime, 'package.json'))
-
-function parseSemver(value) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value)
-  assert.ok(match, `Unsupported semantic version: ${value}`)
-  return {
-    core: match.slice(1, 4).map(Number),
-    prerelease: match[4] === undefined ? [] : match[4].split('.'),
-  }
-}
-
-function compareIdentifiers(left, right) {
-  const leftNumber = /^\d+$/.test(left) ? Number(left) : undefined
-  const rightNumber = /^\d+$/.test(right) ? Number(right) : undefined
-  if (leftNumber !== undefined && rightNumber !== undefined) return Math.sign(leftNumber - rightNumber)
-  if (leftNumber !== undefined) return -1
-  if (rightNumber !== undefined) return 1
-  return left === right ? 0 : left < right ? -1 : 1
-}
-
-function compareSemver(left, right) {
-  for (let index = 0; index < 3; index += 1) {
-    if (left.core[index] !== right.core[index]) return Math.sign(left.core[index] - right.core[index])
-  }
-  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    if (left.prerelease.length === right.prerelease.length) return 0
-    return left.prerelease.length === 0 ? 1 : -1
-  }
-  const length = Math.max(left.prerelease.length, right.prerelease.length)
-  for (let index = 0; index < length; index += 1) {
-    if (left.prerelease[index] === undefined) return -1
-    if (right.prerelease[index] === undefined) return 1
-    const compared = compareIdentifiers(left.prerelease[index], right.prerelease[index])
-    if (compared !== 0) return compared
-  }
-  return 0
-}
-
-function satisfiesSimpleRange(version, range) {
-  assert.ok(!range.includes('||'), 'DSH compatibility range must be one bounded comparator set')
-  const parsed = parseSemver(version)
-  const comparators = range.trim().split(/\s+/u).map(raw => {
-    const match = /^(>=|<=|>|<|=)?(.+)$/.exec(raw)
-    assert.ok(match, `Unsupported DSH range comparator: ${raw}`)
-    return { operator: match[1] ?? '=', version: parseSemver(match[2]) }
-  })
-  // DSH's plugin manager evaluates peers with semver.satisfies(..., { includePrerelease: true }),
-  // so a prerelease is compared purely by precedence (no npm tuple-gating of prereleases).
-  // Mirror that: a prerelease below the upper bound is installable, e.g. 0.2.2-alpha.1 for
-  // `<0.2.2`, exactly as the host would admit it; anything else outside the bounds still fails.
-  return comparators.every(item => {
-    const compared = compareSemver(parsed, item.version)
-    if (item.operator === '>=') return compared >= 0
-    if (item.operator === '<=') return compared <= 0
-    if (item.operator === '>') return compared > 0
-    if (item.operator === '<') return compared < 0
-    return compared === 0
-  })
-}
 
 const pkg = readJson(join(root, 'package.json'))
 const compatibility = pkg.lcxCompatibility
@@ -75,8 +18,9 @@ assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], compatibility.verifie
 assert.equal(pkg.dependencies, undefined)
 
 const runtimeDshVersion = runtimeRequire('@deepseek-ai/dsh/package.json').version
+const parsedInstallRange = parseStrictComparatorSet(compatibility.dshInstallRange, 'lcxCompatibility.dshInstallRange')
 assert.ok(
-  satisfiesSimpleRange(runtimeDshVersion, compatibility.dshInstallRange),
+  satisfiesStrictRange(runtimeDshVersion, parsedInstallRange),
   `DSH ${runtimeDshVersion} is outside LCX install range ${compatibility.dshInstallRange}`,
 )
 

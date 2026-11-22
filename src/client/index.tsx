@@ -40,7 +40,8 @@ type Field =
   | "grokNativeWebSearch"
   | "grokNativeXSearch"
   | "searchMediaPreview"
-  | "incrementalToolUpdates";
+  | "incrementalToolUpdates"
+  | "gatewayCompatibilityFallback";
 
 type Values = Record<Field, boolean>;
 
@@ -166,12 +167,13 @@ window.__ModuleLoader__.load({
       "grokNativeXSearch",
       "searchMediaPreview",
       "incrementalToolUpdates",
+      "gatewayCompatibilityFallback",
     ];
     // Incremental tool updates are on unless the user turns them off; every other switch starts off.
     const DEFAULTS: Values = Object.fromEntries(
       FIELDS.map((field) => [field, field === "incrementalToolUpdates"]),
     ) as Values;
-    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-search-usage{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}` + inlineMediaCss + nativeMarkdownImageCss;
+    const css = `.lcx-card{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;list-style:none}.lcx-head{width:100%;display:flex;justify-content:space-between;padding:14px 16px;border:0;background:transparent;color:inherit}.lcx-body{border-top:1px solid var(--dsw-alias-border-l2);padding:12px 16px}.lcx-row{display:flex;gap:9px;padding:8px 0}.lcx-row small,.lcx-help{display:block;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary)}.lcx-group{border-top:1px solid var(--dsw-alias-border-l2);margin-top:10px;padding-top:14px}.lcx-group strong{font-size:14px}.lcx-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}.lcx-foot button{padding:6px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:inherit}.lcx-turn-usage{display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px}.lcx-search-usage,.lcx-cache-hit{display:inline-flex;align-items:center;gap:4px;margin:2px 0;color:var(--dsw-alias-label-tertiary);font:12px/18px system-ui;font-variant-numeric:tabular-nums}.lcx-search-usage-session{padding:0 4px}.lcx-search-usage-turn{padding:0 6px}.lcx-cache-hit-turn{padding:0 7px;border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-interactive-bg-hover,transparent)}` + inlineMediaCss + nativeMarkdownImageCss;
     function mountCss(): () => void {
       if (typeof document === "undefined") return () => {};
       if (document.querySelector('style[data-plugin-css="dsh-lcx-codex"]'))
@@ -202,6 +204,9 @@ window.__ModuleLoader__.load({
         tools: "增量工具更新（addition-only）",
         toolsHelp:
           "会话中途新增工具时保持请求前缀不变以保护 prompt 缓存，新增工具作为历史项声明。仅对支持的 GPT Responses 模型生效；关闭后每次请求发送完整工具列表（回退或对照用）。删除或修改工具仍会重置一次缓存。",
+        gatewayCompatibility: "网关兼容回退（标准 tools / reasoning.effort）",
+        gatewayCompatibilityHelp:
+          "默认关闭，与 DSH 宿主请求格式保持一致。仅当上游网关拒绝或丢弃纯 additional_tools 声明或 configuration_update 历史项时开启，回退为每轮发送标准顶层 tools 数组与 reasoning.effort 字段。",
         mediaPreview: "搜索媒体预览",
         mediaPreviewHelp:
           "在回答下方显示搜索返回的图片、回答里的图片直链，以及可直接播放的视频直链；点击放大或播放。回答正文里的 Markdown 图片由 DSH 原生渲染，普通网页链接保持为链接。此设置只改变界面显示。",
@@ -217,6 +222,8 @@ window.__ModuleLoader__.load({
         mediaOpen: "打开原始媒体",
         usageTurn: "本轮搜索用量",
         usageSession: "搜索用量",
+        cacheHitTurn: "缓存命中",
+        cacheHitTurnTitle: "本轮提示词缓存命中率",
         grokTitle: "Grok 原生搜索",
         grokDesc: "使用 DSH 当前选择的 Grok 模型及其服务配置；与 GPT 功能开关独立。开启任一搜索后，Grok 仅使用原生搜索，网页读取和其他工具仍可用。",
         grokWeb: "启用原生 Web Search",
@@ -246,6 +253,9 @@ window.__ModuleLoader__.load({
         tools: "Incremental tool updates (addition-only)",
         toolsHelp:
           "When a tool is added mid-session, keep the request prefix unchanged to protect the prompt cache; the new tool is declared in history. Applies only to supporting GPT Responses models. Off sends the complete tool list on every request (rollback or comparison). Removing or redefining a tool still resets the cache once.",
+        gatewayCompatibility: "Gateway compatibility fallback (standard tools / reasoning.effort)",
+        gatewayCompatibilityHelp:
+          "Off by default for exact DSH host parity. Enable only for gateways that reject or drop additional_tools-only declarations or configuration_update items, falling back to standard top-level tools and reasoning.effort wire fields.",
         mediaPreview: "Search media previews",
         mediaPreviewHelp:
           "Show images returned by search, direct image links in the answer and directly playable video links below the answer; click to enlarge or play. Markdown images in the answer are rendered natively by DSH, and ordinary page links stay links. This setting changes presentation only.",
@@ -261,6 +271,8 @@ window.__ModuleLoader__.load({
         mediaOpen: "Open original media",
         usageTurn: "Turn search usage",
         usageSession: "Search usage",
+        cacheHitTurn: "Cache",
+        cacheHitTurnTitle: "Prompt cache hit rate",
         grokTitle: "Grok native search",
         grokDesc: "Uses the Grok model and provider profile currently selected in DSH, independently of the GPT switch. When either search is enabled, Grok uses native search while page reading and other tools remain available.",
         grokWeb: "Enable native Web Search",
@@ -662,6 +674,15 @@ window.__ModuleLoader__.load({
                 disabled,
                 onChange: (value: boolean) =>
                   props.edit("incrementalToolUpdates", value),
+              }),
+              React.createElement(Row, {
+                id: "lcx-gateway-compatibility",
+                label: t("gatewayCompatibility"),
+                help: t("gatewayCompatibilityHelp"),
+                checked: s.gatewayCompatibilityFallback.value,
+                disabled,
+                onChange: (value: boolean) =>
+                  props.edit("gatewayCompatibilityFallback", value),
               }),
               React.createElement(
                 "section",

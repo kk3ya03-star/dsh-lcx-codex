@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all'
 
 const sourcePath = resolve('src/pi-responses-runtime.ts')
 const outputPath = resolve('lib/pi-responses-runtime.js')
@@ -21,7 +23,7 @@ const result = await build({
   metafile: true,
   treeShaking: true,
   banner: {
-    js: '// Generated from public @earendil-works/pi-ai@1.5.0 by scripts/build-pi-runtime.mjs. Do not edit.',
+    js: '// Generated from public @earendil-works/pi-ai@1.6.0 by scripts/build-pi-runtime.mjs. Do not edit.',
   },
 })
 
@@ -37,6 +39,7 @@ const expectedContributing = [
   "node_modules/@earendil-works/pi-ai/dist/api/github-copilot-headers.js",
   "node_modules/@earendil-works/pi-ai/dist/api/openai-prompt-cache.js",
   "node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js",
+  "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
   "node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js",
   "node_modules/@earendil-works/pi-ai/dist/model-catalog.js",
   "node_modules/@earendil-works/pi-ai/dist/models.js",
@@ -53,6 +56,8 @@ const expectedContributing = [
   "node_modules/@earendil-works/pi-ai/dist/providers/opencode-headers.js",
   "node_modules/@earendil-works/pi-ai/dist/providers/opencode.models.js",
   "node_modules/@earendil-works/pi-ai/dist/providers/xai.models.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/diagnostics.js",
+  "node_modules/@earendil-works/pi-ai/dist/utils/estimate.js",
   "node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js",
   "node_modules/@earendil-works/pi-ai/dist/utils/hash.js",
   "node_modules/@earendil-works/pi-ai/dist/utils/json-parse.js",
@@ -64,8 +69,9 @@ const expectedContributing = [
   "node_modules/partial-json/dist/options.js",
   "src/pi-responses-runtime.ts"
 ]
-assert.equal(contributing.length, 30, 'Pi output-contributing module count drifted')
+assert.equal(contributing.length, 33, 'Pi output-contributing module count drifted')
 assert.deepEqual([...contributing].sort(), expectedContributing, 'Pi output-contributing module list drifted')
+assert.ok(contributing.some(path => path.endsWith('/utils/diagnostics.js')), 'Pi diagnostics helper must be bundled')
 assert.ok(contributing.some(path => path.endsWith('/utils/streaming-json.js')), 'Pi streaming JSON parser must be bundled')
 assert.deepEqual(contributing.filter(path => /(?:\/telemetry\.js$|\/@earendil-works\/pi-(?:telemetry|schema)\/)/u.test(path)), [], 'Telemetry/schema runtime entered Pi bundle')
 const forbiddenInputs = contributing.filter(path => forbiddenRuntime.test(path))
@@ -89,4 +95,28 @@ assert.ok(emittedOutput.bytes < 512 * 1024, `Pi runtime bundle exceeded 512 KiB:
 assert.deepEqual(emittedOutput.imports.filter(entry => entry.external), [], 'Pi bundle retained external runtime imports')
 const output = await readFile(outputPath, 'utf8')
 assert.doesNotMatch(output, /from\s+["']@earendil-works\/pi-ai/u, 'Pi bundle retained a production Pi import')
+
+// Verify the lightweight non-Responses catalog maxTokens table stays exact against @earendil-works/pi-ai/providers/all
+const isRoutableCatalogId = id => {
+  const trimmed = String(id ?? '').trim()
+  const terminal = trimmed.slice(trimmed.lastIndexOf('/') + 1)
+  return /^gpt-/iu.test(trimmed) || /^gpt-/iu.test(terminal) || /^grok(?:$|[-._0-9])/iu.test(terminal) || /^grok[A-Z]/u.test(terminal)
+}
+const expectedNonResponsesMaxTokens = Object.fromEntries(
+  getBuiltinProviders()
+    .filter(provider => !allowedCatalogs.has(provider))
+    .sort()
+    .flatMap(provider =>
+      getBuiltinModels(provider)
+        .filter(m => (m.type === undefined || m.type === 'chat') && isRoutableCatalogId(m.id) && Number.isInteger(m.maxTokens) && m.maxTokens > 0)
+        .map(m => [`${provider}\u001f${m.id}`, m.maxTokens]),
+    )
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+)
+const builtRuntime = await import(pathToFileURL(outputPath).href)
+assert.deepEqual(
+  builtRuntime.NON_RESPONSES_CATALOG_MAX_TOKENS,
+  expectedNonResponsesMaxTokens,
+  'NON_RESPONSES_CATALOG_MAX_TOKENS drifted from @earendil-works/pi-ai/providers/all',
+)
 console.log(`Bundled ${contributing.length} contributing modules (${emittedOutput.bytes} bytes; packages: ${bundledPackages.join(', ')}) into lib/pi-responses-runtime.js`)
