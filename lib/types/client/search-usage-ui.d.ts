@@ -31,6 +31,16 @@ type Slots = {
     inject(name: UsageSlotName, callback: () => unknown): unknown;
     register(options: UsageRegistration, component: unknown): unknown;
 };
+export type CacheHitRate = {
+    readonly percent: number;
+    readonly cacheReadTokens: number;
+    readonly promptTokens: number;
+};
+/**
+ * Pure presentation helper: derive integer prompt-cache hit percentage from
+ * DSH TurnTokenUsage or session TokenUsage counters without side effects.
+ */
+export declare function promptCacheHitRate(usage: unknown): CacheHitRate | null;
 /** Register only LCX-owned additive list entries; never inspect or replace DSH entries. */
 export declare function installUsageSlots(slots: Slots, createElement: CreateElement): () => void;
 export {};

@@ -387,10 +387,11 @@ test('a model only a newer DSH catalog describes is still owned on a bare profil
     assert.equal(requests[0].url, `${baseURL}/responses`)
     assert.equal(requests[0].body.model, 'gpt-9-future')
     const firstTurnLookups = lookups.length
-    // The recognition is remembered: the next request does not need the route lookup again.
+    assert.equal(firstTurnLookups, 1, 'host recognition + serialization shares one model lookup')
+    // The recognition is remembered: the next request skips the route recognition lookup and resolves synchronously.
     await collect(ctx.llm.stream(hi('gpt-9-future')))
     assert.equal(requests.length, 2)
-    assert.ok(lookups.length - firstTurnLookups < firstTurnLookups, 'the second request skips the route lookup')
+    assert.equal(lookups.length - firstTurnLookups, 1, 'second turn runs only the single serialization lookup')
   })
 })
 
@@ -572,6 +573,7 @@ test('opencode and opencode-go: the routing header Pi adds is sent with the sess
     await withHarness(providerProfile(provider), {}, async ({ turn }) => {
       const request = await turn(provider, provider === 'opencode' ? 'gpt-6-sol' : 'gpt-6-luna')
       assert.match(request.headers['x-opencode-session'], /^i123-/u, provider)
+      assert.equal(request.headers['session-id'], undefined, 'the no-session affinity format sends no session-id')
       assert.equal(request.headers.session_id, undefined, 'the no-session affinity format sends no session_id')
       assert.ok(request.headers['x-client-request-id'], provider)
     })

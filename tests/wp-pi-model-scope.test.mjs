@@ -11,7 +11,7 @@ import { resolveCatalogModel } from '../lib/model-catalog.js'
 import { loadHostSource } from './wp2-source.mjs'
 
 const route = await loadHostSource('route')
-// The six providers whose catalogs LCX bundles (Pi 1.5.0). A credential-only profile
+// The six providers whose catalogs LCX bundles (Pi 1.6.0). A credential-only profile
 // (no `api`) owns exactly the GPT / Grok Responses models those catalogs ship: DSH serves nothing else without the
 // profile naming it. The pinned set below is the exact computed result, so a catalog change fails here and is reviewed.
 const OWNED_PAIRS = {
@@ -38,7 +38,9 @@ const OWNED_PAIRS = {
     "gpt-6-luna",
     "gpt-6-sol",
     "gpt-6.1-sol",
-    "gpt-6.1-terra"
+    "gpt-6.1-terra",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol"
   ],
   "github-copilot": [
     "gpt-5.3-codex",
@@ -51,6 +53,8 @@ const OWNED_PAIRS = {
     "gpt-6-sol",
     "gpt-6.1-sol",
     "gpt-6.1-terra",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "grok-4.5",
     "grok-4.6",
     "grok-4.7"
@@ -87,10 +91,13 @@ const OWNED_PAIRS = {
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-6-astra",
+    "gpt-6-cyber",
     "gpt-6-luna",
     "gpt-6-sol",
     "gpt-6.1-sol",
     "gpt-6.1-terra",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "gpt-daybreak-blue-latest",
     "gpt-daybreak-red-latest"
   ],
@@ -118,6 +125,8 @@ const OWNED_PAIRS = {
     "gpt-6-luna",
     "gpt-6-sol",
     "gpt-6.1-sol",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
     "grok-4.5",
     "grok-4.6",
     "grok-4.7",
@@ -241,7 +250,7 @@ test('Decision 8 matrix: owned pairs take the bundled catalog descriptor, all ot
         tools: [tool],
       })
       assert.deepEqual({ contextWindow: serialized.model.contextWindow, maxTokens: serialized.model.maxTokens, compat: serialized.model.compat }, expectedDescriptor, label)
-      const strict = expectedCompat.supportsStrictMode === true && expectedCompat.supportsOpenAIGrammarTools === true
+      const strict = expectedCompat.supportsStrictMode === true
       const expectedTool = { type: 'function', name: 'lookup', description: 'fixture tool', parameters: schema, ...(strict ? { strict: true } : {}) }
       const body = buildResponsesBody({ model: serialized.model, input: serialized.input, tools: serialized.tools })
       assert.deepEqual(body.tools, [expectedTool], `${label} tool wire`)
@@ -268,7 +277,7 @@ test('evidenced capability policy and ordinary routes retain their frozen scope'
   for (const [provider, model] of [['lcx', 'gpt-6-sol'], ['lcx', 'gpt-6-luna'], ['lcx', 'gpt-6-astra'], ['relay', 'gpt-5.6-sol']]) {
     const resolved = route.resolveResponsesRouteConfig(explicit, { provider, model }, policy)
     assert.equal(resolved.cacheRetention, 'short', `${provider}/${model}`)
-    assert.equal(resolved.supportsLongCacheRetention, false, `${provider}/${model}`)
+    assert.equal(resolved.supportsLongCacheRetention, true, `${provider}/${model}`)
     assert.equal(resolved.responsesCompat.supportsExplicitPromptCacheMode, undefined, `${provider}/${model}`)
   }
   const grok = route.resolveGrokResponsesRouteConfig(explicit, { provider: 'xai', model: 'grok-4.6' }, policy)
@@ -331,7 +340,7 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
   const computed = Object.fromEntries(bundledProviders.map(provider => [provider,
     getBuiltinModels(provider).filter(model => model.api === 'openai-responses' && /^(?:gpt-|grok)/iu.test(model.id)).map(model => model.id).sort()]))
   assert.deepEqual(computed, OWNED_PAIRS)
-  assert.equal(Object.values(OWNED_PAIRS).flat().length, 107)
+  assert.equal(Object.values(OWNED_PAIRS).flat().length, 116)
   const context = fixture('omitted', Object.fromEntries(bundledProviders.map(provider => [provider, { apiKeyEnv: 'SYNTHETIC_KEY' }])))
   let owned = 0
   for (const [provider, ids] of Object.entries(OWNED_PAIRS)) for (const model of ids) {
@@ -349,7 +358,7 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
     assert.equal(resolveCatalogModel(provider, model).source, 'catalog-model', pair)
     owned += 1
   }
-  assert.equal(owned, 107 - OWNED_PAIRS['cloudflare-ai-gateway'].length)
+  assert.equal(owned, 116 - OWNED_PAIRS['cloudflare-ai-gateway'].length)
   // Nothing outside the set is owned: a pair the provider's catalog lacks, a GPT model on a Grok provider, and so on.
   for (const [provider, model] of [['xai', 'gpt-5.6-sol'], ['openai', 'grok-4.7'], ['openai', 'gpt-9-unlisted'], ['xai', 'grok-9-unlisted']]) {
     assert.equal(route.resolveResponsesRouteConfig(context, { provider, model }, policy), undefined, `${provider}/${model}`)
@@ -364,8 +373,8 @@ test('the owned set: every GPT / Grok Responses pair of the bundled catalogs is 
   assert.equal(route.resolveResponsesRouteConfig(explicit, { provider: 'cloudflare-ai-gateway', model: 'gpt-6-sol' }, policy), undefined)
 })
 
-test('Pi 1.5.0 catalog: no bundled Responses model sets sampling parameters, which the LCX body builder does not merge', () => {
-  // Pi 1.5.0 merges model.samplingParams / samplingParamsByThinkingLevel into its request. None of the bundled
+test('Pi 1.6.0 catalog: no bundled Responses model sets sampling parameters, which the LCX body builder does not merge', () => {
+  // Pi 1.6.0 merges model.samplingParams / samplingParamsByThinkingLevel into its request. None of the bundled
   // providers uses them today; a catalog that starts to must be reviewed against buildResponsesBody first.
   for (const provider of bundledProviders)
     for (const model of getBuiltinModels(provider))

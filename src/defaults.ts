@@ -1,5 +1,5 @@
 /**
- * The numeric defaults of the plugin settings and transports, defined once. The settings schema, its
+ * The defaults of the plugin settings and transports, defined once. The settings schema, its
  * normalization, the transports and the checkpoint retention all read these values.
  */
 export interface Defaults {
@@ -16,6 +16,7 @@ export interface Defaults {
   readonly nativeRetentionTokenBudget: number;
   readonly assistantRetentionTokenReserve: number;
   readonly assistantRetentionPerMessageTokenCap: number;
+  readonly gatewayCompatibilityFallback: boolean;
 }
 
 export const DEFAULTS: Defaults = Object.freeze({
@@ -32,4 +33,5 @@ export const DEFAULTS: Defaults = Object.freeze({
   nativeRetentionTokenBudget: 64_000,
   assistantRetentionTokenReserve: 24_000,
   assistantRetentionPerMessageTokenCap: 3_000,
+  gatewayCompatibilityFallback: false,
 });

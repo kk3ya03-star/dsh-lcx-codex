@@ -44,6 +44,9 @@ type NativeCompactionBodyOptions = GenerationControls & {
     promptCacheKey?: string;
     promptCacheRetention?: string;
     cacheRetention?: "none" | "short" | "long";
+    gatewayCompatibilityFallback?: boolean;
+    omitUnsupportedFields?: boolean;
+    apiKey?: string;
 };
 type NativeCompactionRequestOptions = NativeCompactionBodyOptions & {
     baseURL: string;
@@ -68,7 +71,7 @@ type NativeCompactionResult = {
 export declare const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
 export declare function mergeFeatureHeader(headers?: HeaderMap): HeaderMap;
 export declare function responsesGenerationEnvelope(controls?: GenerationControls): GenerationEnvelope;
-export declare function buildNativeCompactionBody({ model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, }: NativeCompactionBodyOptions): {
+export declare function buildNativeCompactionBody({ model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, gatewayCompatibilityFallback, omitUnsupportedFields, apiKey, }: NativeCompactionBodyOptions): {
     [x: string]: unknown;
 } & {
     model: string;
@@ -82,5 +85,5 @@ export declare function buildNativeCompactionBody({ model, modelDescriptor, inpu
  * Provider SSE events enter as unknown; response.completed remains authoritative.
  */
 export declare function parseNativeCompactionSse(response: Response, options?: SseParseOptions): Promise<NativeCompactionResult>;
-export declare function requestNativeCompaction({ baseURL, model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, idempotencyKey, headers, signal, timeoutMs, maxAttempts, maxResponseBytes, }: NativeCompactionRequestOptions): Promise<NativeCompactionResult>;
+export declare function requestNativeCompaction({ baseURL, model, modelDescriptor, input, tools, promptCacheKey, promptCacheRetention, cacheRetention, reasoningEffort, temperature, maxTokens, gatewayCompatibilityFallback, omitUnsupportedFields, apiKey, idempotencyKey, headers, signal, timeoutMs, maxAttempts, maxResponseBytes, }: NativeCompactionRequestOptions): Promise<NativeCompactionResult>;
 export {};

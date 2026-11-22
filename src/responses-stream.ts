@@ -11,8 +11,10 @@ import { IMAGE_OFFLOAD_REQUIRED_CODE, ToolCallId, isContextWindowExceededError }
 import type { FinishReason, LlmFailure, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { fetchSseWithRetry, readSseEvents } from "./transport.js";
 import { sanitizeContextDetails, type ProviderContextDetails } from "./search-accounting.js";
+import { baseURLFingerprint } from "./route.js";
 import {
   createGrokNativeReplayEnvelope,
+  grokNativeReplayRouteFingerprint,
   grokPendingSourcesStart,
   sanitizeGrokVisibleText,
   type GrokNativeReplayRoute,
@@ -138,6 +140,8 @@ type StreamRequestOptions = {
   serverToolTypes?: ReadonlySet<string>;
   isServerToolItem?: (item: unknown) => boolean;
   declaredToolNames?: ReadonlySet<string>;
+  sessionId?: string;
+  headerAuthorityFingerprint?: string;
   nativeReplayRoute?: GrokNativeReplayRoute;
   /** The level this request sent as `configuration_update`; recorded on the reply for its later replay, as Pi does. */
   providerThinkingLevel?: string;
@@ -1428,6 +1432,9 @@ function replayState(
   nativeOutput?: readonly unknown[],
   nativeReplayRoute?: GrokNativeReplayRoute,
   nativeServerSearchEchoCallIds: readonly string[] = [],
+  baseURL?: string,
+  sessionId?: string,
+  headerAuthorityFingerprint?: string,
 ) {
   if (!isRecord(message)) return undefined;
   const content: UnknownRecord[] = Array.isArray(message.content)
@@ -1443,6 +1450,26 @@ function replayState(
     nativeReplayRoute,
     nativeServerSearchEchoCallIds,
   );
+  const normalizedBaseUrl = typeof baseURL === "string" ? baseURL.trim() : "";
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId : "";
+  const lcxReplay =
+    normalizedBaseUrl &&
+    normalizedSessionId &&
+    typeof headerAuthorityFingerprint === "string" &&
+    headerAuthorityFingerprint.length > 0
+      ? {
+          version: 1 as const,
+          baseURLFingerprint: baseURLFingerprint(normalizedBaseUrl),
+          sourceSessionId: normalizedSessionId,
+          headerAuthorityFingerprint,
+          ...(nativeReplayRoute
+            ? {
+                grokRouteAuthorityFingerprint:
+                  grokNativeReplayRouteFingerprint(nativeReplayRoute),
+              }
+            : {}),
+        }
+      : undefined;
   return {
     response: {
       kind: "pi-ai",
@@ -1490,6 +1517,7 @@ function replayState(
         };
       },
     ),
+    ...(lcxReplay === undefined ? {} : { lcxReplay }),
     ...(grokNative === undefined ? {} : { grokNative }),
   };
 }
@@ -1525,6 +1553,9 @@ async function* toDshChunks(
   signal?: AbortLike,
   wireMeta?: ResponseWireMeta,
   nativeReplayRoute?: GrokNativeReplayRoute,
+  baseURL?: string,
+  sessionId?: string,
+  headerAuthorityFingerprint?: string,
 ): AsyncGenerator<StreamChunk> {
   const toolIds = new Map<number, { id: string; name: string }>();
   let argumentsError = false;
@@ -1640,6 +1671,9 @@ async function* toDshChunks(
               wireMeta?.nativeOutput,
               nativeReplayRoute,
               wireMeta?.nativeServerSearchEchoCallIds,
+              baseURL,
+              sessionId,
+              headerAuthorityFingerprint,
             );
         yield {
           type: "finish",
@@ -1724,6 +1758,8 @@ export async function* streamResponsesRequest({
   serverToolTypes,
   isServerToolItem,
   declaredToolNames,
+  sessionId,
+  headerAuthorityFingerprint,
   nativeReplayRoute,
   providerThinkingLevel,
   onServerToolUsage,
@@ -1840,6 +1876,9 @@ export async function* streamResponsesRequest({
       signal,
       wireMeta,
       nativeReplayRoute,
+      baseURL,
+      sessionId,
+      headerAuthorityFingerprint,
     )[Symbol.asyncIterator]();
     let exhausted = false;
     try {

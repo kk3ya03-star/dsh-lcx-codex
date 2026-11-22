@@ -15,7 +15,7 @@ function plain(value) {
 test('bounded Pi catalog preserves every public Responses descriptor previously reachable', () => {
   const bundled = ['cloudflare-ai-gateway', 'github-copilot', 'openai', 'opencode', 'opencode-go', 'xai']
   const expected = Object.fromEntries(bundled.map(provider => [provider, plain(getAllModels(provider).filter(model => model.api === 'openai-responses'))]))
-  assert.ok(getAllProviders().includes('meta'), 'Pi 1.5.0 catalog shape changed; review bundle scope')
+  assert.ok(getAllProviders().includes('meta'), 'Pi 1.6.0 catalog shape changed; review bundle scope')
   for (const provider of bundled)
     assert.deepEqual(plain(getCatalogModels(provider).filter(model => model.api === 'openai-responses')), expected[provider], provider)
   assert.deepEqual(getCatalogModels('unrelated-provider'), [])
@@ -24,22 +24,28 @@ test('bounded Pi catalog preserves every public Responses descriptor previously 
 test('candidate package separates DSH install range from exact verification baseline', () => {
   const pkg = readJson('package.json')
   const lock = readJson('package-lock.json')
-  assert.equal(pkg.version, '0.7.0-pre.1')
+  assert.equal(pkg.version, '0.7.0')
   assert.equal(pkg.dependencies, undefined)
-  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.2-alpha.3')
-  assert.deepEqual(pkg.lcxCompatibility, { dshInstallRange: '>=0.2.2-alpha.3', verifiedDsh: '0.2.2-alpha.3', verifiedHostPi: '1.5.0', verifiedPluginPi: '1.5.0' })
-  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '1.5.0')
+  assert.equal(pkg.devDependencies['@deepseek-ai/dsh'], '0.2.2-rc.5')
+  assert.deepEqual(pkg.lcxCompatibility, {
+    dshInstallRange: '>=0.2.2-rc.5 <0.2.3-0',
+    verifiedDsh: '0.2.2-rc.5',
+    verifiedHostPi: '1.6.0',
+    verifiedPluginPi: '1.6.0',
+  })
+  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '1.6.0')
+  assert.equal(pkg.devDependencies['@deepseek-ai/schemastery'], '~3.19.0')
   for (const [name, version] of Object.entries(pkg.peerDependencies))
     if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, pkg.lcxCompatibility.dshInstallRange, name)
   assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-settings'], pkg.lcxCompatibility.dshInstallRange)
   assert.equal(pkg.peerDependenciesMeta['@deepseek-ai/dsh-client-ui-settings'].optional, true)
   const officialPi = readJson('node_modules/@deepseek-ai/dsh-llm-pi-ai/package.json')
-  // Product Owner decision 2026-10-10: install ranges have a floor and no ceiling. The floors are the minimums of the
-  // oldest supported host (DSH 0.2.2-alpha.3, the pre line); this suite also runs against DSH 0.2.1-rc.2 (latest).
-  const floors = { '@deepseek-ai/cordis': '>=4.0.6-alpha.2', '@deepseek-ai/cordis-plugin-loader': '>=1.0.7-alpha.2', '@deepseek-ai/schemastery': '>=3.18.6-alpha.2' }
+  // 0.7.0 stable baseline targets the DSH 0.2.2-rc.5 -> <0.2.3-0 family; Cordis/Schemastery use lower bounds >=4.1.0 / >=1.1.0 / >=3.19.0.
+  const floors = { '@deepseek-ai/cordis': '>=4.1.0', '@deepseek-ai/cordis-plugin-loader': '>=1.1.0', '@deepseek-ai/schemastery': '>=3.19.0' }
   for (const [name, range] of Object.entries(floors)) assert.equal(pkg.peerDependencies[name], range, name)
   for (const [name, range] of Object.entries(pkg.peerDependencies))
-    if (name.startsWith('@deepseek-ai/')) assert.doesNotMatch(range, /[<~^]|\|\|/u, `${name} peer must be a plain lower bound`)
+    if (name.startsWith('@deepseek-ai/dsh-')) assert.match(range, /^>=0\.2\.2-rc\.5 <0\.2\.3-0$/u, `${name} peer must stay bounded below 0.2.3-0`)
+    else if (name.startsWith('@deepseek-ai/')) assert.doesNotMatch(range, /[<~^]|\|\|/u, `${name} peer must be a plain lower bound`)
   // The linked host asks for the floor or its release; the build/test runtime installs exactly one of the two.
   const loaderFloor = floors['@deepseek-ai/cordis-plugin-loader'].slice(2)
   const accepted = [loaderFloor, loaderFloor.replace(/-.*$/u, '')]
@@ -71,14 +77,14 @@ test('bundle audit is output-contribution based and preserves both exact MIT not
 })
 
 // npm's default prerelease tuple gating is deliberate here (no includePrerelease).
-test('pre peer floors satisfy the exact installed Cordis family under default npm semver', () => {
+test('peer floors satisfy the exact installed Cordis family under default npm semver', () => {
   const runtime = createRequire(new URL('../scripts/runtime-dsh022/package.json', import.meta.url))
   const semver = runtime('semver')
   const pkg = readJson('package.json')
   for (const [name, expected] of Object.entries({
-    '@deepseek-ai/cordis': '4.0.6-alpha.2',
-    '@deepseek-ai/cordis-plugin-loader': '1.0.7-alpha.2',
-    '@deepseek-ai/schemastery': '3.18.6-alpha.2',
+    '@deepseek-ai/cordis': '4.1.0',
+    '@deepseek-ai/cordis-plugin-loader': '1.1.0',
+    '@deepseek-ai/schemastery': '3.19.0',
   })) {
     const { version } = runtime(name + '/package.json')
     assert.equal(version, expected, name)

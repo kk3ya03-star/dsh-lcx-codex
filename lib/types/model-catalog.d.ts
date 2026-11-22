@@ -21,6 +21,8 @@ export type CatalogModelFacts = {
     baseUrl: string | undefined;
     /** The exact catalog entry, only when it is an `openai-responses` model (descriptor, compat, reasoning map). */
     descriptor: Model<"openai-responses"> | undefined;
+    /** Catalog `maxTokens` when described by any Pi catalog (bundled non-Responses entries and unbundled Pi catalogs). */
+    maxTokens?: number;
 };
 /**
  * Resolve a route model's protocol, endpoint and catalog descriptor from the bundled Pi catalog.

@@ -33,3 +33,24 @@ test('Grok 4.3/4.5 thinking levels now offer xhigh', () => {
   for (const id of ['grok-4.3', 'grok-4.5'])
     assert.ok(getSupportedThinkingLevels(model('xai', id)).includes('xhigh'), id)
 })
+
+test('Pi 1.6.0 catalog adds gpt-6.2-sol/astra, gpt-6-cyber, and Copilot Grok strict mode', () => {
+  for (const provider of ['openai', 'github-copilot', 'cloudflare-ai-gateway', 'opencode']) {
+    for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
+      const descriptor = model(provider, id)
+      assert.ok(descriptor, `${provider}/${id}`)
+      assert.equal(descriptor.compat?.supportsOpenAIGrammarTools, true, `${provider}/${id}`)
+      assert.equal(descriptor.compat?.supportsStrictMode, provider === 'opencode' ? undefined : true, `${provider}/${id}`)
+    }
+  }
+  assert.equal(model('opencode', 'gpt-6.2-sol').compat?.sessionAffinityFormat, 'openai-nosession')
+  assert.equal(model('opencode', 'gpt-6.2-sol').compat?.supportsAdditionalTools, true)
+  const cyber6 = model('openai', 'gpt-6-cyber')
+  assert.ok(cyber6)
+  assert.equal(cyber6.contextWindow, 1_050_000)
+  assert.equal(cyber6.compat?.supportsExplicitPromptCacheMode, true)
+  for (const id of ['grok-4.5', 'grok-4.6', 'grok-4.7']) {
+    assert.equal(model('github-copilot', id).compat?.supportsStrictMode, true, `github-copilot/${id}`)
+    assert.equal(model('github-copilot', id).compat?.supportsOpenAIGrammarTools, undefined, `github-copilot/${id}`)
+  }
+})

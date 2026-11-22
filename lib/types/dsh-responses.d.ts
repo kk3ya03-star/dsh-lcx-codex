@@ -2,14 +2,20 @@ import { requestImageHandleText, type RequestMessage } from "@deepseek-ai/dsh-ll
 import type { Context } from "@deepseek-ai/cordis";
 import type { ResponseInputItem } from "openai/resources/responses/responses.js";
 type ImageAttachmentRef = Parameters<typeof requestImageHandleText>[0];
-import type { Model as PiModel, Tool as PiToolValue } from "@earendil-works/pi-ai";
+import type { Context as PiContextValue, Model as PiModel, Tool as PiToolValue } from "@earendil-works/pi-ai";
 declare const DEFAULT_MAX_REQUEST_IMAGE_BYTES: number;
 declare const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET: number;
 declare const DEFAULT_REQUEST_IMAGE_MAX_BYTES: number;
 export { DEFAULT_MAX_REQUEST_IMAGE_BYTES, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET, DEFAULT_REQUEST_IMAGE_MAX_BYTES, };
 type WireRecord = Record<string, unknown>;
 type ImageSupport = "supported" | "unsupported" | "unknown";
+type PiMessage = PiContextValue["messages"][number];
 type PiTool = PiToolValue;
+type PiContext = {
+    systemPrompt?: string;
+    messages: PiMessage[];
+    tools: PiTool[];
+};
 type DshContext = Pick<Context, "attachments" | "llm" | "fs">;
 type ImageOptions = {
     imageSupport: ImageSupport;
@@ -20,12 +26,22 @@ type ImageOptions = {
     requestImagePixelBudget: number;
     requestImageMaxBytes: number;
 };
+export type AssistantReplayScope = {
+    provider?: string;
+    model?: string;
+    sessionId?: string;
+    baseURLFingerprint?: string;
+    headerAuthorityFingerprint?: string;
+    grokRouteAuthorityFingerprint?: string;
+    inheritedMessageIds?: ReadonlySet<string>;
+    disallowUnstampedReplay?: boolean;
+    disallowAllNativeReplay?: boolean;
+};
 type SerializeOptions = Partial<ImageOptions> & {
     route?: unknown;
     model?: unknown;
     responsesCompat?: unknown;
     systemPrompt?: unknown;
-    includeSystemPrompt?: boolean;
     /**
      * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
      * serialization: a non-leading `system` message is then a real instruction update and is emitted in
@@ -34,6 +50,7 @@ type SerializeOptions = Partial<ImageOptions> & {
      */
     systemPromptUpdate?: unknown;
     onReplayDegrade?: unknown;
+    assistantReplayScope?: AssistantReplayScope;
     tools?: PiTool[];
     /**
      * `"addition-only"` marks `tools` as an anchored surface (see `planToolSurface`): tools flagged
@@ -49,6 +66,12 @@ type SerializeOptions = Partial<ImageOptions> & {
      * checkpoint and portable-history assembly.
      */
     configurationUpdateEffort?: string;
+    /**
+     * Opt-in fallback for gateways that reject/drop Pi 1.5/1.6 `additional_tools`-only declarations or
+     * `configuration_update` items: suppresses `additional_tools`/`tool_search` and `configuration_update`
+     * serialization so active tools remain in top-level `tools`.
+     */
+    gatewayCompatibilityFallback?: boolean;
     /** Trace the transient request head without changing Pi message positions or synthetic IDs. */
     tracePrelude?: boolean;
 };
@@ -81,9 +104,12 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
     /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
     reasoning: {
         efforts: string[];
+        defaultEffort?: string;
     } | undefined;
     /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
     contextWindow: number | undefined;
+    /** DSH's configured request default max tokens (`ModelInfo.defaultMaxTokens`); absent when unreported. */
+    defaultMaxTokens: number | undefined;
     resolved: boolean;
 }>;
 /**
@@ -96,7 +122,8 @@ export declare function resolveRouteModelFacts(ctx: DshContext | undefined, rout
  */
 export declare function routeModelOverride(routeConfig: {
     modelControls?: object;
-}, facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">, grok: boolean): Record<string, unknown> | undefined;
+    profileModelMaxTokens?: unknown;
+}, facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow"> & Partial<Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "defaultMaxTokens">>, grok: boolean): Record<string, unknown> | undefined;
 export declare function readDshPiReplayState(value: unknown): {
     response: ReplayResponse;
     blocks: ReplayBlock[];
@@ -140,6 +167,7 @@ export declare function serializeDshMessages(messages: readonly RequestMessage[]
     imageMap: Map<string, import("@deepseek-ai/dsh-attachment").ImageAttachmentRef>;
     tools: import("openai/resources/responses/responses.js").Tool[] | undefined;
     model: PiModel<"openai-responses">;
+    piContext: PiContext;
     grammarToolInputProperties: ReadonlyMap<string, string>;
     deferredToolsMode: string | undefined;
 }>;

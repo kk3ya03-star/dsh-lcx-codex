@@ -82,7 +82,7 @@ for (const mode of ['changes', 'additions', 'none']) {
       const expected = bodies.at(-1)
       const prepared = await serializeDshMessages(messages.slice(1), undefined, {
         route, model, responsesCompat: config.responsesCompat, systemPrompt: 'be brief',
-        includeSystemPrompt: true, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only', tools,
+        systemPromptUpdate: 'in-history', toolUpdate: 'addition-only', tools,
       })
       const actual = buildResponsesBody({ model: prepared.model, input: prepared.input, tools: prepared.tools })
       assert.deepEqual(wire(actual), wire(expected), `transition ${end}`)
@@ -133,7 +133,7 @@ test('the first deferred load has no orphan incremental notice or prelude proven
   const tools = [tool('b', 'b', true)]
   const messages = [system, update(add('b')), user('go')]
   await collect(adapter.stream({ ...route, messages, tools }))
-  const prepared = await serializeDshMessages(messages.slice(1), undefined, { route, model, systemPrompt: 'be brief', includeSystemPrompt: true, tools, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only', tracePrelude: true })
+  const prepared = await serializeDshMessages(messages.slice(1), undefined, { route, model, systemPrompt: 'be brief', tools, systemPromptUpdate: 'in-history', toolUpdate: 'addition-only', tracePrelude: true })
   assert.deepEqual(wire(prepared), wire(bodies.at(-1)))
   assert.equal(prepared.preludeItemCount, 1)
   assert.deepEqual(prepared.supersededInstructionItems, [], 'the genuine prompt is never classified as a Pi notice')

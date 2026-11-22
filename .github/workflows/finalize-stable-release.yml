@@ -1,20 +1,148 @@
 name: Finalize stable GitHub Release
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["Publish to npm"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to finalize (e.g. v0.7.0)"
+        required: true
+        type: string
+      workflow_run_id:
+        description: "Optional Publish to npm workflow run ID for manual recovery"
+        required: false
+        type: string
+      workflow_run_attempt:
+        description: "Optional Publish to npm run attempt for manual recovery (requires workflow_run_id)"
+        required: false
+        type: string
 
 permissions:
-  contents: write
-
-concurrency:
-  group: finalize-stable-${{ github.ref }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
+  resolve:
+    if: >-
+      github.repository == 'kk3ya03-star/dsh-lcx-codex' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      applicable: ${{ steps.resolve.outputs.applicable }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Resolve canonical release tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin --tags '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/stable/*:refs/remotes/origin/stable/*'
+
+          TAG=""
+          APPLICABLE="true"
+          if [[ "${EVENT_NAME:-}" == "workflow_dispatch" ]]; then
+            RAW_TAG="${DISPATCH_TAG:-}"
+            if [[ "$RAW_TAG" == refs/tags/* ]]; then
+              echo "workflow_dispatch requires bare tag vX.Y.Z without refs/tags/ prefix, got '${RAW_TAG}'." >&2
+              exit 1
+            fi
+            TAG="$RAW_TAG"
+            if [[ -z "$TAG" || "$TAG" == *-* || ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "workflow_dispatch requires a valid stable tag (vX.Y.Z), got '${RAW_TAG}'." >&2
+              exit 1
+            fi
+          elif [[ -n "${WORKFLOW_RUN_SHA:-}" ]]; then
+            CANDIDATE_TAG="${WORKFLOW_RUN_BRANCH:-}"
+            CANDIDATE_TAG="${CANDIDATE_TAG#refs/tags/}"
+            if [[ -n "$CANDIDATE_TAG" ]] && git rev-parse -q --verify "refs/tags/$CANDIDATE_TAG" >/dev/null 2>&1; then
+              CANDIDATE_TARGET="$(git rev-list -n 1 "refs/tags/$CANDIDATE_TAG")"
+              if [[ "$CANDIDATE_TARGET" == "$WORKFLOW_RUN_SHA" ]]; then
+                TAG="$CANDIDATE_TAG"
+              fi
+            fi
+            if [[ -z "$TAG" ]]; then
+              STABLE_TAGS=()
+              while IFS= read -r tagged; do
+                [[ -z "$tagged" ]] && continue
+                if [[ "$tagged" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$tagged" != *-* ]]; then
+                  STABLE_TAGS+=("$tagged")
+                fi
+              done < <(git tag --points-at "$WORKFLOW_RUN_SHA")
+              if [[ "${#STABLE_TAGS[@]}" -eq 0 ]]; then
+                echo "No stable tag at workflow_run head_sha $WORKFLOW_RUN_SHA; stable finalizer is inert."
+                APPLICABLE="false"
+                TAG="inert"
+              elif [[ "${#STABLE_TAGS[@]}" -gt 1 ]]; then
+                echo "Multiple stable tags point at $WORKFLOW_RUN_SHA: ${STABLE_TAGS[*]}; use workflow_dispatch with explicit tag." >&2
+                exit 1
+              else
+                TAG="${STABLE_TAGS[0]}"
+              fi
+            fi
+          elif [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            echo "No release tag context available for stable finalizer." >&2
+            exit 1
+          fi
+
+          if [[ "$APPLICABLE" == "true" && ( "$TAG" == *-* || ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ) ]]; then
+            echo "Non-stable tag $TAG; stable finalizer is inert."
+            APPLICABLE="false"
+            TAG="inert"
+          fi
+
+          if [[ "$APPLICABLE" == "true" ]]; then
+            if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Resolved applicable release tag is invalid: '$TAG'." >&2
+              exit 1
+            fi
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "Tag refs/tags/$TAG does not exist." >&2
+              exit 1
+            fi
+          else
+            TAG="inert"
+          fi
+
+          if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+            {
+              echo "applicable=$APPLICABLE"
+              echo "tag=$TAG"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "${GITHUB_ENV:-}" ]]; then
+            {
+              echo "LCX_FINALIZE_APPLICABLE=$APPLICABLE"
+              echo "LCX_FINALIZE_TAG=$TAG"
+            } >> "$GITHUB_ENV"
+          fi
+
   finalize:
+    needs: resolve
+    if: >-
+      github.repository == 'kk3ya03-star/dsh-lcx-codex' &&
+      needs.resolve.outputs.applicable == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: finalize-stable-${{ github.repository }}-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -22,48 +150,1240 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - name: Create or verify stable release after npm latest converges
+      - name: Validate tagged package, full release policy, and target branch ancestry
+        id: policy
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          if [[ "$VERSION" == *-* ]]; then
-            echo "Prerelease package on main; stable finalizer is inert."
-            exit 0
-          fi
-          TAG="v$VERSION"
-          git fetch --force --tags
-          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Stable tag $TAG is not present yet; nothing to finalize."
-            exit 0
-          fi
-          TARGET="$(git rev-list -n 1 "$TAG")"
-          if ! git merge-base --is-ancestor "$TARGET" "$GITHUB_SHA"; then
-            echo "Stable tag target is not an ancestor of current main." >&2
+          git fetch --force origin --tags '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/stable/*:refs/remotes/origin/stable/*'
+
+          TAG="${TAG:-${LCX_FINALIZE_TAG:-}}"
+          if [[ -z "$TAG" || "$TAG" == *-* || ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid canonical stable tag '${TAG}'." >&2
             exit 1
           fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag refs/tags/$TAG does not exist." >&2
+            exit 1
+          fi
+
+          TARGET="$(git rev-list -n 1 "refs/tags/$TAG")"
+          if [[ "${EVENT_NAME:-}" == "workflow_run" && -n "${WORKFLOW_RUN_SHA:-}" && "$TARGET" != "$WORKFLOW_RUN_SHA" ]]; then
+            echo "Tag $TAG resolves to $TARGET, which does not match workflow_run head_sha $WORKFLOW_RUN_SHA." >&2
+            exit 1
+          fi
+
+          if ! git cat-file -e "${TARGET}:PUBLIC-RELEASE-MANIFEST.yml" 2>/dev/null; then
+            echo "Tagged commit $TARGET for $TAG is missing required PUBLIC-RELEASE-MANIFEST.yml." >&2
+            exit 1
+          fi
+          export TAG TARGET
+
+          node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict'
+          import { execFileSync } from 'node:child_process'
+          import { appendFileSync } from 'node:fs'
+
+          const tag = process.env.TAG ?? ''
+          const targetSha = process.env.TARGET ?? ''
+          const pkg = JSON.parse(execFileSync('git', ['show', `${targetSha}:package.json`], { encoding: 'utf8' }))
+          const manifestText = execFileSync('git', ['show', `${targetSha}:PUBLIC-RELEASE-MANIFEST.yml`], { encoding: 'utf8' })
+
+          const STRICT_SEMVER_RE =
+            /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u
+          const COMPARATOR_TOKEN_RE = /^(>=|<=|>|<|=)?([^\s]+)$/u
+
+          function parseStrictSemver(value, label) {
+            assert.equal(typeof value, 'string', `${label} must be a string`)
+            const match = STRICT_SEMVER_RE.exec(value)
+            assert.ok(match, `${label} "${value}" is not valid strict SemVer`)
+            return {
+              raw: value,
+              major: BigInt(match[1]),
+              minor: BigInt(match[2]),
+              patch: BigInt(match[3]),
+              prerelease: match[4] === undefined ? [] : match[4].split('.'),
+              build: match[5] === undefined ? [] : match[5].split('.'),
+            }
+          }
+
+          function compareIdentifiers(left, right) {
+            const leftNum = /^\d+$/u.test(left) ? BigInt(left) : undefined
+            const rightNum = /^\d+$/u.test(right) ? BigInt(right) : undefined
+            if (leftNum !== undefined && rightNum !== undefined) {
+              return leftNum === rightNum ? 0 : leftNum < rightNum ? -1 : 1
+            }
+            if (leftNum !== undefined) return -1
+            if (rightNum !== undefined) return 1
+            return left === right ? 0 : left < right ? -1 : 1
+          }
+
+          function compareSemver(left, right) {
+            for (const field of ['major', 'minor', 'patch']) {
+              if (left[field] !== right[field]) return left[field] < right[field] ? -1 : 1
+            }
+            if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+              if (left.prerelease.length === right.prerelease.length) return 0
+              return left.prerelease.length === 0 ? 1 : -1
+            }
+            const length = Math.max(left.prerelease.length, right.prerelease.length)
+            for (let i = 0; i < length; i += 1) {
+              if (left.prerelease[i] === undefined) return -1
+              if (right.prerelease[i] === undefined) return 1
+              const cmp = compareIdentifiers(left.prerelease[i], right.prerelease[i])
+              if (cmp !== 0) return cmp
+            }
+            return 0
+          }
+
+          function isExclusivePrereleaseZeroCeiling(c) {
+            return c.operator === '<' && c.semver.prerelease.length === 1 && c.semver.prerelease[0] === '0' && c.semver.build.length === 0
+          }
+
+          function isExpectedReleaseCeiling(semverObj, verifiedObj) {
+            return (
+              semverObj.major === verifiedObj.major &&
+              semverObj.minor === verifiedObj.minor &&
+              semverObj.patch === verifiedObj.patch + 1n &&
+              semverObj.prerelease.length === 1 &&
+              semverObj.prerelease[0] === '0' &&
+              semverObj.build.length === 0
+            )
+          }
+
+          function assertStableBoundedRange(range, label, verifiedDsh) {
+            assert.equal(typeof range, 'string', `${label} must be a string`)
+            const trimmed = range.trim()
+            assert.ok(trimmed.length > 0, `${label} must be non-empty`)
+            assert.doesNotMatch(trimmed, /\|\|/u, `${label} must be a single comparator set without ||`)
+            assert.doesNotMatch(trimmed, /[,*^~]/u, `${label} cannot use *, ^, ~, or comma ranges`)
+            assert.doesNotMatch(trimmed, /\s-\s/u, `${label} cannot use hyphen ranges`)
+            const comparators = trimmed.split(/\s+/u).map((token) => {
+              const m = COMPARATOR_TOKEN_RE.exec(token)
+              assert.ok(m, `${label} has unsupported comparator "${token}"`)
+              const operator = m[1] ?? '='
+              const verStr = m[2]
+              assert.ok(!verStr.includes('+') && !/^[><=]/.test(verStr), `${label} comparator "${token}" is malformed`)
+              const semver = parseStrictSemver(verStr, `${label} comparator`)
+              assert.equal(semver.build.length, 0, `${label} comparator "${token}" cannot contain build metadata`)
+              return { raw: token, operator, semver }
+            })
+            for (const c of comparators) {
+              if (c.operator === '<' || c.operator === '<=') {
+                assert.ok(isExclusivePrereleaseZeroCeiling(c), `${label} upper bound must use <X.Y.Z-0`)
+              }
+            }
+            const exacts = comparators.filter((c) => c.operator === '=')
+            const lowers = comparators.filter((c) => c.operator === '>=' || c.operator === '>')
+            const uppers = comparators.filter((c) => c.operator === '<' || c.operator === '<=')
+            assert.equal(exacts.length, 0, `${label} must use bounded >= ... <X.Y.Z-0 range`)
+            assert.ok(lowers.length > 0, `${label} must include an approved lower bound`)
+            assert.ok(uppers.length > 0 && uppers.every((c) => isExclusivePrereleaseZeroCeiling(c)), `${label} must include a bounded <X.Y.Z-0 ceiling`)
+            const verified = parseStrictSemver(verifiedDsh, 'verifiedDsh')
+            for (const item of comparators) {
+              const cmp = compareSemver(verified, item.semver)
+              const ok = item.operator === '>=' ? cmp >= 0 : item.operator === '<=' ? cmp <= 0 : item.operator === '>' ? cmp > 0 : item.operator === '<' ? cmp < 0 : cmp === 0
+              assert.ok(ok, `${label} "${range}" must satisfy verified DSH ${verifiedDsh}`)
+            }
+            for (const lower of lowers) {
+              assert.ok(compareSemver(lower.semver, verified) >= 0, `${label} lower bound ${lower.raw} drops below verified DSH ${verifiedDsh}`)
+            }
+            for (const upper of uppers) {
+              assert.ok(isExpectedReleaseCeiling(upper.semver, verified), `${label} upper bound ${upper.raw} must match <${verified.major}.${verified.minor}.${verified.patch + 1n}-0`)
+            }
+          }
+
+          const CONTROL_TOP_KEYS = new Set(['version', 'state'])
+          const CONTROL_SECTIONS = new Set(['approval', 'verification', 'public_target', 'runtime_basis', 'publication'])
+          const YAML_NULL_OR_BOOL_RE = /^(?:null|Null|NULL|~|true|True|TRUE|false|False|FALSE|yes|Yes|YES|no|No|NO|on|On|ON|off|Off|OFF)$/u
+          const UNSUPPORTED_PREFIX_RE = /^[|>{}[\]*&!@`%?]/u
+          const UNSUPPORTED_TOKENS_RE = /[{}[\]]/u
+          const DISALLOWED_INVISIBLE_RE = /[\ufeff\p{Cf}]/u
+          const ISSUE_NUMBER_RE = /^[1-9]\d{0,8}$/u
+          const WORK_BRANCH_REF_RE = /^(?:work\/[1-9]\d{0,8}-[A-Za-z0-9][A-Za-z0-9._-]*|main|stable\/\d+\.\d+\.x)$/u
+          const COMMIT_LIST_SEP_SRC = '(?:[ \\t]*,[ \\t]*(?:and\\b[ \\t]*)?|[ \\t]*(?:&|\\/|\\band\\b)[ \\t]*|[ \\t]+)'
+          const COMMIT_LABEL_RE =
+            /^(?:(?:product|verified|reviewed|tl[\s_-]*reviewed|candidate|release|source|target)[\s_-]+)*commits?\b(?:(?:\s*[:=]\s*|\s+)(?:shas?|hashes|ids|refs|are|were|is|at|was|equals))*(?:\s*[:=]\s*|\s+)/iu
+          const COMMIT_LIST_SEP_START_RE = new RegExp(`^${COMMIT_LIST_SEP_SRC}`, 'iu')
+          const COMMIT_SCAN_RE = new RegExp(
+            `(?:\\b(?:product|verified|reviewed|tl[\\s_-]*reviewed|candidate|release|source|target)[\\s_-]+)*\\bcommits?\\b(?:(?:\\s*[:=]\\s*|\\s+)(?:shas?|hashes|ids|refs|are|were|is|at|was|equals))*(?:\\s*[:=]\\s*|\\s+)([0-9a-f]{7,40}(?:${COMMIT_LIST_SEP_SRC}[0-9a-f]{7,40})*)\\b`,
+            'giu',
+          )
+          const ACTIVE_COMMIT_LIST_LEFT_RE = new RegExp(
+            `^(?:(?:product|verified|reviewed|tl[\\s_-]*reviewed|candidate|release|source|target)[\\s_-]+)*commits?\\b(?:(?:\\s*[:=]\\s*|\\s+)(?:shas?|hashes|ids|refs|are|were|is|at|was|equals))*(?:\\s*[:=]\\s*|\\s+)[0-9a-f]{7,40}(?:${COMMIT_LIST_SEP_SRC}[0-9a-f]{7,40})*$`,
+            'iu',
+          )
+          const UPSTREAM_LEAD_SRC = '(?:upstream|dsh|pi(?:-ai)?|openai|xai)\\s+(?:issue[-\\s#]*\\d+|#\\d+)'
+          const UPSTREAM_TAIL_ITEM_SRC = '(?:(?:upstream|dsh|pi(?:-ai)?|openai|xai)\\s+)?(?:issue[-\\s#]*\\d+|#\\d+)'
+          const UPSTREAM_LIST_SEP_SRC = '(?:[ \\t]*,[ \\t]*(?:and\\b[ \\t]*)?|[ \\t]*(?:&|\\/|\\band\\b)[ \\t]*)'
+          const ACTIVE_UPSTREAM_LIST_LEFT_RE = new RegExp(
+            `^${UPSTREAM_LEAD_SRC}(?:${UPSTREAM_LIST_SEP_SRC}${UPSTREAM_TAIL_ITEM_SRC})*$`,
+            'iu',
+          )
+          const ACTIVE_UPSTREAM_LIST_RIGHT_RE = new RegExp(`^[ \\t]*(?:and\\b[ \\t]*)?${UPSTREAM_TAIL_ITEM_SRC}\\b`, 'iu')
+          const sanitizeValidatedQaClauseForDenylist = (clause) =>
+            clause.replace(/\(([^)]*)\)/gu, (_m, inner) => {
+              const sanitizedItems = inner
+                .split(';')
+                .map((item) => (/^\s*both\s+stop\s+conditions\s+not\s+hit\s*$/iu.test(item) ? ' ' : item))
+                .join(';')
+              return `(${sanitizedItems})`
+            })
+          const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+
+          function parseAndVerifyCommitExpression(rawText, verifyShaFn) {
+            const s = rawText.replace(/[*_~`"'‘’“”«»]+/gu, ' ').replace(/[ \t]+/gu, ' ').trim()
+            const headMatch = COMMIT_LABEL_RE.exec(s)
+            if (!headMatch) return false
+            let rest = s.slice(headMatch[0].length)
+            const firstMatch = /^([0-9a-f]{7,40})(?![0-9a-zA-Z_-])/iu.exec(rest)
+            if (!firstMatch) return false
+            verifyShaFn(firstMatch[1])
+            rest = rest.slice(firstMatch[1].length)
+            while (rest.length > 0) {
+              const sepMatch = COMMIT_LIST_SEP_START_RE.exec(rest)
+              if (!sepMatch) return false
+              rest = rest.slice(sepMatch[0].length)
+              const nextMatch = /^([0-9a-f]{7,40})(?![0-9a-zA-Z_-])/iu.exec(rest)
+              if (!nextMatch) return false
+              verifyShaFn(nextMatch[1])
+              rest = rest.slice(nextMatch[1].length)
+            }
+            return true
+          }
+
+          function splitTopLevelVerificationClauses(policyText) {
+            let depth = 0
+            for (let i = 0; i < policyText.length; i += 1) {
+              const c = policyText[i]
+              if (c === '(') {
+                depth += 1
+                if (depth > 1) assert.fail('verification.policy must not contain nested parentheses')
+              } else if (c === ')') {
+                depth -= 1
+                if (depth < 0) assert.fail('verification.policy contains unbalanced parentheses')
+              }
+            }
+            assert.equal(depth, 0, 'verification.policy contains unclosed parentheses')
+
+            const clauses = []
+            let start = 0
+            let parenDepth = 0
+            const flush = (endIdx) => {
+              const chunk = policyText.slice(start, endIdx).trim().replace(/^(?:and|plus)\s+/iu, '').replace(/\s+/gu, ' ')
+              if (chunk.length > 0) clauses.push(chunk)
+            }
+            for (let i = 0; i < policyText.length; i += 1) {
+              const ch = policyText[i]
+              if (ch === '(') {
+                parenDepth += 1
+                continue
+              }
+              if (ch === ')') {
+                parenDepth -= 1
+                continue
+              }
+              if (parenDepth !== 0) continue
+              if (ch === '\r' || ch === '\n' || ch === ';') {
+                flush(i)
+                start = i + 1
+                continue
+              }
+              if (ch === '.') {
+                const next = policyText[i + 1]
+                if (next === undefined || /\s/u.test(next)) {
+                  flush(i)
+                  start = i + 1
+                }
+                continue
+              }
+              if (ch === ',') {
+                const leftTrimmed = policyText.slice(start, i).trim().replace(/^(?:and|plus)\s+/iu, '')
+                const rightTail = policyText.slice(i + 1)
+                const isActiveCommitList =
+                  ACTIVE_COMMIT_LIST_LEFT_RE.test(leftTrimmed) && /^[ \t]*(?:and\b[ \t]*)?[0-9a-f]{7,40}\b/iu.test(rightTail)
+                const isActiveUpstreamList =
+                  ACTIVE_UPSTREAM_LIST_LEFT_RE.test(leftTrimmed) && ACTIVE_UPSTREAM_LIST_RIGHT_RE.test(rightTail)
+                if (!isActiveCommitList && !isActiveUpstreamList) {
+                  flush(i)
+                  start = i + 1
+                }
+              }
+            }
+            flush(policyText.length)
+            return clauses
+          }
+
+          const trimAscii = (value) => value.replace(/^[ \t]+|[ \t]+$/gu, '')
+          const hasVisibleNonWhitespace = (value) => value.replace(/[\p{White_Space}\ufeff\p{Cf}]+/gu, '').length > 0
+          function assertValidWorkBranch(branch, fieldLabel) {
+            assert.ok(
+              typeof branch === 'string' &&
+                WORK_BRANCH_REF_RE.test(branch) &&
+                !branch.includes('..') &&
+                !branch.endsWith('.lock') &&
+                !branch.endsWith('.'),
+              `${fieldLabel} must be a valid Git branch ref (work/<issue>-<slug>, main, or stable/<x>.<y>.x): ${branch}`,
+            )
+          }
+
+          function decodeYamlScalar(raw, fieldLabel) {
+            assert.ok(typeof raw === 'string' && !DISALLOWED_INVISIBLE_RE.test(raw), `Unsupported BOM/invisible format character in YAML scalar for ${fieldLabel}: ${raw}`)
+            const trimmed = trimAscii(raw)
+            assert.ok(trimmed && !trimmed.startsWith('#'), `Empty or null YAML scalar for ${fieldLabel}: ${raw}`)
+            if (trimmed.startsWith('"')) {
+              let end = -1, escaped = false
+              for (let i = 1; i < trimmed.length; i += 1) {
+                if (escaped) { escaped = false; continue }
+                if (trimmed[i] === '\\') { escaped = true; continue }
+                if (trimmed[i] === '"') { end = i; break }
+              }
+              assert.ok(end !== -1, `Unterminated double-quoted scalar for ${fieldLabel}: ${raw}`)
+              const tail = trimmed.slice(end + 1)
+              assert.ok(tail === '' || /^[ \t]+(?:#.*)?$/u.test(tail), `Unexpected trailing content for ${fieldLabel}: ${raw}`)
+              const decoded = JSON.parse(trimmed.slice(0, end + 1))
+              assert.ok(typeof decoded === 'string' && hasVisibleNonWhitespace(decoded), `YAML scalar for ${fieldLabel} must be non-empty`)
+              assert.ok(!DISALLOWED_INVISIBLE_RE.test(decoded), `Unsupported invisible/BOM format character in decoded YAML scalar for ${fieldLabel}: ${raw}`)
+              return decoded
+            }
+            if (trimmed.startsWith("'")) {
+              let end = -1
+              for (let i = 1; i < trimmed.length; i += 1) {
+                if (trimmed[i] === "'") {
+                  if (trimmed[i + 1] === "'") { i += 1; continue }
+                  end = i; break
+                }
+              }
+              assert.ok(end !== -1, `Unterminated single-quoted scalar for ${fieldLabel}: ${raw}`)
+              const tail = trimmed.slice(end + 1)
+              assert.ok(tail === '' || /^[ \t]+(?:#.*)?$/u.test(tail), `Unexpected trailing content for ${fieldLabel}: ${raw}`)
+              const decoded = trimmed.slice(1, end).replace(/''/gu, "'")
+              assert.ok(hasVisibleNonWhitespace(decoded), `YAML scalar for ${fieldLabel} must be non-empty`)
+              assert.ok(!DISALLOWED_INVISIBLE_RE.test(decoded), `Unsupported invisible/BOM format character in decoded YAML scalar for ${fieldLabel}: ${raw}`)
+              return decoded
+            }
+            const comment = /[ \t]+#/u.exec(trimmed)
+            const scalar = trimAscii(comment ? trimmed.slice(0, comment.index) : trimmed)
+            assert.ok(scalar.length > 0, `Empty YAML scalar for ${fieldLabel}: ${raw}`)
+            assert.ok(!/[^\P{White_Space} \t]|[\ufeff\p{Cf}]/u.test(scalar), `Unsupported non-ASCII whitespace or invisible format character in YAML scalar for ${fieldLabel}: ${raw}`)
+            assert.ok(!YAML_NULL_OR_BOOL_RE.test(scalar), `Unquoted YAML null/boolean literal is forbidden for ${fieldLabel}: ${raw}`)
+            assert.ok(!UNSUPPORTED_PREFIX_RE.test(scalar), `Unsupported YAML syntax for ${fieldLabel}: ${raw}`)
+            assert.ok(!UNSUPPORTED_TOKENS_RE.test(scalar), `Unsupported YAML collection token for ${fieldLabel}: ${raw}`)
+            assert.ok(scalar !== '-' && !scalar.startsWith('- '), `Unexpected sequence item for ${fieldLabel}: ${raw}`)
+            assert.ok(!scalar.startsWith(':') && !/:[ \t]/u.test(scalar) && !/:\p{White_Space}/u.test(scalar), `Unexpected mapping syntax for ${fieldLabel}: ${raw}`)
+            return scalar
+          }
+
+          assert.ok(!DISALLOWED_INVISIBLE_RE.test(manifestText), 'Unsupported BOM/invisible format character in release manifest')
+          const top = new Map()
+          const sections = new Map()
+          const nestedSectionKeys = new Map()
+          let currentSection = null
+          let currentNestedKey = null
+          for (const rawLine of manifestText.split(/\r?\n/u)) {
+            if (/^[ \t]*$/u.test(rawLine)) continue
+            assert.ok(!/^ *\t/u.test(rawLine), `Tab indentation is forbidden in release manifest: ${rawLine}`)
+            const indent = /^( *)/u.exec(rawLine)[1].length
+            const trimmed = rawLine.slice(indent).replace(/[ \t]+$/u, '')
+            assert.ok(!/^\p{White_Space}/u.test(trimmed), `Invalid non-ASCII whitespace in indentation for release manifest: ${rawLine}`)
+            if (trimmed.startsWith('#')) continue
+            if (indent === 0) {
+              currentSection = null
+              currentNestedKey = null
+              const m = /^([A-Za-z0-9_]+):(?:[ \t]+(.*))?$/u.exec(trimmed)
+              assert.ok(m, `Malformed top-level YAML line: ${rawLine}`)
+              const key = m[1]
+              const rest = trimAscii(m[2] ?? '')
+              assert.ok(!top.has(key) && !sections.has(key), `Duplicate YAML top-level key "${key}"`)
+              if (!rest || rest.startsWith('#')) {
+                assert.ok(!CONTROL_TOP_KEYS.has(key), `Control field "${key}" must be a non-empty scalar`)
+                currentSection = key
+                sections.set(key, new Map())
+                nestedSectionKeys.set(key, new Set())
+              } else {
+                top.set(key, decodeYamlScalar(rest, key))
+              }
+              continue
+            }
+            assert.ok(currentSection !== null, `Unexpected indented YAML line outside section: ${rawLine}`)
+            const inControlSection = CONTROL_SECTIONS.has(currentSection)
+            if (indent === 2) {
+              if (trimmed.startsWith('-')) {
+                assert.ok(!inControlSection && currentSection !== 'source', `YAML list items are forbidden in section "${currentSection}"`)
+                continue
+              }
+              const m = /^([A-Za-z0-9_]+):(?:[ \t]+(.*))?$/u.exec(trimmed)
+              assert.ok(m, `Malformed YAML entry in section "${currentSection}": ${rawLine}`)
+              const key = m[1]
+              const rest = trimAscii(m[2] ?? '')
+              const sec = sections.get(currentSection)
+              const nested = nestedSectionKeys.get(currentSection)
+              assert.ok(!sec.has(key) && !nested.has(key), `Duplicate YAML key "${currentSection}.${key}"`)
+              nested.add(key)
+              const allowListInSection = !inControlSection && (currentSection !== 'source' || key === 'engineering_issues')
+              if (!rest || rest.startsWith('#')) {
+                assert.ok(allowListInSection, `Empty or null YAML value for scalar field "${currentSection}.${key}"`)
+                currentNestedKey = key
+              } else {
+                currentNestedKey = null
+                if (!allowListInSection) {
+                  sec.set(key, decodeYamlScalar(rest, `${currentSection}.${key}`))
+                } else if (!/^\[.*\]$/u.test(trimAscii(rest.replace(/[ \t]+#.*$/u, '')))) {
+                  sec.set(key, decodeYamlScalar(rest, `${currentSection}.${key}`))
+                }
+              }
+              continue
+            }
+            assert.ok(!inControlSection && (currentSection !== 'source' || currentNestedKey === 'engineering_issues'), `Unexpected nested indentation in section "${currentSection}": ${rawLine}`)
+            assert.ok(currentNestedKey !== null && trimmed.startsWith('-'), `Unsupported nested YAML line in "${currentSection}": ${rawLine}`)
+          }
+
+          assert.equal(pkg.name, 'dsh-lcx-codex', `Expected package name dsh-lcx-codex, got ${pkg.name}`)
+          assert.equal(typeof pkg.version, 'string', 'package.json version must be a string')
+          const version = pkg.version
+          const parsedVersion = parseStrictSemver(version, 'package.json version')
+          assert.equal(parsedVersion.prerelease.length, 0, `Expected stable package version without prerelease, got ${version}`)
+          assert.equal(parsedVersion.build.length, 0, `Expected stable package version without build metadata, got ${version}`)
+          assert.ok(
+            parsedVersion.major > 0n || parsedVersion.minor >= 7n,
+            `Finalize workflow requires release version >= 0.7.0, got ${version}`,
+          )
+          assert.equal(tag, `v${version}`, `Tag ${tag} does not match tagged package.json version v${version}`)
+
+          const verifiedDsh = pkg.lcxCompatibility?.verifiedDsh ?? pkg.devDependencies?.['@deepseek-ai/dsh']
+          assert.ok(verifiedDsh, 'verifiedDsh is required')
+          assert.equal(pkg.lcxCompatibility?.verifiedDsh, pkg.devDependencies?.['@deepseek-ai/dsh'], 'lcxCompatibility.verifiedDsh must match devDependencies.@deepseek-ai/dsh')
+          const installRange = pkg.lcxCompatibility?.dshInstallRange
+          assertStableBoundedRange(installRange, 'lcxCompatibility.dshInstallRange', verifiedDsh)
+          for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
+            if (!name.startsWith('@deepseek-ai/dsh-')) continue
+            assertStableBoundedRange(peerRange, `peerDependencies.${name}`, verifiedDsh)
+            assert.equal(peerRange, installRange, `peerDependencies.${name} must match lcxCompatibility.dshInstallRange`)
+          }
+
+          assert.equal(top.get('version'), version, 'Manifest version must match tagged package.json')
+          assert.equal(top.get('state'), 'APPROVED_STABLE', 'Manifest state must be APPROVED_STABLE')
+          const approval = sections.get('approval')
+          const sourceSection = sections.get('source')
+          const denialOrPlaceholderRe = /(?<![A-Za-z0-9])(?:required|hold|never|not|no|without|tbd|todo|pending|blocked|rejected|denied|refused|revoked|cancelled|canceled|withdrawn|unapproved|disapproved|unaccepted|template|placeholder|draft|mock|fake)(?![A-Za-z0-9])/iu
+          const positivePoRe = /^(?:private-issue-\d+-po-approved-\d{4}-\d{2}-\d{2}|po[-_]approved(?:[-_]\d{4}-\d{2}-\d{2})?|approved[-_]by[-_]product[-_]owner)$/iu
+          const positiveControllerRe = /^(?:TL_ACCEPTED(?:_ENGINEERING_REVIEW)?_\d{4}-\d{2}-\d{2}|TL_(?:ACCEPTED|APPROVED|PASSED)(?:_\d{4}-\d{2}-\d{2})?|controller_(?:accepted|approved|passed))$/iu
+          const productOwner = typeof approval?.get('product_owner') === 'string' ? trimAscii(approval.get('product_owner')) : ''
+          assert.ok(
+            productOwner.length > 0 &&
+              !denialOrPlaceholderRe.test(productOwner) &&
+              positivePoRe.test(productOwner),
+            'Explicit positive Product Owner approval required',
+          )
+          const controllerReview = typeof approval?.get('controller_review') === 'string' ? trimAscii(approval.get('controller_review')) : ''
+          assert.ok(
+            controllerReview.length > 0 &&
+              !denialOrPlaceholderRe.test(controllerReview) &&
+              positiveControllerRe.test(controllerReview),
+            'Explicit positive controller_review approval required',
+          )
+          const tlCommit = approval?.get('tl_reviewed_product_commit')
+          assert.ok(
+            typeof tlCommit === 'string' && /^[0-9a-f]{40}$/u.test(tlCommit),
+            'approval.tl_reviewed_product_commit must be a 40-char hex commit SHA',
+          )
+          const sourceProductCommit = sourceSection?.get('product_commit')
+          assert.ok(
+            typeof sourceProductCommit === 'string' && /^[0-9a-f]{40}$/u.test(sourceProductCommit),
+            'source.product_commit must be a 40-char hex commit SHA',
+          )
+          assert.equal(tlCommit, sourceProductCommit, 'approval.tl_reviewed_product_commit must match source.product_commit')
+          const approvedVersion = approval?.get('approved_version')
+          assert.ok(typeof approvedVersion === 'string' && approvedVersion.length > 0, 'approval.approved_version is required')
+          assert.equal(approvedVersion, version, 'approval.approved_version must match package.json version')
+
+          const approvalIssue = approval?.get('engineering_issue')
+          const sourceIssue = sourceSection?.get('engineering_issue')
+          assert.ok(
+            typeof approvalIssue === 'string' && ISSUE_NUMBER_RE.test(approvalIssue),
+            'approval.engineering_issue must be a positive integer without leading zeros (at most 9 digits)',
+          )
+          assert.ok(
+            typeof sourceIssue === 'string' && ISSUE_NUMBER_RE.test(sourceIssue),
+            'source.engineering_issue must be a positive integer without leading zeros (at most 9 digits)',
+          )
+          assert.equal(approvalIssue, sourceIssue, 'approval.engineering_issue must match source.engineering_issue')
+          for (const [fieldName, fieldVal] of [
+            ['approval.product_owner', productOwner],
+            ['approval.controller_review', controllerReview],
+            ['approval.approval_reference', approval?.get('approval_reference')],
+          ]) {
+            if (typeof fieldVal !== 'string') continue
+            for (const issueMatch of fieldVal.matchAll(/(?:private-)?issue[-_#\s/]+(\d+)/giu)) {
+              assert.equal(issueMatch[1], sourceIssue, `Stale or mismatched issue reference #${issueMatch[1]} in ${fieldName} (expected #${sourceIssue})`)
+            }
+          }
+          const approvalBranch = approval?.get('work_branch')
+          const sourceBranch = sourceSection?.get('work_branch')
+          assert.ok(typeof approvalBranch === 'string' && approvalBranch.length > 0, 'approval.work_branch is required')
+          assert.ok(typeof sourceBranch === 'string' && sourceBranch.length > 0, 'source.work_branch is required')
+          assertValidWorkBranch(approvalBranch, 'approval.work_branch')
+          assertValidWorkBranch(sourceBranch, 'source.work_branch')
+          assert.equal(approvalBranch, sourceBranch, 'approval.work_branch must match source.work_branch')
+          const branchIssueMatch = /^work\/(\d+)-/u.exec(sourceBranch)
+          if (branchIssueMatch) {
+            assert.equal(branchIssueMatch[1], sourceIssue, `source.work_branch ${sourceBranch} must match engineering_issue #${sourceIssue}`)
+          }
+          const positiveFinalConfirmationRe = /^RECORDED_\d{4}-\d{2}-\d{2}$/u
+          const positivePublicExportReviewRe = /^TL_PASSED(?:_REVISION_\d+)?_\d{4}-\d{2}-\d{2}$/u
+          const finalConfirmation = typeof approval?.get('final_irreversible_confirmation') === 'string'
+            ? trimAscii(approval.get('final_irreversible_confirmation'))
+            : ''
+          assert.ok(
+            finalConfirmation.length > 0 &&
+              !denialOrPlaceholderRe.test(finalConfirmation) &&
+              positiveFinalConfirmationRe.test(finalConfirmation),
+            'Explicit positive approval.final_irreversible_confirmation (RECORDED_YYYY-MM-DD) is required',
+          )
+          const publicExportReview = typeof approval?.get('public_export_review') === 'string'
+            ? trimAscii(approval.get('public_export_review'))
+            : ''
+          assert.ok(
+            publicExportReview.length > 0 &&
+              !denialOrPlaceholderRe.test(publicExportReview) &&
+              positivePublicExportReviewRe.test(publicExportReview),
+            'Explicit positive approval.public_export_review (TL_PASSED[_REVISION_N]_YYYY-MM-DD) is required',
+          )
+          const pkgDsh = pkg.devDependencies?.['@deepseek-ai/dsh']
+          const pkgPluginPi = pkg.devDependencies?.['@earendil-works/pi-ai']
+          const pkgHostPi = pkg.lcxCompatibility?.verifiedHostPi
+          const pkgVerifiedPluginPi = pkg.lcxCompatibility?.verifiedPluginPi
+          assert.ok(typeof pkgDsh === 'string' && pkgDsh.length > 0, 'package.json devDependencies.@deepseek-ai/dsh is required')
+          assert.ok(typeof pkgPluginPi === 'string' && pkgPluginPi.length > 0, 'package.json devDependencies.@earendil-works/pi-ai is required')
+          assert.ok(typeof pkgHostPi === 'string' && pkgHostPi.length > 0, 'package.json lcxCompatibility.verifiedHostPi is required')
+          assert.ok(typeof pkgVerifiedPluginPi === 'string' && pkgVerifiedPluginPi.length > 0, 'package.json lcxCompatibility.verifiedPluginPi is required')
+          parseStrictSemver(pkgDsh, 'package.json devDependencies.@deepseek-ai/dsh')
+          parseStrictSemver(pkgPluginPi, 'package.json devDependencies.@earendil-works/pi-ai')
+          parseStrictSemver(pkgHostPi, 'package.json lcxCompatibility.verifiedHostPi')
+          parseStrictSemver(pkgVerifiedPluginPi, 'package.json lcxCompatibility.verifiedPluginPi')
+
+          const runtimeBasis = sections.get('runtime_basis')
+          const basisDsh = runtimeBasis?.get('dsh')
+          const basisPluginPi = runtimeBasis?.get('plugin_pi')
+          const basisHostPi = runtimeBasis?.get('host_pi')
+          assert.ok(typeof basisDsh === 'string' && basisDsh.length > 0, 'runtime_basis.dsh is required')
+          assert.ok(typeof basisPluginPi === 'string' && basisPluginPi.length > 0, 'runtime_basis.plugin_pi is required')
+          assert.ok(typeof basisHostPi === 'string' && basisHostPi.length > 0, 'runtime_basis.host_pi is required')
+          parseStrictSemver(basisDsh, 'runtime_basis.dsh')
+          parseStrictSemver(basisPluginPi, 'runtime_basis.plugin_pi')
+          parseStrictSemver(basisHostPi, 'runtime_basis.host_pi')
+
+          assert.equal(basisDsh, pkgDsh, 'runtime_basis.dsh must match package.json')
+          assert.equal(basisPluginPi, pkgPluginPi, 'runtime_basis.plugin_pi must match package.json')
+          assert.equal(basisHostPi, pkgHostPi, 'runtime_basis.host_pi must match package.json')
+          assert.equal(pkgVerifiedPluginPi, pkgPluginPi, 'lcxCompatibility.verifiedPluginPi must match package.json')
+          assert.equal(pkgHostPi, pkgPluginPi, 'lcxCompatibility.verifiedHostPi must match plugin Pi version')
+          if (runtimeBasis?.has('install_range')) {
+            assert.equal(runtimeBasis.get('install_range'), installRange, 'runtime_basis.install_range must match lcxCompatibility.dshInstallRange')
+          }
+
+          const verification = sections.get('verification')
+          const runtimeQaRaw = verification?.get('runtime_qa')
+          const runtimeQa = typeof runtimeQaRaw === 'string' ? trimAscii(runtimeQaRaw) : ''
+          assert.equal(
+            runtimeQa,
+            'PASSED',
+            'Explicit verification.runtime_qa: PASSED is required',
+          )
+          const verificationDshRaw = verification?.get('dsh')
+          const verificationDsh = typeof verificationDshRaw === 'string' ? trimAscii(verificationDshRaw) : ''
+          assert.equal(
+            verificationDsh,
+            basisDsh,
+            `verification.dsh must match runtime_basis.dsh (${basisDsh})`,
+          )
+          const positiveVerificationStateRe = /^(?:ENGINEERING_GATES_AND_RUNTIME_QA_PASSED_TL_ACCEPTED|RUNTIME_QA_PASSED)$/u
+          const negativeVerificationStateRe = /(?<![A-Za-z0-9])(?:failed|unverified|incomplete|skipped|partial)(?![A-Za-z0-9])/iu
+          const verificationState = typeof verification?.get('state') === 'string'
+            ? trimAscii(verification.get('state'))
+            : ''
+          assert.ok(
+            verificationState.length > 0 &&
+              !denialOrPlaceholderRe.test(verificationState) &&
+              !negativeVerificationStateRe.test(verificationState) &&
+              positiveVerificationStateRe.test(verificationState),
+            'Explicit positive verification.state (ENGINEERING_GATES_AND_RUNTIME_QA_PASSED_TL_ACCEPTED or RUNTIME_QA_PASSED) is required',
+          )
+          const verificationProductCommit = verification?.get('product_commit')
+          const verificationVerifiedCommit = verification?.get('verified_commit')
+          assert.ok(
+            verificationProductCommit !== undefined || verificationVerifiedCommit !== undefined,
+            'verification.product_commit or verification.verified_commit is required',
+          )
+          for (const [commitKey, vCommit] of [
+            ['product_commit', verificationProductCommit],
+            ['verified_commit', verificationVerifiedCommit],
+          ]) {
+            if (vCommit !== undefined) {
+              assert.ok(
+                typeof vCommit === 'string' && /^[0-9a-f]{40}$/u.test(vCommit),
+                `verification.${commitKey} must be a 40-char hex commit SHA`,
+              )
+              assert.equal(vCommit, sourceProductCommit, `verification.${commitKey} must match source.product_commit`)
+            }
+          }
+          const verificationPolicyRaw = verification?.get('policy')
+          const verificationPolicy = typeof verificationPolicyRaw === 'string' ? trimAscii(verificationPolicyRaw) : ''
+          assert.ok(verificationPolicy.length > 0, 'verification.policy is required')
+          const pendingOrBlockedVerificationPolicyRe =
+            /(?<![A-Za-z0-9])(?:pending|blocked|unapproved|disapproved|unaccepted|rejected|denied|refused|revoked|cancelled|canceled|withdrawn|failed|unverified|incomplete|skipped|partial|draft|placeholder|tbd|todo|wip|mock|mocks|mocked|fake|awaiting|outstanding|deferred|missing|absent|lacks?|unknown|unclear|unconfirmed|unproven|untested|uncertain|undetermined|inconclusive|speculative|tentative|projected|scheduled|planned|expected|upcoming|tomorrow|later|soon|waived|bypassed|omitted|neither|nor|none|zero|once|when|if|unless|until|whether|assuming|plan|plans|planning|proposal|proposed|hypothetical|hypothetically|example|examples|sample|samples|dry[\s-]+run|simulator|simulators|simulation|simulated|emulator|emulators|emulated|synthetic|stub|stubs|stubbed|double|doubles|caveat|caveats|nominal|except|however|but|although|despite|harness[\s-]+only|illustrative|can|cannot|could|would|should|might|may|will|shall)(?![A-Za-z0-9])|remain(?:s|ing)?\s+pending|only[\s-]+in|no[\s-]+sign|no[\s-]+evidence|lack(?:s|ing)?[\s-]+evidence|without[\s-]+evidence|no[\s-]+proof|without[\s-]+proof|no[\s-]+runtime(?:[\s-]+(?:qa|acceptance))?(?:[\s-]+claim)?|\bno\s+(?:runtime\s+qa|post[\s_-]+release)\b|\bwithout\s+(?:runtime\s+qa|post[\s_-]+release)\b|\bnot\s+(?:yet\s+|been\s+)?(?:verified|pass|passed|complete|completed|accepted|done|run|executed|confirmed|proven)\b|\b(?:has|have|was|were|is|are)\s+not\s+(?:yet\s+|been\s+)?(?:verified|complete|completed|passed|done|run|executed|confirmed|proven)\b|not[\s-]+runtime[\s-]*(?:qa|verified)|runtime[\s-]+qa(?:[^.;,\n]|\.(?=[A-Za-z0-9_-]))*\b(?:not|never|no|without)\b|\bpost[\s_-]+release[\s-]+(?:verification|check)\b(?:[^.;,\n]|\.(?=[A-Za-z0-9_-]))*\b(?:not|never|no|without|did|didn't|doesn't|hasn't|haven't|isn't|wasn't|won't|will|shall|could|would|should|might|may)\b|\b(?:did|do|does|can|cannot|can't|couldn't|didn't|doesn't|hasn't|haven't|isn't|aren't|wasn't|weren't|won't|will\s+not|would\s+not|should\s+not|may\s+not|might\s+not)\b(?:[^.;\n]|\.(?=[A-Za-z0-9_-]))*\b(?:pass(?:ed)?|complete(?:d)?|verif(?:y|ied)|finish(?:ed)?|succeed(?:ed)?|accept(?:ed)?|run|executed|done)\b/iu
+          for (const shaMatch of verificationPolicy.matchAll(/(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])/gu)) {
+            assert.equal(
+              shaMatch[1].toLowerCase(),
+              sourceProductCommit.toLowerCase(),
+              `Mismatched commit SHA ${shaMatch[1]} in verification.policy (expected ${sourceProductCommit})`,
+            )
+          }
+          const assertPolicyCommitSha = (rawSha) => {
+            assert.ok(
+              sourceProductCommit.toLowerCase().startsWith(rawSha.toLowerCase()),
+              `Mismatched product commit SHA ${rawSha} in verification.policy (expected ${sourceProductCommit})`,
+            )
+          }
+          for (const gluedMatch of verificationPolicy.matchAll(/\bcommits?([0-9a-f]{7,40})\b/giu)) {
+            assert.fail(
+              `Malformed commit SHA reference "${gluedMatch[0]}" in verification.policy (separator required before ${gluedMatch[1]}; expected ${sourceProductCommit})`,
+            )
+          }
+          const normalizedCommitText = verificationPolicy
+            .replace(/[*_~`"'‘’“”«»()[\]{}]+/gu, ' ')
+            .replace(/[ \t]+/gu, ' ')
+          for (const listMatch of normalizedCommitText.matchAll(COMMIT_SCAN_RE)) {
+            for (const shaToken of listMatch[1].matchAll(/\b([0-9a-f]{7,40})\b/giu)) {
+              assertPolicyCommitSha(shaToken[1])
+            }
+          }
+          for (const dshMatch of verificationPolicy.matchAll(
+            /\bdsh\b(?:(?:\s*[:=/(-]\s*|\s+)(?:version|runtime|baseline|is|at|on|build))*[ \t]*[:=/(-]?[ \t]*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/giu,
+          )) {
+            assert.equal(
+              dshMatch[1],
+              basisDsh,
+              `Mismatched DSH version ${dshMatch[1]} in verification.policy (expected ${basisDsh})`,
+            )
+          }
+          for (const issueMatch of verificationPolicy.matchAll(/(?:private[\s_-]+issue[\s_#:/-]*|docs\/(?:qa|handoff)\/issue[-_/]*)(\d+)/giu)) {
+            assert.equal(
+              issueMatch[1],
+              sourceIssue,
+              `Stale or mismatched issue reference #${issueMatch[1]} in verification.policy (expected #${sourceIssue})`,
+            )
+          }
+          const nonUpstreamPolicy = verificationPolicy.replace(
+            /\b(?:upstream|dsh|pi(?:-ai)?|openai|xai)\s+(?:issue[-\s#]*\d+|#\d+)\b/giu,
+            ' ',
+          )
+          for (const issueMatch of nonUpstreamPolicy.matchAll(/\bissue-(\d+)\b/giu)) {
+            assert.equal(
+              issueMatch[1],
+              sourceIssue,
+              `Stale or mismatched issue reference #${issueMatch[1]} in verification.policy (expected #${sourceIssue})`,
+            )
+          }
+          const escapedBasisDsh = escapeRegExp(basisDsh)
+          const escapedSourceIssue = escapeRegExp(sourceIssue)
+          const escapedVersion = escapeRegExp(version)
+          const clauseNegationOrFutureRe =
+            /\b(?:not|never|no|without|neither|nor|none|zero|did|do|does|can|cannot|will|shall|could|would|should|might|may|once|when|if|unless|until|whether|assuming|plan|plans|planned|planning|proposal|proposed|hypothetical|hypothetically|example|examples|sample|samples|dry[\s-]+run|simulator|simulators|simulation|simulated|emulator|emulators|emulated|synthetic|stub|stubs|stubbed|double|doubles|caveat|caveats|nominal|except|however|but|although|despite|harness[\s-]+only|illustrative|unknown|unclear|unconfirmed|unproven|untested|uncertain|undetermined|pending|blocked|failed|skipped|incomplete|partial|awaiting|outstanding|deferred|missing|absent|lacks?|tomorrow|later|soon|expected|scheduled|upcoming|yet|todo|tbd|wip|draft|mock|mocks|mocked|fake|placeholder|waived|bypassed|omitted)\b|\bonly[\s-]+in\b|\bno[\s-]+sign\b|\b[A-Za-z]+n't\b/iu
+          const qaDocPathSrc = `docs\\/qa\\/issue-${escapedSourceIssue}\\/[A-Za-z0-9._-]+`
+          const issueRefSrc = `(?:private[\\s_-]+issue[\\s_-]*#?${escapedSourceIssue}|issue[\\s_-]*#?${escapedSourceIssue}|#${escapedSourceIssue})`
+          const dshRefSrc = `(?:(?:the\\s+)?(?:exact|real|isolated)\\s+dsh\\s+${escapedBasisDsh}|dsh\\s+${escapedBasisDsh})`
+          const qaDocPathExactRe = new RegExp(`^${qaDocPathSrc}$`, 'u')
+          const qaDshExactRe = new RegExp(`^(?:exact\\s+)?dsh\\s+${escapedBasisDsh}$`, 'iu')
+          const qaIssueExactRe = new RegExp(`^${issueRefSrc}$`, 'iu')
+          const isValidQaParentheticalItem = (rawItem) => {
+            const item = rawItem.trim().replace(/\s+/gu, ' ')
+            if (!item) return false
+            if (/^both stop conditions not hit$/iu.test(item)) return true
+            if (qaDocPathExactRe.test(item) || qaDshExactRe.test(item) || qaIssueExactRe.test(item)) return true
+            return parseAndVerifyCommitExpression(item, assertPolicyCommitSha)
+          }
+
+          const scopePrepPhraseSrc = `(?:\\s+(?:(?:on|for|under|with)\\s+${dshRefSrc}|(?:for|under|in)\\s+(?:${issueRefSrc}|${qaDocPathSrc})|on\\s+\\d{4}-\\d{2}-\\d{2}|(?:for|of)\\s+(?:v?${escapedVersion}|this\\s+(?:candidate|release)))){0,3}`
+          const directClausePrefixSrc = `(?:(?:the\\s+)?(?:real|isolated|full|manual)\\s+(?:dsh\\s+)?(?:${escapedBasisDsh}\\s+)?|(?:the\\s+)?exact\\s+dsh\\s+${escapedBasisDsh}\\s+|(?:the\\s+)?engineering\\s+gates\\s*(?:\\+|&|and)\\s*|the\\s+)?`
+          const affirmativeQaCoreRe = new RegExp(
+            `^(?:${directClausePrefixSrc}runtime[\\s-]+qa${scopePrepPhraseSrc}\\s+(?:(?:is|was|are|were|has\\s+been|have\\s+been|has|have)\\s+)?(?:passed|complete(?:d)?|verified|accepted|checked)${scopePrepPhraseSrc}|(?:passed|completed|verified|accepted|checked)\\s+(?:the\\s+)?(?:(?:real|isolated|full|manual)\\s+)?(?:dsh\\s+(?:${escapedBasisDsh}\\s+)?)?runtime[\\s-]+qa${scopePrepPhraseSrc})$`,
+            'iu',
+          )
+          const isRuntimeQaCompletionClause = (clause) => {
+            let core = clause
+            while (core.endsWith(')')) {
+              const openIdx = core.lastIndexOf('(')
+              if (openIdx === -1) return false
+              const inner = core.slice(openIdx + 1, -1).trim()
+              if (!inner) return false
+              const items = inner.split(';')
+              if (!items.every(isValidQaParentheticalItem)) return false
+              core = core.slice(0, openIdx).trim()
+            }
+            if (!core || core.includes('(') || core.includes(')')) return false
+            return affirmativeQaCoreRe.test(core) && !clauseNegationOrFutureRe.test(core)
+          }
+
+          const commitScopeSuffixRe = new RegExp(
+            `(?:\\s+(?:under|for|on)\\s+(?:${qaDocPathSrc}|${issueRefSrc}|${dshRefSrc}))+$`,
+            'iu',
+          )
+          const isCommitAttestationClause = (clause) => {
+            if (clause.includes('(') || clause.includes(')')) return false
+            const stripped = clause.replace(commitScopeSuffixRe, '').trim()
+            return stripped.length > 0 && parseAndVerifyCommitExpression(stripped, assertPolicyCommitSha)
+          }
+
+          const qaDocRefClauseRe = new RegExp(
+            `^(?:(?:recorded|verified|documented|see)\\s+(?:under|in|at)\\s+)?(?:(?:${issueRefSrc}(?:\\s+(?:and|under))?\\s*)|${qaDocPathSrc})+$`,
+            'iu',
+          )
+          const engineeringGatesClauseRe = new RegExp(
+            `^(?:all\\s+)?(?:engineering(?:\\s+and\\s+contract)?\\s+gates|tl\\s+(?:engineering\\s+)?review|technical\\s+lead\\s+(?:acceptance|review))(?:\\s+(?:on|for)\\s+(?:${dshRefSrc}|${issueRefSrc}|v?${escapedVersion}))*\\s+(?:passed|complete(?:d)?|accepted|verified)(?:\\s+(?:on|for|under)\\s+(?:${dshRefSrc}|${issueRefSrc}|${qaDocPathSrc}|v?${escapedVersion}))*$`,
+            'iu',
+          )
+          const upstreamTrackingClauseRe = new RegExp(
+            `^${UPSTREAM_LEAD_SRC}(?:${UPSTREAM_LIST_SEP_SRC}${UPSTREAM_TAIL_ITEM_SRC})*\\s+(?:remains?|are|is)\\s+(?:tracked|open|non-blocking|out-of-scope)(?:\\s+upstream)?$`,
+            'iu',
+          )
+          const isAllowedClosedClause = (clause) =>
+            isRuntimeQaCompletionClause(clause) ||
+            isCommitAttestationClause(clause) ||
+            qaDocRefClauseRe.test(clause) ||
+            engineeringGatesClauseRe.test(clause) ||
+            upstreamTrackingClauseRe.test(clause)
+
+          let clauses = null
+          let parenParseErr = null
+          try {
+            clauses = splitTopLevelVerificationClauses(verificationPolicy)
+          } catch (err) {
+            parenParseErr = err
+          }
+          const verificationPolicyForDenylist = clauses
+            ? clauses
+                .map((clause) => (isRuntimeQaCompletionClause(clause) ? sanitizeValidatedQaClauseForDenylist(clause) : clause))
+                .join(' ; ')
+            : verificationPolicy
+          assert.ok(
+            !pendingOrBlockedVerificationPolicyRe.test(verificationPolicyForDenylist) &&
+              !/\bnot\b/iu.test(verificationPolicyForDenylist) &&
+              !/\bpost[\s_-]+release\b/iu.test(verificationPolicyForDenylist),
+            'verification.policy must not contain pending, blocked, failed, unverified, incomplete, or no-runtime-claim language',
+          )
+          if (parenParseErr) throw parenParseErr
+
+          assert.ok(
+            clauses.length > 0 && clauses.some(isRuntimeQaCompletionClause),
+            'verification.policy must affirmatively state completed runtime QA',
+          )
+          const invalidClauses = clauses.filter((clause) => !isAllowedClosedClause(clause))
+          assert.equal(
+            invalidClauses.length,
+            0,
+            `verification.policy contains unrecognized clause: ${invalidClauses[0]}`,
+          )
+          const publication = sections.get('publication')
+          assert.equal(publication?.get('state'), 'APPROVED_PENDING_PUBLISH', 'Manifest publication.state must be APPROVED_PENDING_PUBLISH')
+
+          const publicTarget = sections.get('public_target')
+          assert.equal(publicTarget?.get('tag'), tag, 'Manifest public_target.tag must match release tag')
+          const targetBranch = publicTarget?.get('branch')
+          assert.ok(targetBranch, 'Manifest public_target.branch is required')
+          assert.match(targetBranch, /^(?:main|stable\/\d+\.\d+\.x)$/u)
+          const distTag = publicTarget?.get('npm_dist_tag')
+          assert.ok(distTag, 'Manifest public_target.npm_dist_tag is required')
+          const previousLatestMustBe = publicTarget?.get('previous_latest_must_be') ?? ''
+          const stableLatestMustRemain = publicTarget?.get('stable_latest_must_remain') ?? ''
+
+          const versionMinor = `${parsedVersion.major}.${parsedVersion.minor}`
+          if (targetBranch === 'main') {
+            assert.equal(distTag, 'latest', `Main branch must use npm_dist_tag latest, got ${distTag}`)
+            assert.equal(stableLatestMustRemain, '', 'Stable main release must not set public_target.stable_latest_must_remain')
+            assert.ok(previousLatestMustBe, 'Stable main release must record previous_latest_must_be')
+            const parsedPrev = parseStrictSemver(previousLatestMustBe, 'public_target.previous_latest_must_be')
+            assert.equal(parsedPrev.prerelease.length, 0, 'previous_latest_must_be must be stable SemVer')
+            assert.equal(parsedPrev.build.length, 0, 'public_target.previous_latest_must_be must not contain build metadata')
+            assert.ok(compareSemver(parsedVersion, parsedPrev) > 0, `Stable release ${version} must advance latest beyond ${previousLatestMustBe}`)
+          } else {
+            const expectedBranch = `stable/${versionMinor}.x`
+            const expectedDistTag = `stable-${versionMinor}`
+            assert.equal(targetBranch, expectedBranch, `Unsupported stable target branch ${targetBranch}`)
+            assert.equal(distTag, expectedDistTag, `Maintenance branch requires npm_dist_tag ${expectedDistTag}, got ${distTag}`)
+            assert.equal(previousLatestMustBe, '', `Maintenance branch ${targetBranch} must not set public_target.previous_latest_must_be`)
+            assert.ok(stableLatestMustRemain, `Maintenance branch ${targetBranch} must record stable_latest_must_remain`)
+            const parsedRemain = parseStrictSemver(stableLatestMustRemain, 'public_target.stable_latest_must_remain')
+            assert.equal(parsedRemain.prerelease.length, 0, 'stable_latest_must_remain must be stable SemVer')
+            assert.equal(parsedRemain.build.length, 0, 'public_target.stable_latest_must_remain must not contain build metadata')
+          }
+
+          assert.match(tag, /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u)
+          assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u)
+          assert.match(targetBranch, /^(?:main|stable\/\d+\.\d+\.x)$/u)
+          assert.match(distTag, /^(?:latest|stable-\d+\.\d+)$/u)
+          assert.match(targetSha, /^[0-9a-f]{40,64}$/iu)
+          if (previousLatestMustBe) assert.match(previousLatestMustBe, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u)
+          if (stableLatestMustRemain) assert.match(stableLatestMustRemain, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u)
+
+          if (process.env.GITHUB_OUTPUT) {
+            appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              [
+                `tag=${tag}`,
+                `version=${version}`,
+                `target_branch=${targetBranch}`,
+                `dist_tag=${distTag}`,
+                `previous_latest=${previousLatestMustBe}`,
+                `stable_latest_remain=${stableLatestMustRemain}`,
+                `target_sha=${targetSha}`,
+              ].join('\n') + '\n',
+              'utf8',
+            )
+          }
+          if (process.env.GITHUB_ENV) {
+            appendFileSync(
+              process.env.GITHUB_ENV,
+              [
+                `LCX_TAG=${tag}`,
+                `LCX_VERSION=${version}`,
+                `LCX_TARGET_BRANCH=${targetBranch}`,
+                `LCX_DIST_TAG=${distTag}`,
+                `LCX_PREVIOUS_LATEST=${previousLatestMustBe}`,
+                `LCX_STABLE_REMAIN=${stableLatestMustRemain}`,
+                `LCX_TARGET_SHA=${targetSha}`,
+              ].join('\n') + '\n',
+              'utf8',
+            )
+          }
+          EOF
+
+          BRANCH="${LCX_TARGET_BRANCH:-}"
+          if [[ -z "$BRANCH" ]]; then
+            BRANCH="$(grep '^LCX_TARGET_BRANCH=' "${GITHUB_ENV:-/dev/null}" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+          fi
+          if ! git rev-parse -q --verify "refs/remotes/origin/${BRANCH}" >/dev/null 2>&1 || \
+             ! git merge-base --is-ancestor "$TARGET" "refs/remotes/origin/${BRANCH}"; then
+            echo "Stable tag $TAG ($TARGET) is not an ancestor of target branch origin/${BRANCH}." >&2
+            exit 1
+          fi
+      - name: Verify Publish to npm run and verified-public-package artifact
+        id: publish_evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || inputs.workflow_run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.workflow_run_attempt }}
+          TAG: ${{ steps.policy.outputs.tag || env.LCX_TAG }}
+          VERSION: ${{ steps.policy.outputs.version || env.LCX_VERSION }}
+          TARGET_SHA: ${{ steps.policy.outputs.target_sha || env.LCX_TARGET_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${WORKFLOW_RUN_ID:-}" && ! "${WORKFLOW_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid workflow_run_id '${WORKFLOW_RUN_ID}'." >&2
+            exit 1
+          fi
+          if [[ -n "${WORKFLOW_RUN_ATTEMPT:-}" ]]; then
+            if [[ -z "${WORKFLOW_RUN_ID:-}" ]]; then
+              echo "workflow_run_attempt requires workflow_run_id." >&2
+              exit 1
+            fi
+            if [[ ! "${WORKFLOW_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Invalid workflow_run_attempt '${WORKFLOW_RUN_ATTEMPT}'." >&2
+              exit 1
+            fi
+          fi
+          if [[ "${EVENT_NAME:-}" == "workflow_run" ]]; then
+            if [[ -z "${WORKFLOW_RUN_ID:-}" || -z "${WORKFLOW_RUN_ATTEMPT:-}" ]]; then
+              echo "workflow_run requires both non-empty positive WORKFLOW_RUN_ID and WORKFLOW_RUN_ATTEMPT." >&2
+              exit 1
+            fi
+          elif [[ "${EVENT_NAME:-}" != "workflow_dispatch" ]]; then
+            echo "Unsupported trigger event '${EVENT_NAME:-}'." >&2
+            exit 1
+          fi
+          WORKFLOW_META_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml")"
+          if [[ -n "${WORKFLOW_RUN_ID:-}" && -n "${WORKFLOW_RUN_ATTEMPT:-}" ]]; then
+            RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}/attempts/${WORKFLOW_RUN_ATTEMPT}")"
+          elif [[ -n "${WORKFLOW_RUN_ID:-}" ]]; then
+            RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}")"
+          else
+            RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?head_sha=${TARGET_SHA}&status=success&per_page=100")"
+          fi
+          export WORKFLOW_META_JSON RUN_JSON
+          PUBLISH_RUN_ID="$(node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict'
+          const eventName = process.env.EVENT_NAME ?? ''
+          const tag = process.env.TAG ?? ''
+          const targetSha = process.env.TARGET_SHA ?? ''
+          const parsePositiveDecimal = (value, label) => {
+            const rawStr = typeof value === 'number'
+              ? (Number.isSafeInteger(value) && value > 0 ? String(value) : '')
+              : typeof value === 'string' && /^[1-9]\d*$/u.test(value)
+                ? value
+                : ''
+            assert.ok(rawStr.length > 0, `Invalid ${label}: ${String(value)}`)
+            return rawStr
+          }
+          const expectedRunId = process.env.WORKFLOW_RUN_ID ? parsePositiveDecimal(process.env.WORKFLOW_RUN_ID, 'WORKFLOW_RUN_ID') : undefined
+          const expectedRunAttempt = process.env.WORKFLOW_RUN_ATTEMPT ? parsePositiveDecimal(process.env.WORKFLOW_RUN_ATTEMPT, 'WORKFLOW_RUN_ATTEMPT') : undefined
+          if (eventName === 'workflow_run') {
+            assert.ok(expectedRunId !== undefined && expectedRunAttempt !== undefined, 'workflow_run requires pinned WORKFLOW_RUN_ID and WORKFLOW_RUN_ATTEMPT')
+          } else {
+            assert.equal(eventName, 'workflow_dispatch', `Unsupported trigger event ${eventName}`)
+          }
+          const workflowMeta = JSON.parse(process.env.WORKFLOW_META_JSON ?? '{}')
+          assert.ok(
+            (typeof workflowMeta?.id === 'number' && Number.isSafeInteger(workflowMeta.id) && workflowMeta.id > 0) ||
+              (typeof workflowMeta?.id === 'string' && /^[1-9]\d*$/u.test(workflowMeta.id)),
+            'Missing canonical publish.yml workflow id',
+          )
+          const canonicalWorkflowId = BigInt(workflowMeta.id)
+          assert.equal(workflowMeta?.path, '.github/workflows/publish.yml', `Unexpected publish workflow path: ${workflowMeta?.path}`)
+          const raw = JSON.parse(process.env.RUN_JSON ?? '{}')
+          const candidates = Array.isArray(raw.workflow_runs) ? raw.workflow_runs : [raw]
+          const hasCanonicalPublishPath = (rawPath) => {
+            if (typeof rawPath !== 'string') return false
+            const atIdx = rawPath.indexOf('@')
+            if (atIdx === -1) return rawPath === '.github/workflows/publish.yml'
+            const wfPath = rawPath.slice(0, atIdx)
+            const wfRef = rawPath.slice(atIdx + 1)
+            return wfPath === '.github/workflows/publish.yml' && (wfRef === tag || wfRef === `refs/tags/${tag}`)
+          }
+          const positiveDecimalOrNull = (val) => {
+            if (typeof val === 'number') return Number.isSafeInteger(val) && val > 0 ? String(val) : null
+            if (typeof val === 'string' && /^[1-9]\d*$/u.test(val)) return val
+            return null
+          }
+          const match = candidates.find((run) => {
+            if (!run) return false
+            const runWorkflowId = positiveDecimalOrNull(run.workflow_id)
+            const runId = positiveDecimalOrNull(run.id)
+            const runAttempt = positiveDecimalOrNull(run.run_attempt)
+            return (
+              runWorkflowId !== null &&
+              BigInt(runWorkflowId) === canonicalWorkflowId &&
+              runId !== null &&
+              hasCanonicalPublishPath(run.path) &&
+              run.event === 'push' &&
+              run.name === 'Publish to npm' &&
+              run.conclusion === 'success' &&
+              run.head_sha === targetSha &&
+              (run.head_branch === tag || run.head_branch === `refs/tags/${tag}`) &&
+              (expectedRunId === undefined || BigInt(runId) === BigInt(expectedRunId)) &&
+              (expectedRunAttempt === undefined || (runAttempt !== null && BigInt(runAttempt) === BigInt(expectedRunAttempt)))
+            )
+          })
+          assert.ok(match && match.id !== undefined, `No successful canonical .github/workflows/publish.yml push run found for tag ${tag} (${targetSha}) via ${eventName}`)
+          const matchedAttempt = positiveDecimalOrNull(match.run_attempt)
+          assert.ok(matchedAttempt !== null, `Matched publish run ${match.id} is missing valid run_attempt`)
+          process.stdout.write(`${String(match.id)} ${matchedAttempt}`)
+          EOF
+          )"
+
+          read -r PUBLISH_RUN_ID PUBLISH_RUN_ATTEMPT <<< "$PUBLISH_RUN_ID"
+          export PUBLISH_RUN_ID PUBLISH_RUN_ATTEMPT
+          ARTIFACTS_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PUBLISH_RUN_ID}/artifacts?per_page=100")"
+          export ARTIFACTS_JSON
+          ARTIFACT_ID="$(node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict'
+          const data = JSON.parse(process.env.ARTIFACTS_JSON ?? '{}')
+          const list = Array.isArray(data.artifacts) ? data.artifacts : []
+          const expectedName = `verified-public-package-${process.env.PUBLISH_RUN_ID ?? ''}-${process.env.PUBLISH_RUN_ATTEMPT ?? ''}`
+          const matches = list.filter((a) => a && a.name === expectedName && a.expired !== true)
+          assert.equal(
+            matches.length,
+            1,
+            `Publish run ${process.env.PUBLISH_RUN_ID ?? ''} (attempt ${process.env.PUBLISH_RUN_ATTEMPT ?? ''}) must contain exactly 1 active ${expectedName} artifact`,
+          )
+          const artifact = matches[0]
+          assert.ok(artifact.id !== undefined && /^\d+$/u.test(String(artifact.id)), `Artifact ${expectedName} is missing numeric id`)
+          process.stdout.write(String(artifact.id))
+          EOF
+          )"
+
+          ARTIFACT_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/lcx-finalize-art-XXXXXX")"
+          trap 'rm -rf "$ARTIFACT_DIR"' EXIT
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "${ARTIFACT_DIR}/artifact.zip"
+          TAR_FILE="${ARTIFACT_DIR}/dsh-lcx-codex-${VERSION}.tgz"
+          ZIP_FILE="${ARTIFACT_DIR}/artifact.zip" EXPECTED_ENTRY="dsh-lcx-codex-${VERSION}.tgz" OUT_TAR_FILE="$TAR_FILE" node --input-type=module - <<'EOF'
+          import assert from 'node:assert/strict'
+          import { readFileSync, statSync, writeFileSync } from 'node:fs'
+          import { crc32, inflateRawSync } from 'node:zlib'
+
+          const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+          const MAX_ZIP_BYTES = MAX_ARTIFACT_BYTES + 64 * 1024
+          const zipPath = process.env.ZIP_FILE
+          const zipStat = statSync(zipPath)
+          assert.ok(zipStat.size >= 22, 'Downloaded artifact archive is truncated (smaller than EOCD)')
+          assert.ok(zipStat.size <= MAX_ZIP_BYTES, `Downloaded artifact ZIP exceeds size limit (${zipStat.size} > ${MAX_ZIP_BYTES})`)
+          const zip = readFileSync(zipPath)
+          assert.ok(zip.length <= MAX_ZIP_BYTES, `Downloaded artifact ZIP exceeds size limit (${zip.length} > ${MAX_ZIP_BYTES})`)
+          const expectedEntry = process.env.EXPECTED_ENTRY
+          assert.ok(zip.length >= 22, 'Downloaded artifact archive is truncated (smaller than EOCD)')
+          let eocdOffset = -1
+          const minOffset = Math.max(0, zip.length - 0x10015)
+          for (let i = zip.length - 22; i >= minOffset; i -= 1) {
+            if (zip.readUInt32LE(i) === 0x06054b50) {
+              const commentLen = zip.readUInt16LE(i + 20)
+              if (i + 22 + commentLen === zip.length) {
+                eocdOffset = i
+                break
+              }
+            }
+          }
+          assert.ok(eocdOffset !== -1, 'Downloaded artifact archive is not a valid ZIP (missing EOCD)')
+          const diskNumber = zip.readUInt16LE(eocdOffset + 4)
+          const cdDisk = zip.readUInt16LE(eocdOffset + 6)
+          const entriesOnDisk = zip.readUInt16LE(eocdOffset + 8)
+          const totalEntries = zip.readUInt16LE(eocdOffset + 10)
+          const cdSize = zip.readUInt32LE(eocdOffset + 12)
+          const cdOffset = zip.readUInt32LE(eocdOffset + 16)
+          assert.equal(diskNumber, 0, `Unsupported multi-disk ZIP (disk ${diskNumber})`)
+          assert.equal(cdDisk, 0, `Unsupported multi-disk ZIP (CD disk ${cdDisk})`)
+          assert.equal(entriesOnDisk, 1, `Expected 1 disk entry in downloaded artifact ZIP, got ${entriesOnDisk}`)
+          assert.equal(totalEntries, 1, `Expected 1 total entry in downloaded artifact ZIP, got ${totalEntries}`)
+          assert.ok(cdSize >= 46 && cdOffset + cdSize <= eocdOffset, 'Invalid ZIP central directory bounds')
+          assert.equal(cdOffset + cdSize, eocdOffset, 'Unexpected trailing bytes between central directory and EOCD')
+          assert.equal(zip.readUInt32LE(cdOffset), 0x02014b50, 'Invalid ZIP central directory signature')
+
+          const cdFlags = zip.readUInt16LE(cdOffset + 8)
+          const cdMethod = zip.readUInt16LE(cdOffset + 10)
+          const cdCrc = zip.readUInt32LE(cdOffset + 16)
+          const cdCompressedSize = zip.readUInt32LE(cdOffset + 20)
+          const cdUncompressedSize = zip.readUInt32LE(cdOffset + 24)
+          const cdNameLen = zip.readUInt16LE(cdOffset + 28)
+          const cdExtraLen = zip.readUInt16LE(cdOffset + 30)
+          const cdCommentLen = zip.readUInt16LE(cdOffset + 32)
+          const cdDiskNumberStart = zip.readUInt16LE(cdOffset + 34)
+          const localOffset = zip.readUInt32LE(cdOffset + 42)
+          assert.equal(cdDiskNumberStart, 0, `Unsupported multi-disk ZIP entry (disk start ${cdDiskNumberStart})`)
+          assert.equal(cdFlags & 0x01, 0, 'Encrypted ZIP entries are forbidden')
+          assert.ok(
+            cdCompressedSize !== 0xffffffff && cdUncompressedSize !== 0xffffffff && localOffset !== 0xffffffff,
+            'ZIP64 sentinel sizes are not supported',
+          )
+          assert.equal(cdOffset + 46 + cdNameLen + cdExtraLen + cdCommentLen, cdOffset + cdSize, 'Unexpected trailing central directory bytes')
+          const cdEntryName = zip.toString('utf8', cdOffset + 46, cdOffset + 46 + cdNameLen)
+          assert.equal(cdEntryName, expectedEntry, `Unexpected ZIP entry ${cdEntryName} (expected ${expectedEntry})`)
+
+          assert.ok(localOffset + 30 <= cdOffset, 'Invalid ZIP local file header offset')
+          assert.equal(zip.readUInt32LE(localOffset), 0x04034b50, 'Invalid ZIP local file header signature')
+          const lfhFlags = zip.readUInt16LE(localOffset + 6)
+          const lfhMethod = zip.readUInt16LE(localOffset + 8)
+          const lfhCrc = zip.readUInt32LE(localOffset + 14)
+          const lfhCompressedSize = zip.readUInt32LE(localOffset + 18)
+          const lfhUncompressedSize = zip.readUInt32LE(localOffset + 22)
+          const lfhNameLen = zip.readUInt16LE(localOffset + 26)
+          const lfhExtraLen = zip.readUInt16LE(localOffset + 28)
+          assert.equal(lfhFlags & 0x01, 0, 'Encrypted ZIP local header is forbidden')
+          assert.equal(lfhMethod, cdMethod, 'ZIP local header compression method mismatches central directory')
+          const allowedFlags = cdMethod === 8 ? (0x0008 | 0x0800 | 0x0006) : (0x0008 | 0x0800)
+          assert.equal(cdFlags & ~allowedFlags, 0, `Unsupported ZIP central directory flags: 0x${cdFlags.toString(16)}`)
+          assert.equal(lfhFlags & ~allowedFlags, 0, `Unsupported ZIP local header flags: 0x${lfhFlags.toString(16)}`)
+          assert.equal(cdFlags & 0x08, lfhFlags & 0x08, 'ZIP local header data descriptor flag mismatches central directory')
+          assert.equal(cdFlags & ~0x0006, lfhFlags & ~0x0006, 'ZIP local header flags mismatch central directory')
+          const hasDataDescriptor = (lfhFlags & 0x08) !== 0
+          assert.ok(
+            hasDataDescriptor
+              ? (lfhCrc === 0 || lfhCrc === cdCrc) &&
+                (lfhCompressedSize === 0 || lfhCompressedSize === cdCompressedSize) &&
+                (lfhUncompressedSize === 0 || lfhUncompressedSize === cdUncompressedSize)
+              : lfhCrc === cdCrc &&
+                lfhCompressedSize === cdCompressedSize &&
+                lfhUncompressedSize === cdUncompressedSize,
+            'ZIP local header metadata mismatches central directory',
+          )
+          const dataStart = localOffset + 30 + lfhNameLen + lfhExtraLen
+          assert.ok(dataStart <= cdOffset, 'ZIP local header overflows central directory')
+          const lfhEntryName = zip.toString('utf8', localOffset + 30, localOffset + 30 + lfhNameLen)
+          assert.equal(lfhEntryName, cdEntryName, 'ZIP local header name mismatches central directory')
+
+          assert.ok(cdUncompressedSize > 0 && cdUncompressedSize <= MAX_ARTIFACT_BYTES, `Artifact uncompressed size out of bounds: ${cdUncompressedSize}`)
+          const dataEnd = dataStart + cdCompressedSize
+          assert.ok(dataEnd <= cdOffset, 'ZIP payload overflows central directory bounds')
+          if (hasDataDescriptor) {
+            const ddRemaining = cdOffset - dataEnd
+            let ddCrc
+            let ddCompressedSize
+            let ddUncompressedSize
+            if (ddRemaining === 16 && zip.readUInt32LE(dataEnd) === 0x08074b50) {
+              ddCrc = zip.readUInt32LE(dataEnd + 4)
+              ddCompressedSize = zip.readUInt32LE(dataEnd + 8)
+              ddUncompressedSize = zip.readUInt32LE(dataEnd + 12)
+            } else if (ddRemaining === 12) {
+              ddCrc = zip.readUInt32LE(dataEnd)
+              ddCompressedSize = zip.readUInt32LE(dataEnd + 4)
+              ddUncompressedSize = zip.readUInt32LE(dataEnd + 8)
+            } else {
+              assert.fail(`Invalid or missing ZIP data descriptor (remaining bytes: ${ddRemaining})`)
+            }
+            assert.equal(ddCrc, cdCrc, 'ZIP data descriptor CRC32 mismatches central directory')
+            assert.equal(ddCompressedSize, cdCompressedSize, 'ZIP data descriptor compressed size mismatches central directory')
+            assert.equal(ddUncompressedSize, cdUncompressedSize, 'ZIP data descriptor uncompressed size mismatches central directory')
+          } else {
+            assert.equal(dataEnd, cdOffset, 'Unexpected trailing bytes between ZIP payload and central directory')
+          }
+          const rawData = zip.subarray(dataStart, dataEnd)
+          assert.equal(rawData.length, cdCompressedSize, 'Truncated ZIP entry payload')
+          let content = null
+          if (cdMethod === 0) {
+            assert.equal(cdCompressedSize, cdUncompressedSize, 'Stored ZIP compressed size must equal uncompressed size')
+            content = rawData
+          } else if (cdMethod === 8) {
+            const inflated = inflateRawSync(rawData, { info: true, maxOutputLength: MAX_ARTIFACT_BYTES })
+            assert.equal(
+              inflated.engine?.bytesWritten,
+              rawData.length,
+              `Trailing compressed bytes after DEFLATE stream (${inflated.engine?.bytesWritten} !== ${rawData.length})`,
+            )
+            content = inflated.buffer
+          }
+          assert.ok(content !== null, `Unsupported ZIP compression method: ${cdMethod}`)
+          assert.equal(content.length, cdUncompressedSize, `Inflated ZIP payload length ${content.length} mismatches expected ${cdUncompressedSize}`)
+          assert.equal(crc32(content) >>> 0, cdCrc, 'ZIP payload CRC32 mismatch')
+          writeFileSync(process.env.OUT_TAR_FILE, content)
+          EOF
+          if [[ ! -f "$TAR_FILE" || ! -s "$TAR_FILE" ]]; then
+            echo "Downloaded verified-public-package artifact is missing dsh-lcx-codex-${VERSION}.tgz" >&2
+            exit 1
+          fi
+          export TAR_FILE
+          node --input-type=module - <<'EOF'
+          import { createHash } from 'node:crypto'
+          import { appendFileSync, readFileSync } from 'node:fs'
+          const buf = readFileSync(process.env.TAR_FILE)
+          const shasum = createHash('sha1').update(buf).digest('hex')
+          const integrity = `sha512-${createHash('sha512').update(buf).digest('base64')}`
+          if (process.env.GITHUB_OUTPUT) {
+            appendFileSync(process.env.GITHUB_OUTPUT, `artifact_shasum=${shasum}\nartifact_integrity=${integrity}\n`, 'utf8')
+          }
+          if (process.env.GITHUB_ENV) {
+            appendFileSync(process.env.GITHUB_ENV, `LCX_ARTIFACT_SHASUM=${shasum}\nLCX_ARTIFACT_INTEGRITY=${integrity}\n`, 'utf8')
+          }
+          EOF
+      - name: Verify registry convergence and create or validate GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.policy.outputs.tag || env.LCX_TAG }}
+          VERSION: ${{ steps.policy.outputs.version || env.LCX_VERSION }}
+          TARGET_BRANCH: ${{ steps.policy.outputs.target_branch || env.LCX_TARGET_BRANCH }}
+          DIST_TAG: ${{ steps.policy.outputs.dist_tag || env.LCX_DIST_TAG }}
+          STABLE_REMAIN: ${{ steps.policy.outputs.stable_latest_remain || env.LCX_STABLE_REMAIN }}
+          ARTIFACT_SHASUM: ${{ steps.publish_evidence.outputs.artifact_shasum || env.LCX_ARTIFACT_SHASUM }}
+          ARTIFACT_INTEGRITY: ${{ steps.publish_evidence.outputs.artifact_integrity || env.LCX_ARTIFACT_INTEGRITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          verify_existing_release() {
+            local prerelease draft
+            prerelease="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.prerelease')"
+            draft="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.draft')"
+            [[ "$prerelease" == "false" && "$draft" == "false" ]]
+          }
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            verify_existing_release
+            DIST_TAGS_JSON="$(npm view dsh-lcx-codex dist-tags --json --registry=https://registry.npmjs.org)"
+            export DIST_TAGS_JSON
+            node --input-type=module - <<'EOF'
+            import assert from 'node:assert/strict'
+            const version = process.env.VERSION ?? ''
+            const distTag = process.env.DIST_TAG ?? ''
+            const targetBranch = process.env.TARGET_BRANCH ?? ''
+            const stableRemain = process.env.STABLE_REMAIN ?? ''
+            const res = await fetch(`https://registry.npmjs.org/dsh-lcx-codex/${encodeURIComponent(version)}`)
+            if (res.status !== 200) throw new Error(`Expected published npm package for existing release ${process.env.TAG}, got HTTP ${res.status}`)
+            const doc = await res.json()
+            assert.equal(doc?.dist?.shasum, process.env.ARTIFACT_SHASUM)
+            assert.equal(doc?.dist?.integrity, process.env.ARTIFACT_INTEGRITY)
+
+            const tags = JSON.parse((process.env.DIST_TAGS_JSON ?? '').trim() || '{}')
+            const tagVer = tags && typeof tags === 'object' && Object.prototype.hasOwnProperty.call(tags, distTag) && typeof tags[distTag] === 'string' ? tags[distTag] : undefined
+            assert.equal(tagVer, version, `Existing release expected npm dist-tag ${distTag} to equal ${version}, got ${tagVer}.`)
+            if (targetBranch !== 'main' || distTag !== 'latest') {
+              const latestVer = tags && typeof tags === 'object' && Object.prototype.hasOwnProperty.call(tags, 'latest') && typeof tags.latest === 'string' ? tags.latest : undefined
+              assert.equal(latestVer, stableRemain, `Existing maintenance release expected npm latest to remain ${stableRemain}, got ${latestVer}.`)
+            }
+          EOF
+            echo "Stable GitHub Release already exists and is final."
+            exit 0
+          fi
+
+          MAX_ATTEMPTS="${LCX_CONVERGE_ATTEMPTS:-30}"
+          SLEEP_SEC="${LCX_CONVERGE_SLEEP_SEC:-3}"
           converged=false
-          for attempt in $(seq 1 30); do
-            LATEST="$(npm view dsh-lcx-codex dist-tags.latest --registry=https://registry.npmjs.org 2>/dev/null || true)"
-            if [[ "$LATEST" == "$VERSION" ]]; then
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            DIST_TAGS_JSON="$(npm view dsh-lcx-codex dist-tags --json --registry=https://registry.npmjs.org 2>/dev/null || true)"
+            export DIST_TAGS_JSON
+            status=0
+            node --input-type=module - <<'EOF' || status=$?
+            import assert from 'node:assert/strict'
+            const version = process.env.VERSION ?? ''
+            const distTag = process.env.DIST_TAG ?? ''
+            const targetBranch = process.env.TARGET_BRANCH ?? ''
+            const stableRemain = process.env.STABLE_REMAIN ?? ''
+            const artifactShasum = process.env.ARTIFACT_SHASUM ?? ''
+            const artifactIntegrity = process.env.ARTIFACT_INTEGRITY ?? ''
+
+            const res = await fetch(`https://registry.npmjs.org/dsh-lcx-codex/${encodeURIComponent(version)}`)
+            if (res.status !== 200 && res.status !== 404) {
+              console.error(`Registry lookup for dsh-lcx-codex@${version} failed with HTTP ${res.status}`)
+              process.exit(2)
+            }
+            if (res.status === 404) process.exit(10)
+
+            const remoteDoc = await res.json()
+            assert.equal(remoteDoc?.dist?.shasum, artifactShasum, `Published npm shasum (${remoteDoc?.dist?.shasum}) mismatches verified artifact (${artifactShasum}).`)
+            assert.equal(remoteDoc?.dist?.integrity, artifactIntegrity, `Published npm integrity (${remoteDoc?.dist?.integrity}) mismatches verified artifact (${artifactIntegrity}).`)
+
+            const raw = (process.env.DIST_TAGS_JSON ?? '').trim()
+            if (!raw) process.exit(10)
+            const tags = JSON.parse(raw)
+            const tagVer = tags && typeof tags === 'object' && Object.prototype.hasOwnProperty.call(tags, distTag) && typeof tags[distTag] === 'string' ? tags[distTag] : undefined
+            if (tagVer !== version) process.exit(10)
+
+            if (targetBranch !== 'main' || distTag !== 'latest') {
+              const latestVer = tags && typeof tags === 'object' && Object.prototype.hasOwnProperty.call(tags, 'latest') && typeof tags.latest === 'string' ? tags.latest : undefined
+              assert.equal(latestVer, stableRemain, `Maintenance release expected npm latest to remain ${stableRemain}, got ${latestVer}.`)
+            }
+          EOF
+            if [[ "$status" -eq 0 ]]; then
               converged=true
               break
+            elif [[ "$status" -ne 10 ]]; then
+              exit "$status"
             fi
-            sleep 3
+            if [[ "$attempt" -lt "$MAX_ATTEMPTS" && "$SLEEP_SEC" != "0" ]]; then
+              sleep "$SLEEP_SEC"
+            fi
           done
           if [[ "$converged" != true ]]; then
-            echo "npm latest did not converge to $VERSION" >&2
+            echo "npm publication dsh-lcx-codex@$VERSION on dist-tag $DIST_TAG did not converge." >&2
             exit 1
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            PRERELEASE="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq '.prerelease')"
-            DRAFT="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" --jq '.draft')"
-            [[ "$PRERELEASE" == "false" && "$DRAFT" == "false" ]]
-            echo "Stable GitHub Release already exists and is final."
+
+          RELEASE_ARGS=(
+            --verify-tag
+            --title "$TAG"
+            --notes "Stable release dsh-lcx-codex@$VERSION. See README and CHANGELOG for the verified DSH compatibility range and feature details. npm $DIST_TAG: dsh-lcx-codex@$VERSION."
+          )
+          if [[ "$TARGET_BRANCH" != "main" || "$DIST_TAG" != "latest" ]]; then
+            RELEASE_ARGS+=(--latest=false)
           else
-            gh release create "$TAG" \
-              --title "$TAG" \
-              --notes "Stable release dsh-lcx-codex@$VERSION. See README and CHANGELOG for the verified DSH compatibility range and feature details. npm latest: dsh-lcx-codex@$VERSION."
+            RELEASE_ARGS+=(--latest)
+          fi
+          if ! gh release create "$TAG" "${RELEASE_ARGS[@]}"; then
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              verify_existing_release
+              echo "Stable GitHub Release already exists and is final."
+              exit 0
+            fi
+            exit 1
           fi

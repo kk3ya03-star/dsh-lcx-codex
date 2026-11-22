@@ -18,6 +18,7 @@ function fixture(t, runtimeVersion = verifiedDsh, runtimePi = hostPi, rootPi = p
   const runtime = join(root, 'scripts/runtime-dsh022')
   mkdirSync(runtime, { recursive: true })
   copyFileSync(new URL('./link-dsh-runtime.mjs', import.meta.url), join(root, 'scripts/link-dsh-runtime.mjs'))
+  copyFileSync(new URL('./semver-range.mjs', import.meta.url), join(root, 'scripts/semver-range.mjs'))
   const write = (path, json) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, JSON.stringify(json)) }
   write(join(root, 'package.json'), {
     type: 'module',

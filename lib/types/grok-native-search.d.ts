@@ -11,6 +11,7 @@ export type GrokNativeReplayRoute = {
     baseURL: string;
     apiKeyEnv: string;
     headers?: Record<string, string>;
+    headerAuthorityFingerprint?: string;
 };
 type WireTool = Record<string, unknown>;
 type WireItem = Record<string, unknown> & {
@@ -34,5 +35,5 @@ export declare function grokVisibleFunctionTools(tools: readonly ToolSchema[] | 
 export declare function isGrokNativeServerToolItem(value: unknown, state: GrokNativeSearchState, declaredToolNames: ReadonlySet<string>): boolean;
 export declare function grokWireTools(tools: readonly unknown[] | undefined, state: GrokNativeSearchState): WireTool[];
 export declare function createGrokNativeReplayEnvelope(output: readonly unknown[] | undefined, route: GrokNativeReplayRoute | undefined, serverSearchEchoCallIds?: readonly string[]): GrokNativeReplayEnvelope | undefined;
-export declare function restoreGrokNativeReplay(input: readonly unknown[], messages: readonly Message[], route: GrokNativeReplayRoute | undefined): unknown[];
+export declare function restoreGrokNativeReplay(input: readonly unknown[], messages: readonly Message[], route: GrokNativeReplayRoute | undefined, onRestore?: (message: Message, output: readonly WireItem[]) => void): unknown[];
 export {};

@@ -16,6 +16,7 @@ function fixture(browserLanguage = 'en', activeLanguage = 'en') {
     grokNativeXSearch: false,
     searchMediaPreview: false,
     incrementalToolUpdates: true,
+    gatewayCompatibilityFallback: false,
   }
   const writes = []
   const scope = {
@@ -264,4 +265,23 @@ test('incremental tool updates default on, render with help text in both languag
   delete older.values.incrementalToolUpdates
   older.refresh()
   assert.equal(older.state().incrementalToolUpdates.value, true)
+})
+
+test('gateway compatibility fallback defaults off, renders with help text in both languages, and saves an explicit on', async () => {
+  const f = fixture()
+  assert.equal(f.state().gatewayCompatibilityFallback.value, false)
+  assert.match(JSON.stringify(f.render()), /Gateway compatibility fallback/)
+  f.setLocale('zh')
+  assert.match(JSON.stringify(f.render()), /网关兼容回退/)
+  f.setLocale('en')
+  f.injection.edit('gatewayCompatibilityFallback', true)
+  assert.equal(f.state().gatewayCompatibilityFallback.value, true)
+  await f.save()
+  assert.deepEqual(f.writes, [[{ op: 'set', path: ['gatewayCompatibilityFallback'], value: true }]])
+  assert.equal(f.values.gatewayCompatibilityFallback, true)
+  // A settings document that predates the key still shows the default (off), not on.
+  const older = fixture()
+  delete older.values.gatewayCompatibilityFallback
+  older.refresh()
+  assert.equal(older.state().gatewayCompatibilityFallback.value, false)
 })

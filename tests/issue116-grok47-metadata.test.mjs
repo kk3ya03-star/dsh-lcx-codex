@@ -49,14 +49,16 @@ for (const provider of providers) {
     assert.deepEqual(route.modelDefaults.thinkingLevelMap, model.thinkingLevelMap)
     assert.equal(route.modelControls.includeEncryptedReasoning, true)
     assert.equal(route.cacheRetention, 'short')
-    assert.equal(route.supportsLongCacheRetention, false)
+    assert.equal(route.supportsLongCacheRetention, model.compat?.supportsLongCacheRetention !== false)
     // opencode routes declare the no-session affinity format: a request id, no session header.
     const headers = await authenticatedGrokHeaders({ credentials: { resolve: async () => ({ value: 'key' }) } }, route, 'session-1')
     if (model.compat?.sessionAffinityFormat === 'openai-nosession') {
+      assert.equal(headers['session-id'], undefined)
       assert.equal(headers.session_id, undefined)
       assert.equal(headers['x-client-request-id'], 'session-1')
     } else {
-      assert.equal(headers.session_id, 'session-1')
+      assert.equal(headers['session-id'], 'session-1')
+      assert.equal(headers.session_id, undefined)
     }
   })
 }

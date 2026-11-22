@@ -48,6 +48,9 @@ type NativeCompactionBodyOptions = GenerationControls & {
   promptCacheKey?: string;
   promptCacheRetention?: string;
   cacheRetention?: "none" | "short" | "long";
+  gatewayCompatibilityFallback?: boolean;
+  omitUnsupportedFields?: boolean;
+  apiKey?: string;
 };
 type NativeCompactionRequestOptions = NativeCompactionBodyOptions & {
   baseURL: string;
@@ -118,6 +121,9 @@ export function buildNativeCompactionBody({
   reasoningEffort,
   temperature,
   maxTokens,
+  gatewayCompatibilityFallback,
+  omitUnsupportedFields,
+  apiKey,
 }: NativeCompactionBodyOptions) {
   return buildCompactionResponsesBody(
     {
@@ -132,6 +138,9 @@ export function buildNativeCompactionBody({
       reasoningEffort,
       temperature,
       maxTokens,
+      gatewayCompatibilityFallback,
+      omitUnsupportedFields,
+      apiKey,
     },
   );
 }
@@ -358,6 +367,9 @@ export async function requestNativeCompaction({
   reasoningEffort,
   temperature,
   maxTokens,
+  gatewayCompatibilityFallback,
+  omitUnsupportedFields,
+  apiKey,
   idempotencyKey,
   headers,
   signal,
@@ -376,6 +388,9 @@ export async function requestNativeCompaction({
     reasoningEffort,
     temperature,
     maxTokens,
+    gatewayCompatibilityFallback,
+    omitUnsupportedFields,
+    apiKey,
   });
   const requestHeaders = mergeFeatureHeader({
     ...headers,

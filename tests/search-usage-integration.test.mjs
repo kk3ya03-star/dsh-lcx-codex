@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
 import {build} from 'esbuild';
 import {Context,Service} from '@deepseek-ai/cordis';
 import SessionStore,{Session} from '@deepseek-ai/dsh-session';
@@ -320,7 +321,7 @@ test('per-turn derivation counts the main call once and keeps the search tool ev
  const base=deriveTurnTokenUsage(events);assert.equal(base.totalTokens,335010);
 });
 
-const compiled=await build({entryPoints:[new URL('../src/client/search-usage-ui.ts',import.meta.url).pathname.replace(/^\/(\w:)/,'$1')],bundle:true,write:false,platform:'node',format:'esm'});
+const compiled=await build({entryPoints:[fileURLToPath(new URL('../src/client/search-usage-ui.ts',import.meta.url))],bundle:true,write:false,platform:'node',format:'esm'});
 const ui=await import('data:text/javascript;base64,'+Buffer.from(compiled.outputFiles[0].text).toString('base64'));
 
 test('official tool call identities resolve durable metadata and turn-tail data once',async t=>{
@@ -528,4 +529,48 @@ test('LCX projection and route readers emit no deprecated registry stateOf warni
  const selection={provider:'relay',model:'gpt-selected'};
  assert.deepEqual(readSelectedAgentRouteState({session,model:{current:()=>selection}}).requestConfig,selection);
  assert.deepEqual(warnings,[]);
+});
+
+test('per-turn cache hit-rate renders from turn-tail TurnTokenUsage without altering meter or session projection', async t => {
+ const { ctx, session } = await fixture(t);
+ const turnUsage = { inputTokens: 140, cacheReadTokens: 860, cacheWriteTokens: 0, outputTokens: 20, totalTokens: 1020 };
+ reply(session, 'request', 1, turnUsage);
+ const events = [...session.snapshotEvents()].filter(event => event.data?.turn === 1);
+ const derived = deriveTurnTokenUsage(events);
+ assert.ok(derived);
+ assert.deepEqual(ui.promptCacheHitRate(derived), { percent: 86, cacheReadTokens: 860, promptTokens: 1000 });
+ const beforeMeasure = ctx.tokenMeter.measure(session);
+ const beforeProjection = ctx.sessionProjections.snapshot(session).values;
+
+ const registrations = [];
+ const slots = {
+  inject(_name, setup) { return setup(); },
+  register(options, component) { registrations.push({ options, component }); return () => {}; },
+ };
+ ui.installUsageSlots(slots, (type, props, ...children) => ({ type, props, children }));
+ const turnEntry = registrations.find(entry => entry.options.name === 'conversation.chat.turnTail');
+ const cacheOnly = turnEntry.component({
+  turn: { data: { get: key => key === 'turn-tail' ? { turn: 1, seq: 1, time: 0, closing: null, branchUnavailable: false, tokenUsage: derived } : undefined } },
+  seq: 1,
+  openFile: () => {},
+  t: key => key === 'cacheHitTurn' ? 'Cache' : key === 'cacheHitTurnTitle' ? 'Prompt cache hit rate' : key,
+ });
+ assert.equal(cacheOnly.type, 'span');
+ assert.equal(cacheOnly.props['data-lcx-cache-hit'], 'turn');
+ assert.equal(cacheOnly.children[0], 'Cache 86%');
+
+ const both = turnEntry.component({
+  turn: { data: { get: key => key === 'turn-tail' ? { tokenUsage: derived } : key === 'lcx-search-usage' ? [record] : undefined } },
+  seq: 1,
+  openFile: () => {},
+  t: key => ({ usageTurn: 'Turn search usage', cacheHitTurn: 'Cache', cacheHitTurnTitle: 'Prompt cache hit rate' }[key] ?? key),
+ });
+ assert.equal(both.type, 'span');
+ assert.equal(both.props['data-lcx-turn-usage'], 'turn');
+ assert.equal(both.children[0].props['data-lcx-search-usage'], 'turn');
+ assert.equal(both.children[1].props['data-lcx-cache-hit'], 'turn');
+ assert.equal(both.children[1].children[0], 'Cache 86%');
+
+ assert.deepEqual(ctx.tokenMeter.measure(session), beforeMeasure);
+ assert.deepEqual(ctx.sessionProjections.snapshot(session).values, beforeProjection);
 });

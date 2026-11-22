@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   IMAGE_OFFLOAD_REQUIRED_CODE,
   LlmError,
@@ -34,6 +35,7 @@ import {
   getResponsesToolSupport,
 } from "./pi-responses-runtime.js";
 import { resolveCatalogModel } from "./model-catalog.js";
+import { baseURLFingerprint } from "./route.js";
 import { withoutDeferLoading } from "./tool-surface.js";
 import type {
   AssistantMessage as PiAssistantMessage,
@@ -50,6 +52,7 @@ import { isRecord, codedError, positiveSafeInteger } from "./util.js";
 const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024;
 const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048;
 const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024;
+const ALLOWED_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 
 export {
   DEFAULT_MAX_REQUEST_IMAGE_BYTES,
@@ -80,12 +83,23 @@ type ImageOptions = {
   requestImagePixelBudget: number;
   requestImageMaxBytes: number;
 };
+export type AssistantReplayScope = {
+  provider?: string;
+  model?: string;
+  sessionId?: string;
+  baseURLFingerprint?: string;
+  headerAuthorityFingerprint?: string;
+  grokRouteAuthorityFingerprint?: string;
+  inheritedMessageIds?: ReadonlySet<string>;
+  disallowUnstampedReplay?: boolean;
+  disallowAllNativeReplay?: boolean;
+};
+
 type SerializeOptions = Partial<ImageOptions> & {
   route?: unknown;
   model?: unknown;
   responsesCompat?: unknown;
   systemPrompt?: unknown;
-  includeSystemPrompt?: boolean;
   /**
    * The resolved route's `systemPromptUpdate` mode (DSH 0.2.1 `ModelInfo`). Only `"in-history"` changes
    * serialization: a non-leading `system` message is then a real instruction update and is emitted in
@@ -94,6 +108,7 @@ type SerializeOptions = Partial<ImageOptions> & {
    */
   systemPromptUpdate?: unknown;
   onReplayDegrade?: unknown;
+  assistantReplayScope?: AssistantReplayScope;
   tools?: PiTool[];
   /**
    * `"addition-only"` marks `tools` as an anchored surface (see `planToolSurface`): tools flagged
@@ -109,6 +124,12 @@ type SerializeOptions = Partial<ImageOptions> & {
    * checkpoint and portable-history assembly.
    */
   configurationUpdateEffort?: string;
+  /**
+   * Opt-in fallback for gateways that reject/drop Pi 1.5/1.6 `additional_tools`-only declarations or
+   * `configuration_update` items: suppresses `additional_tools`/`tool_search` and `configuration_update`
+   * serialization so active tools remain in top-level `tools`.
+   */
+  gatewayCompatibilityFallback?: boolean;
   /** Trace the transient request head without changing Pi message positions or synthetic IDs. */
   tracePrelude?: boolean;
 };
@@ -215,13 +236,15 @@ export async function resolveRouteModelFacts(
   /** DSH `ModelInfo.toolUpdate` for the exact routed model (0.2.1+); absent on routes that declare none. */
   toolUpdate: "in-history" | "addition-only" | undefined;
   /** DSH's reasoning capability for the model: absent when DSH offers no reasoning control. */
-  reasoning: { efforts: string[] } | undefined;
+  reasoning: { efforts: string[]; defaultEffort?: string } | undefined;
   /** DSH's context window for the exact routed model (profile, then host catalog); absent when unreported. */
   contextWindow: number | undefined;
+  /** DSH's configured request default max tokens (`ModelInfo.defaultMaxTokens`); absent when unreported. */
+  defaultMaxTokens: number | undefined;
   resolved: boolean;
 }> {
   const llm = ctx?.llm;
-  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
+  if (llm === undefined) return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, defaultMaxTokens: undefined, resolved: false };
   try {
     const info = await llm.resolveModelInfo(
       stringValue(route.provider),
@@ -239,14 +262,23 @@ export async function resolveRouteModelFacts(
       toolUpdate: info.toolUpdate === "addition-only" || info.toolUpdate === "in-history" ? info.toolUpdate : undefined,
       reasoning: info.reasoning === undefined
         ? undefined
-        : { efforts: info.reasoning.efforts.map((effort) => String(effort.id)) },
+        : (() => {
+            const rawDefaultEffort = (info.reasoning as { defaultEffort?: unknown }).defaultEffort;
+            return {
+              efforts: info.reasoning.efforts.map((effort) => String(effort.id)),
+              ...(rawDefaultEffort !== undefined && rawDefaultEffort !== null
+                ? { defaultEffort: String(rawDefaultEffort) }
+                : {}),
+            };
+          })(),
       contextWindow: positiveSafeInteger(info.context?.contextWindow, 0) || undefined,
+      defaultMaxTokens: positiveSafeInteger((info as { defaultMaxTokens?: unknown }).defaultMaxTokens, 0) || undefined,
       resolved: true,
     };
   } catch {
     // `resolved: false` tells callers the mode is unknown rather than known-absent, so they can refuse
     // to downgrade history that only an in-history route may legitimately contain.
-    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, resolved: false };
+    return { imageSupport: "unknown", systemPromptUpdate: undefined, toolUpdate: undefined, reasoning: undefined, contextWindow: undefined, defaultMaxTokens: undefined, resolved: false };
   }
 }
 
@@ -259,14 +291,25 @@ export async function resolveRouteModelFacts(
  * separately (`modelDefaults` / `modelControls`), so only the context window is applied there.
  */
 export function routeModelOverride(
-  routeConfig: { modelControls?: object },
-  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow">,
+  routeConfig: { modelControls?: object; profileModelMaxTokens?: unknown },
+  facts: Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "resolved" | "reasoning" | "contextWindow"> &
+    Partial<Pick<Awaited<ReturnType<typeof resolveRouteModelFacts>>, "defaultMaxTokens">>,
   grok: boolean,
 ): Record<string, unknown> | undefined {
   const contextWindow = facts.resolved && facts.contextWindow !== undefined ? { contextWindow: facts.contextWindow } : {};
-  if (grok) return Object.keys(contextWindow).length > 0 ? contextWindow : undefined;
-  if (!facts.resolved) return routeConfig.modelControls === undefined ? undefined : { ...routeConfig.modelControls };
-  return { reasoning: facts.reasoning !== undefined, ...contextWindow, ...routeConfig.modelControls };
+  const resolvedMaxTokens = facts.resolved
+    ? positiveSafeInteger(facts.defaultMaxTokens, 0) || undefined
+    : positiveSafeInteger(routeConfig.profileModelMaxTokens, 0) || undefined;
+  const maxTokens = resolvedMaxTokens === undefined ? {} : { maxTokens: resolvedMaxTokens };
+  if (grok) {
+    const grokOverride = { ...contextWindow, ...maxTokens };
+    return Object.keys(grokOverride).length > 0 ? grokOverride : undefined;
+  }
+  if (!facts.resolved) {
+    if (routeConfig.modelControls === undefined && resolvedMaxTokens === undefined) return undefined;
+    return { ...maxTokens, ...(routeConfig.modelControls ?? {}) };
+  }
+  return { reasoning: facts.reasoning !== undefined, ...contextWindow, ...maxTokens, ...routeConfig.modelControls };
 }
 
 function attachmentResolver(
@@ -404,7 +447,7 @@ function restorePortableAssistantPhases(
     // become assistant message items.
     for (const block of message.content) {
       if (block.type !== "text") continue;
-      const phase = sameProviderAndApi && !sameModel
+      const phase = !sameModel
         ? replayTextPhase(block.textSignature)
         : undefined;
       slots.push({ text: block.text, ...(phase === undefined ? {} : { phase }) });
@@ -462,10 +505,167 @@ function foreignAssistant(message: Message): PiAssistantMessage {
   return { role: "assistant", content, api: "dsh-foreign", provider: source?.provider ?? "dsh-foreign", model: source?.model ?? "dsh-foreign", usage: emptyUsage(), stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop", timestamp: 0 };
 }
 
-function replayedAssistant(
+function defaultAssistantReplayScope(route: unknown, explicitModel?: unknown): AssistantReplayScope | undefined {
+  const routeObj = isRecord(route) ? route : undefined;
+  const modelObj = isRecord(explicitModel) ? explicitModel : undefined;
+  const provider =
+    typeof modelObj?.provider === "string" && modelObj.provider.length > 0
+      ? modelObj.provider
+      : typeof routeObj?.provider === "string" && routeObj.provider.length > 0
+        ? routeObj.provider
+        : undefined;
+  const model =
+    typeof modelObj?.id === "string" && modelObj.id.length > 0
+      ? modelObj.id
+      : typeof routeObj?.model === "string" && routeObj.model.length > 0
+        ? routeObj.model
+        : undefined;
+  const sessionId =
+    typeof routeObj?.sessionId === "string" && routeObj.sessionId.length > 0
+      ? routeObj.sessionId
+      : undefined;
+  const rawBaseUrl =
+    typeof routeObj?.baseURL === "string" && routeObj.baseURL.trim().length > 0
+      ? routeObj.baseURL.trim()
+      : undefined;
+  const headerAuthorityFingerprint =
+    typeof routeObj?.headerAuthorityFingerprint === "string" &&
+    routeObj.headerAuthorityFingerprint.length > 0
+      ? routeObj.headerAuthorityFingerprint
+      : undefined;
+  if (
+    provider === undefined &&
+    model === undefined &&
+    sessionId === undefined &&
+    rawBaseUrl === undefined &&
+    headerAuthorityFingerprint === undefined
+  )
+    return undefined;
+  return {
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(rawBaseUrl === undefined
+      ? {}
+      : { baseURLFingerprint: baseURLFingerprint(rawBaseUrl) }),
+    ...(headerAuthorityFingerprint === undefined
+      ? {}
+      : { headerAuthorityFingerprint }),
+  };
+}
+
+function isNativeAssistantReplayCompatible(
+  message: Message,
+  rawReplayState: unknown,
+  scope: AssistantReplayScope | undefined,
+): boolean {
+  if (scope?.disallowAllNativeReplay === true) return false;
+  const source = message.source.kind === "model" ? message.source : undefined;
+  if (scope?.provider !== undefined && source?.provider !== scope.provider)
+    return false;
+  if (scope?.model !== undefined && source?.model !== scope.model)
+    return false;
+  const msgId =
+    isRecord(message) && typeof (message as { id?: unknown }).id === "string"
+      ? String((message as { id?: unknown }).id)
+      : undefined;
+  if (msgId !== undefined && scope?.inheritedMessageIds?.has(msgId) === true)
+    return false;
+  if (!isRecord(rawReplayState)) return false;
+  const lcxReplay = rawReplayState.lcxReplay;
+  if (
+    !isRecord(lcxReplay) ||
+    lcxReplay.version !== 1 ||
+    typeof lcxReplay.baseURLFingerprint !== "string" ||
+    lcxReplay.baseURLFingerprint.length === 0
+  )
+    return false;
+  if (
+    scope?.baseURLFingerprint !== undefined &&
+    lcxReplay.baseURLFingerprint !== scope.baseURLFingerprint
+  )
+    return false;
+  if (
+    typeof lcxReplay.sourceSessionId !== "string" ||
+    lcxReplay.sourceSessionId.length === 0 ||
+    typeof scope?.sessionId !== "string" ||
+    scope.sessionId.length === 0 ||
+    lcxReplay.sourceSessionId !== scope.sessionId
+  )
+    return false;
+  if (
+    typeof lcxReplay.headerAuthorityFingerprint !== "string" ||
+    lcxReplay.headerAuthorityFingerprint.length === 0 ||
+    typeof scope?.headerAuthorityFingerprint !== "string" ||
+    scope.headerAuthorityFingerprint.length === 0 ||
+    lcxReplay.headerAuthorityFingerprint !== scope.headerAuthorityFingerprint
+  )
+    return false;
+  if (
+    isRecord(rawReplayState.grokNative) ||
+    lcxReplay.grokRouteAuthorityFingerprint !== undefined
+  ) {
+    if (
+      typeof lcxReplay.grokRouteAuthorityFingerprint !== "string" ||
+      lcxReplay.grokRouteAuthorityFingerprint.length === 0 ||
+      lcxReplay.grokRouteAuthorityFingerprint !== scope?.grokRouteAuthorityFingerprint
+    )
+      return false;
+  }
+  return true;
+}
+
+function portableAssistantFromReplay(
+  message: Message,
+  source: { provider: string; model: string },
+  state: { response: ReplayResponse; blocks: ReplayBlock[] },
+): PiAssistantMessage {
+  const content: PiAssistantContentPart[] = [];
+  for (const [index, block] of message.content.entries()) {
+    const replay = state.blocks[index];
+    if (block.type === "text") {
+      const phase = replayTextPhase(replay?.textSignature);
+      content.push({
+        type: "text",
+        text: block.text,
+        ...(phase === undefined
+          ? {}
+          : { textSignature: JSON.stringify({ v: 1, id: "", phase }) }),
+      });
+    } else if (block.type === "reasoning") {
+      content.push({ type: "thinking", thinking: block.text });
+    } else if (block.type === "tool-call") {
+      content.push({
+        type: "toolCall",
+        id: String(block.id),
+        name: block.name,
+        arguments: parseArguments(block.arguments),
+        ...(typeof replay?.namespace === "string" && replay.namespace.length > 0
+          ? { namespace: replay.namespace }
+          : {}),
+      });
+    } else throw unsupportedContent(block.type);
+  }
+  const preserveSameResponsesApi = state.response.api === "openai-responses";
+  return {
+    role: "assistant",
+    content,
+    api: preserveSameResponsesApi ? state.response.api : "dsh-foreign",
+    provider: source.provider,
+    model: source.model,
+    ...(preserveSameResponsesApi && typeof state.response.providerThinkingLevel === "string"
+      ? { providerThinkingLevel: state.response.providerThinkingLevel }
+      : {}),
+    usage: emptyUsage(),
+    stopReason: state.response.stopReason,
+    timestamp: 0,
+  };
+}
+
+function validateAndBuildReplayedAssistant(
   message: Message,
   source: { replayState?: unknown; provider: string; model: string },
-): PiAssistantMessage {
+): { state: { response: ReplayResponse; blocks: ReplayBlock[] }; assistant: PiAssistantMessage } {
   if (source.replayState === undefined) throw invalidReplay("assistant source has no replay state");
   const state = readDshPiReplayState(source.replayState);
   if (state.response.provider !== source.provider) throw invalidReplay("provider does not match assistant source");
@@ -479,21 +679,43 @@ function replayedAssistant(
     if (block.type === "tool-call") return { type: "toolCall", id: String(block.id), name: block.name, arguments: parseArguments(block.arguments), ...(typeof replay.thoughtSignature === "string" ? { thoughtSignature: replay.thoughtSignature } : {}), ...(typeof replay.namespace === "string" ? { namespace: replay.namespace } : {}) };
     throw invalidReplay(`block ${index} has an unsupported type`);
   });
-  return { role: "assistant", content, api: state.response.api, provider: state.response.provider, model: state.response.model, ...(typeof state.response.responseModel === "string" ? { responseModel: state.response.responseModel } : {}), ...(typeof state.response.responseId === "string" ? { responseId: state.response.responseId } : {}), ...(typeof state.response.providerThinkingLevel === "string" ? { providerThinkingLevel: state.response.providerThinkingLevel } : {}), usage: emptyUsage(), stopReason: state.response.stopReason, timestamp: 0 };
+  return {
+    state,
+    assistant: { role: "assistant", content, api: state.response.api, provider: state.response.provider, model: state.response.model, ...(typeof state.response.responseModel === "string" ? { responseModel: state.response.responseModel } : {}), ...(typeof state.response.responseId === "string" ? { responseId: state.response.responseId } : {}), ...(typeof state.response.providerThinkingLevel === "string" ? { providerThinkingLevel: state.response.providerThinkingLevel } : {}), usage: emptyUsage(), stopReason: state.response.stopReason, timestamp: 0 },
+  };
+}
+
+function sanitizeNonNativeToolCallId(rawId: string, keepCompoundItemId: boolean): string {
+  const sep = rawId.indexOf("|");
+  if (sep < 0) return rawId;
+  const callId = rawId.slice(0, sep);
+  const itemIdRaw = rawId.slice(sep + 1);
+  if (!keepCompoundItemId || itemIdRaw.startsWith("ctc_") || itemIdRaw.length === 0) return callId;
+  const digest = createHash("sha256").update(itemIdRaw, "utf8").digest("hex").slice(0, 16);
+  return `${callId}|fc_${digest}`;
 }
 
 function toPiAssistant(
   message: Message,
   onReplayDegrade: unknown,
-): PiAssistantMessage {
+  replayScope?: AssistantReplayScope,
+): { assistant: PiAssistantMessage; nativeCompatible: boolean } {
   const source = message.source;
-  if (source.kind !== "model" || source.replayState === undefined) return foreignAssistant(message);
+  if (source.kind !== "model" || source.replayState === undefined)
+    return { assistant: foreignAssistant(message), nativeCompatible: false };
   try {
-    return replayedAssistant(message, source);
+    const validated = validateAndBuildReplayedAssistant(message, source);
+    if (!isNativeAssistantReplayCompatible(message, source.replayState, replayScope)) {
+      return {
+        assistant: portableAssistantFromReplay(message, source, validated.state),
+        nativeCompatible: false,
+      };
+    }
+    return { assistant: validated.assistant, nativeCompatible: true };
   } catch (cause) {
     if (errorCode(cause) !== "LCX_COMPACT_INVALID_REPLAY_STATE") throw cause;
     if (typeof onReplayDegrade === "function") onReplayDegrade(errorMessage(cause));
-    return foreignAssistant(message);
+    return { assistant: foreignAssistant(message), nativeCompatible: false };
   }
 }
 
@@ -604,12 +826,14 @@ function flattenMessageText(message: RequestMessage): string {
 async function dshToPiMessages(
   messages: readonly RequestMessage[],
   ctx: DshContext | undefined,
-  options: ImageOptions & { onReplayDegrade?: unknown; inHistorySystem?: boolean; snapshotMarker?: string; toolUpdateMarker?: string; anchoredTools?: readonly PiTool[] },
+  options: ImageOptions & { onReplayDegrade?: unknown; assistantReplayScope?: AssistantReplayScope; inHistorySystem?: boolean; snapshotMarker?: string; toolUpdateMarker?: string; anchoredTools?: readonly PiTool[] },
   imageMap: Map<string, ImageAttachmentRef>,
   requestImages: RequestImageVersions,
+  targetModel: { provider: string; id: string; api: string },
 ): Promise<PiMessage[]> {
   const result: PiMessage[] = [];
   const toolNames = new Map<string, string>();
+  const rewrittenToolCallIds = new Map<string, string>();
   for (const message of messages) {
     if (message.role === "system") {
       if (options.inHistorySystem === true) {
@@ -651,14 +875,33 @@ async function dshToPiMessages(
       continue;
     }
     if (message.role === "assistant") {
-      const assistant = toPiAssistant(message, options.onReplayDegrade);
-      for (const block of assistant.content)
-        if (block.type === "toolCall") toolNames.set(String(block.id), block.name);
+      const { assistant, nativeCompatible } = toPiAssistant(message, options.onReplayDegrade, options.assistantReplayScope);
+      const sameTargetModel =
+        assistant.provider === targetModel.provider &&
+        assistant.api === targetModel.api &&
+        assistant.model === targetModel.id;
+      for (const block of assistant.content) {
+        if (block.type === "toolCall") {
+          if (!nativeCompatible || !sameTargetModel) {
+            const rawId = String(block.id);
+            const sanitizedId = sanitizeNonNativeToolCallId(
+              rawId,
+              sameTargetModel || ALLOWED_TOOL_CALL_PROVIDERS.has(targetModel.provider),
+            );
+            if (sanitizedId !== rawId) {
+              rewrittenToolCallIds.set(rawId, sanitizedId);
+              block.id = sanitizedId;
+            }
+          }
+          toolNames.set(String(block.id), block.name);
+        }
+      }
       result.push(assistant);
       continue;
     }
     if (message.role === "tool") {
-      const toolCallId = String(message.toolCallId);
+      const rawToolCallId = String(message.toolCallId);
+      const toolCallId = rewrittenToolCallIds.get(rawToolCallId) ?? rawToolCallId;
       result.push({ role: "toolResult", toolCallId, toolName: toolNames.get(toolCallId) ?? "unknown", content: await piToolContent(message.content, ctx, options, imageMap, requestImages), isError: message.isError === true, timestamp: 0 });
       continue;
     }
@@ -690,12 +933,18 @@ export function resolvePiResponsesModel(options: { imageSupport: unknown; route?
   const explicit = isRecord(options.model) ? options.model : {};
   const provider = stringValue(explicit.provider, stringValue(route.provider, "dsh-lcx-codex"));
   const id = stringValue(explicit.id, stringValue(route.model, "unknown"));
-  const builtin = builtinResponsesModel(provider, id);
+  const catalog = resolveCatalogModel(provider, id);
+  const builtin = catalog.descriptor ?? builtinResponsesModel(provider, id);
   const builtinRecord: WireRecord = isRecord(builtin) ? builtin : {};
+  const catalogMaxTokens =
+    positiveSafeInteger(catalog.maxTokens, 0) ||
+    positiveSafeInteger(route.catalogMaxTokens, 0) ||
+    positiveSafeInteger(builtinRecord.maxTokens, 0) ||
+    undefined;
   const compat = { ...(isRecord(builtinRecord.compat) ? builtinRecord.compat : {}), ...(isRecord(options.responsesCompat) ? options.responsesCompat : {}), ...(isRecord(explicit.compat) ? explicit.compat : {}) };
   const imageSupport = options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown";
   const input = imageSupport === "supported" ? ["text", "image"] : imageSupport === "unsupported" ? ["text"] : Array.isArray(explicit.input) ? explicit.input : Array.isArray(builtinRecord.input) ? builtinRecord.input : ["text"];
-  return { ...builtinRecord, ...explicit, id, name: stringValue(explicit.name, stringValue(builtinRecord.name, id)), api: "openai-responses", provider, baseUrl: stringValue(explicit.baseUrl, stringValue(route.baseURL, stringValue(builtinRecord.baseUrl))), reasoning: typeof explicit.reasoning === "boolean" ? explicit.reasoning : typeof builtinRecord.reasoning === "boolean" ? builtinRecord.reasoning : true, input, cost: explicit.cost ?? builtinRecord.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: positiveSafeInteger(explicit.contextWindow ?? builtinRecord.contextWindow, 262144), maxTokens: positiveSafeInteger(explicit.maxTokens ?? builtinRecord.maxTokens, 32768), ...(Object.keys(compat).length > 0 ? { compat } : {}) };
+  return { ...builtinRecord, ...explicit, id, name: stringValue(explicit.name, stringValue(builtinRecord.name, id)), api: "openai-responses", provider, baseUrl: stringValue(explicit.baseUrl, stringValue(route.rawBaseURL, stringValue(route.baseURL, stringValue(builtinRecord.baseUrl)))), reasoning: typeof explicit.reasoning === "boolean" ? explicit.reasoning : typeof builtinRecord.reasoning === "boolean" ? builtinRecord.reasoning : true, input, cost: explicit.cost ?? builtinRecord.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: positiveSafeInteger(explicit.contextWindow ?? builtinRecord.contextWindow, 262144), maxTokens: positiveSafeInteger(explicit.maxTokens ?? catalogMaxTokens ?? route.profileDefaultMaxTokens, 32768), ...(Object.keys(compat).length > 0 ? { compat } : {}) };
 }
 
 export async function serializeDshMessages(messages: readonly RequestMessage[], ctx: DshContext | undefined, options: SerializeOptions = {}) {
@@ -718,12 +967,14 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const immediateDeclared: PiTool[] = (Array.isArray(options.tools) ? options.tools : [])
     .filter((tool) => !("deferLoading" in tool && tool.deferLoading === true))
     .map((tool) => withoutDeferLoading(tool as never) as PiTool);
-  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; includeSystemPrompt: boolean; inHistorySystem: boolean; snapshotMarker?: string; toolUpdateMarker?: string; onReplayDegrade?: unknown; tools: readonly PiTool[]; anchoredTools?: readonly PiTool[] } = {
+  const gatewayCompatibilityFallback = options.gatewayCompatibilityFallback === true;
+  const normalized: ImageOptions & { route: unknown; model: unknown; responsesCompat: unknown; systemPrompt?: string; inHistorySystem: boolean; snapshotMarker?: string; toolUpdateMarker?: string; onReplayDegrade?: unknown; assistantReplayScope?: AssistantReplayScope; tools: readonly PiTool[]; anchoredTools?: readonly PiTool[] } = {
     imageSupport: options.imageSupport === "supported" || options.imageSupport === "unsupported" ? options.imageSupport : "unknown",
     signal: options.signal instanceof AbortSignal ? options.signal : undefined,
     route: options.route ?? {}, model: options.model, responsesCompat: options.responsesCompat,
     systemPrompt: typeof options.systemPrompt === "string" ? options.systemPrompt : undefined,
-    includeSystemPrompt: options.includeSystemPrompt === true, onReplayDegrade: options.onReplayDegrade,
+    onReplayDegrade: options.onReplayDegrade,
+    assistantReplayScope: options.assistantReplayScope ?? defaultAssistantReplayScope(options.route, options.model),
     inHistorySystem: options.systemPromptUpdate === "in-history",
     snapshotMarker: options.systemPromptUpdate === "in-history" ? `\u0000lcx-prompt-snapshot:${globalThis.crypto.randomUUID()}` : undefined,
     maxRequestImageBytes: positiveSafeInteger(options.maxRequestImageBytes, DEFAULT_MAX_REQUEST_IMAGE_BYTES),
@@ -768,22 +1019,22 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
     ),
   );
   const model = resolvePiResponsesModel(normalized);
-  if (getResponsesToolSupport({ ...(isRecord(model.compat) ? model.compat : {}), supportsMidConvoSystemMessages: normalized.inHistorySystem }) !== "changes")
-    normalized.toolUpdateMarker = undefined;
-  const dshContext: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap, requestImages), tools: [...normalized.tools] };
   const compat = isRecord(model.compat) ? model.compat : {};
   const supportsStrictMode = compat.supportsStrictMode === true;
   const supportsOpenAIGrammarTools = compat.supportsOpenAIGrammarTools === true;
-  const supportsAdditionalTools = compat.supportsAdditionalTools === true;
-  const supportsToolSearch = compat.supportsToolSearch === true;
+  const supportsAdditionalTools = !gatewayCompatibilityFallback && compat.supportsAdditionalTools === true;
+  const supportsToolSearch = !gatewayCompatibilityFallback && compat.supportsToolSearch === true;
+  if (getResponsesToolSupport({ ...compat, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem }) !== "changes")
+    normalized.toolUpdateMarker = undefined;
+  const dshContext: PiContext = { systemPrompt: normalized.systemPrompt, messages: await dshToPiMessages(projected, ctx, normalized, imageMap, requestImages, model), tools: [...normalized.tools] };
   const deferredToolsMode = supportsAdditionalTools ? "additional-tools" : supportsToolSearch ? "tool-search" : undefined;
   const grammarToolInputProperties = createGrammarToolInputProperties([...(normalized.anchoredTools ?? dshContext.tools)], supportsOpenAIGrammarTools);
   const toolOptions = { supportsStrictMode, supportsOpenAIGrammarTools, toolSearchResult: false };
   const normalizedContext = normalizeContext(dshContext);
-  // Pi treats whichever system message is first in the transcript as the leading prompt: it skips it when
-  // includeSystemPrompt is false and renders it without the update framing. A serialization batch carrying
-  // no caller-owned head (no systemPrompt/tools) must never promote a history update to that slot, so an
-  // empty placeholder holds the leading position and renders nothing.
+  // Pi treats whichever system message is first in the transcript as the leading prompt and renders it
+  // without the update framing (omitting it only when empty). A serialization batch carrying no caller-owned
+  // head (no systemPrompt/tools) must never promote a history update to that slot, so an empty placeholder
+  // holds the leading position and renders nothing.
   let piContext = normalized.inHistorySystem && normalizedContext.messages[0]?.role === "system" && normalizedContext.messages === dshContext.messages
     ? { ...normalizedContext, messages: [{ role: "system" as const, content: "", timestamp: 0 }, ...normalizedContext.messages] }
     : normalizedContext;
@@ -798,8 +1049,12 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const piModel = model as PiModel<"openai-responses">;
   // Pi collapses every system message into the leading one unless the transport accepts mid-conversation
   // system messages, which would drop or reorder in-history updates in batched serialization.
-  const configurationUpdateEffort = typeof options.configurationUpdateEffort === "string" ? options.configurationUpdateEffort : undefined;
-  const convertedInput = convertResponsesMessages(piModel, piContext, new Set(["openai", "openai-codex", "opencode"]), { includeSystemPrompt: normalized.includeSystemPrompt, grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem, toolOptions, configurationUpdateEffort });
+  const configurationUpdateEffort = gatewayCompatibilityFallback
+    ? undefined
+    : typeof options.configurationUpdateEffort === "string"
+      ? options.configurationUpdateEffort
+      : undefined;
+  const convertedInput = convertResponsesMessages(piModel, piContext, ALLOWED_TOOL_CALL_PROVIDERS, { grammarToolInputProperties, supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem, toolOptions, configurationUpdateEffort });
   if (configurationUpdateEffort !== undefined) {
     const tail = convertedInput.pop() as unknown;
     if (!isConfigurationUpdate(tail, configurationUpdateEffort))
@@ -862,7 +1117,19 @@ export async function serializeDshMessages(messages: readonly RequestMessage[], 
   const toolSupport = getResponsesToolSupport({ supportsAdditionalTools, supportsToolSearch, supportsMidConvoSystemMessages: normalized.inHistorySystem });
   const { requestTools } = resolveTranscriptTools(resolveTranscript(piContext, normalized.inHistorySystem).messages, toolSupport);
   const tools = requestTools.length === 0 ? undefined : convertResponsesTools(requestTools, toolOptions);
-  return { input, preludeItemCount, supersededInstructionItems, imageMap, tools, model: piModel, grammarToolInputProperties, deferredToolsMode };
+  const budgetMessages: PiMessage[] = dshContext.messages.map((message) => {
+    if (message.role !== "system" || typeof message.content !== "string") return message;
+    let content = message.content;
+    if (normalized.snapshotMarker !== undefined && content.startsWith(normalized.snapshotMarker)) {
+      content = content.slice(normalized.snapshotMarker.length);
+    } else if (normalized.toolUpdateMarker !== undefined && content === normalized.toolUpdateMarker) {
+      content = "";
+    }
+    return content === message.content ? message : { ...message, content };
+  });
+  const budgetContext: PiContext = { messages: budgetMessages, tools: dshContext.tools };
+  if (dshContext.systemPrompt !== undefined) budgetContext.systemPrompt = dshContext.systemPrompt;
+  return { input, preludeItemCount, supersededInstructionItems, imageMap, tools, model: piModel, piContext: budgetContext, grammarToolInputProperties, deferredToolsMode };
 }
 
 export function responsesTools(tools: readonly PiTool[] | undefined) {

@@ -32,7 +32,7 @@ for (const fixture of [
   { name: 'cache disabled child', sessionId: 'child-a-59', retention: 'none' },
   ...['user-agent', 'User-Agent'].map(key => ({ name: key, sessionId: 'child-a-59', headers: { [key]: 'ignored-user-agent', 'x-custom': 'preserved' } })),
   ...['authorization', 'Authorization'].map(key => ({ name: key, sessionId: 'child-a-59', headers: { [key]: 'Bearer SYNTHETIC_OVERRIDE' } })),
-  ...['session_id', 'Session_Id', 'x-session-id', 'Session-Id', 'x-client-request-id'].map(key => ({ name: key, sessionId: 'child-a-59', headers: { [key]: 'explicit-fixture' } })),
+  ...['session-id', 'session_id', 'Session_Id', 'x-session-id', 'Session-Id', 'x-client-request-id'].map(key => ({ name: key, sessionId: 'child-a-59', headers: { [key]: 'explicit-fixture' } })),
 ]) test(`Grok ${fixture.name} identity/headers match native DSH/Pi`, async t => {
   let expected, actual
   const capture = init => ({ body: JSON.parse(String(init.body)), headers: new Headers(init.headers) })

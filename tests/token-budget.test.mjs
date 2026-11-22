@@ -282,13 +282,14 @@ test('token fixture 14: newest oversized portable group fails closed at char or 
 })
 
 test('token fixture 15: only current v5 checkpoints are readable and route-compatible', () => {
-  const route = { provider: 'fixture', model: 'fixture-model', baseURL: 'https://example.test/v1', sessionId: 'session-a' }
+  const route = { provider: 'fixture', model: 'fixture-model', baseURL: 'https://example.test/v1', sessionId: 'session-a', headerAuthorityFingerprint: 'fixture-authority' }
   const base = {
     compactionId: 'checkpoint-fixture',
     provider: route.provider,
     model: route.model,
     baseURLFingerprint: baseURLFingerprint(route.baseURL),
     sourceSessionId: route.sessionId,
+    headerAuthorityFingerprint: 'fixture-authority',
     nativeOutput: [{ type: 'compaction', encrypted_content: 'opaque' }],
   }
   for (const [type, version] of [['lcx-native-compaction-v5', 5], ['lcx-native-compaction-v4', 4]]) {
@@ -296,6 +297,9 @@ test('token fixture 15: only current v5 checkpoints are readable and route-compa
     assert.equal(state?.version, version === 5 ? 5 : undefined)
     assert.equal(stateRouteCompatible(state, route, { sessions: { get: () => ({ id: route.sessionId }) } }), version === 5)
   }
+  const legacyState = stateFromSummaryEvent({ type: 'compaction/summary', data: { compactionId: 'checkpoint-fixture', rawOutput: [{ ...base, type: 'lcx-native-compaction-v5', version: 5, headerAuthorityFingerprint: undefined }] } })
+  assert.equal(legacyState?.version, 5)
+  assert.equal(stateRouteCompatible(legacyState, route, { sessions: { get: () => ({ id: route.sessionId }) } }), false)
 })
 
 test('review fixture 1: real DSH image blocks receive deterministic conservative cost', () => {

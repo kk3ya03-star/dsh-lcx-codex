@@ -6,7 +6,7 @@ import "@deepseek-ai/dsh-settings";
 import { assertUsableApiKey, attributionHeaders, LlmError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { resolveCatalogModel } from "./model-catalog.js";
-import { clampOpenAIPromptCacheKey } from "./pi-responses-runtime.js";
+import { clampOpenAIPromptCacheKey, getCatalogModels } from "./pi-responses-runtime.js";
 import { providerSessionHeaders } from "./provider-headers.js";
 import { codedError, isPositiveFinite, isPositiveSafeInteger, isRecord } from "./util.js";
 import { DEFAULTS } from "./defaults.js";
@@ -14,15 +14,17 @@ import { DEFAULTS } from "./defaults.js";
 type HeaderMap = Record<string, string>;
 type RetryPolicyConfig = Parameters<typeof resolveRetryPolicy>[0];
 type CacheRetention = "none" | "short" | "long";
-type ResponsesCompat = { supportsDeveloperRole?: boolean; sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter"; supportsStrictMode?: boolean; supportsLongCacheRetention?: boolean; supportsOpenAIGrammarTools?: boolean; supportsAdditionalTools?: boolean; supportsToolSearch?: boolean; supportsExplicitPromptCacheMode?: boolean; supportsMaxOutputTokens?: boolean };
-type RouteIdentity = { provider: string; model: string; baseURL: string; sessionId: string };
+type ResponsesCompat = { supportsDeveloperRole?: boolean; sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter"; promptCacheKeyMode?: "auto" | "disabled" | "enabled"; supportsStrictMode?: boolean; supportsLongCacheRetention?: boolean; supportsOpenAIGrammarTools?: boolean; supportsAdditionalTools?: boolean; supportsToolSearch?: boolean; supportsExplicitPromptCacheMode?: boolean; supportsMaxOutputTokens?: boolean };
+type RouteIdentity = { provider: string; model: string; baseURL: string; rawBaseURL?: string; sessionId: string; headerAuthorityFingerprint?: string };
 type RouteOptions = { provider?: unknown; model?: unknown; sessionId?: unknown };
 type ProviderModelProfile = {
   id?: unknown;
+  contextWindow?: unknown;
+  maxTokens?: unknown;
   compat?: unknown;
   reasoningEfforts?: unknown;
 };
-type ProviderProfile = { api?: string; baseURL?: string; apiKeyEnv?: string; headers?: HeaderMap; reasoning?: unknown; cacheRetention?: unknown; timeoutMs?: unknown; streamIdleTimeoutMs?: unknown; maxRequestImageBytes?: unknown; maxRequestImages?: unknown; imageOffloadCountQuantum?: unknown; requestImagePixelBudget?: unknown; requestImageMaxBytes?: unknown; retryPolicy?: RetryPolicyConfig; compat?: unknown; models?: ProviderModelProfile[]; modelOverrides?: Record<string, ProviderModelProfile> };
+type ProviderProfile = { api?: string; baseURL?: string; apiKeyEnv?: string; headers?: HeaderMap; reasoning?: unknown; cacheRetention?: unknown; timeoutMs?: unknown; streamIdleTimeoutMs?: unknown; maxRequestImageBytes?: unknown; maxRequestImages?: unknown; imageOffloadCountQuantum?: unknown; requestImagePixelBudget?: unknown; requestImageMaxBytes?: unknown; retryPolicy?: RetryPolicyConfig; compat?: unknown; defaultContextWindow?: unknown; defaultMaxTokens?: unknown; contextWindow?: unknown; maxTokens?: unknown; models?: ProviderModelProfile[]; modelOverrides?: Record<string, ProviderModelProfile> };
 type RequestHeaderConfig = {
   provider?: unknown;
   model?: unknown;
@@ -36,7 +38,7 @@ export type RouteContext = Pick<
   Context,
   "credentials" | "llm" | "logger" | "sessions" | "settings"
 >;
-type RoutePolicy = { cacheRetention?: unknown; supportsLongCacheRetention?: unknown; supportsExplicitPromptCacheMode?: unknown; responsesCompat?: unknown; timeoutMs?: number; maxAttempts?: number; maxRequestImageBytes?: number; maxRequestImages?: number; imageOffloadCountQuantum?: number; requestImagePixelBudget?: number; requestImageMaxBytes?: number };
+type RoutePolicy = { cacheRetention?: unknown; supportsLongCacheRetention?: unknown; supportsExplicitPromptCacheMode?: unknown; promptCacheKeyMode?: unknown; responsesCompat?: unknown; timeoutMs?: number; maxAttempts?: number; maxRequestImageBytes?: number; maxRequestImages?: number; imageOffloadCountQuantum?: number; requestImagePixelBudget?: number; requestImageMaxBytes?: number };
 type PiResponsesModel = Model<"openai-responses">;
 type ModelControlProjection = {
   reasoning?: boolean;
@@ -52,10 +54,10 @@ type ModelControlProjection = {
 type ModelDescriptorDefaults = Partial<
   Pick<PiResponsesModel, "reasoning" | "thinkingLevelMap">
 >;
-type UnresolvedRouteConfig = RoutePolicy & { provider: string; model: string; baseURL: string; apiKeyEnv: string; headers?: HeaderMap };
-export type ResolvedResponsesRoute = UnresolvedRouteConfig & { catalogHeaders?: HeaderMap; api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; streamIdleTimeoutMs?: number };
+type UnresolvedRouteConfig = RoutePolicy & { provider: string; model: string; baseURL: string; rawBaseURL?: string; apiKeyEnv: string; headers?: HeaderMap };
+export type ResolvedResponsesRoute = UnresolvedRouteConfig & { catalogHeaders?: HeaderMap; api: "openai-responses"; cacheRetention: CacheRetention; supportsLongCacheRetention: boolean; responsesCompat?: ResponsesCompat; modelControls?: ModelControlProjection; modelDefaults?: ModelDescriptorDefaults; profileReasoning?: ModelThinkingLevel; catalogMaxTokens?: number; profileModelMaxTokens?: number; profileDefaultMaxTokens?: number; streamIdleTimeoutMs?: number };
 type GenerationControls = { reasoningEffort?: unknown; temperature?: unknown; maxTokens?: unknown };
-type CheckpointRouteRecord = { version: number; provider: unknown; model: unknown; baseURLFingerprint: unknown; sourceSessionId: unknown };
+type CheckpointRouteRecord = { version: number; provider: unknown; model: unknown; baseURLFingerprint: unknown; sourceSessionId: unknown; headerAuthorityFingerprint?: unknown };
 
 
 export function normalizeBaseURL(value: unknown): string {
@@ -63,6 +65,58 @@ export function normalizeBaseURL(value: unknown): string {
 }
 export function baseURLFingerprint(baseURL: unknown): string {
   return createHash("sha256").update(normalizeBaseURL(baseURL), "utf8").digest("hex");
+}
+function findHeaderCaseInsensitive(headers: HeaderMap | null | undefined, target: string): string | undefined {
+  const normalized = target.toLowerCase();
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (name.toLowerCase() === normalized) return String(value);
+  }
+  return undefined;
+}
+function effectiveCredentialIdentity(effectiveAuthorization: string | undefined): string {
+  if (typeof effectiveAuthorization === "string" && /^Bearer\s+eyJ/iu.test(effectiveAuthorization.trim())) {
+    const token = effectiveAuthorization.trim().replace(/^Bearer\s+/iu, "");
+    const parts = token.split(".");
+    if (parts.length === 3 && parts[1]) {
+      try {
+        const payload: unknown = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+        const authClaim = isRecord(payload) ? payload["https://api.openai.com/auth"] : undefined;
+        const accountId = isRecord(authClaim) ? authClaim.chatgpt_account_id : undefined;
+        if (typeof accountId === "string" && accountId.trim().length > 0) {
+          return `chatgpt-acct:${accountId.trim()}`;
+        }
+      } catch {}
+    }
+  }
+  return `auth:${effectiveAuthorization ?? ""}`;
+}
+function canonicalAuthorityHeaders(headers: HeaderMap | null | undefined, excludeAuth = false) {
+  return Object.entries(headers ?? {})
+    .filter(([name]) => !excludeAuth || name.toLowerCase() !== "authorization")
+    .map(([name, value]) => [name.toLowerCase(), String(value)] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+}
+export function requestHeaderAuthorityFingerprint(
+  headers: HeaderMap | null | undefined,
+  credentialAuthority?: { apiKeyEnv?: string; effectiveAuthorization?: string },
+): string {
+  const effectiveAuth =
+    credentialAuthority?.effectiveAuthorization ??
+    findHeaderCaseInsensitive(headers, "authorization");
+  const authDigest = createHash("sha256")
+    .update(effectiveCredentialIdentity(effectiveAuth), "utf8")
+    .digest("hex");
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        v: 2,
+        apiKeyEnv: String(credentialAuthority?.apiKeyEnv ?? ""),
+        authDigest,
+        headers: canonicalAuthorityHeaders(headers, true),
+      }),
+      "utf8",
+    )
+    .digest("hex");
 }
 
 export function routeFingerprint(route: Partial<RouteIdentity> | null | undefined, options: { includeSession?: boolean } = {}): string {
@@ -77,13 +131,13 @@ export function promptCacheSessionId(route: Partial<RouteIdentity> | null | unde
   const sessionId = route?.sessionId ? String(route.sessionId) : undefined;
   if (!sessionId) return undefined;
   const sessions = ctx?.sessions;
-  let current = sessions?.get(SessionId(sessionId));
+  let current = typeof sessions?.get === "function" ? sessions.get(SessionId(sessionId)) : undefined;
   if (current?.header?.origin !== "subagent") return sessionId;
   const seen = new Set([sessionId]);
   while (current?.header?.origin === "subagent" && current.header.parentSession) {
     const parentId: string = current.header.parentSession;
     if (seen.has(parentId)) return sessionId;
-    const parent = sessions?.get(SessionId(parentId));
+    const parent = typeof sessions?.get === "function" ? sessions.get(SessionId(parentId)) : undefined;
     if (!parent) return sessionId;
     seen.add(parentId);
     current = parent;
@@ -91,7 +145,8 @@ export function promptCacheSessionId(route: Partial<RouteIdentity> | null | unde
   return current?.id ?? sessionId;
 }
 
-export function promptCacheKey(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
+export function promptCacheKey(route: Partial<RouteIdentity> | null | undefined, config: Partial<Pick<ResolvedResponsesRoute, "cacheRetention" | "responsesCompat">> = {}, ctx: RouteContext | null | undefined = undefined): string | undefined {
+  if (config.responsesCompat?.promptCacheKeyMode === "disabled") return undefined;
   return clampOpenAIPromptCacheKey(promptCacheSessionId(route, config, ctx));
 }
 
@@ -137,13 +192,27 @@ function configuredProviderProfile(
   }
 }
 
-const RESPONSES_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "sessionAffinityFormat", "supportsStrictMode", "supportsLongCacheRetention", "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch", "supportsExplicitPromptCacheMode", "supportsMaxOutputTokens"]);
-function copyResponsesCompat(target: ResponsesCompat, source: unknown): void {
+const RESPONSES_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "sessionAffinityFormat", "promptCacheKeyMode", "supportsStrictMode", "supportsLongCacheRetention", "supportsOpenAIGrammarTools", "supportsAdditionalTools", "supportsToolSearch", "supportsExplicitPromptCacheMode", "supportsMaxOutputTokens"]);
+const RESPONSES_PROFILE_COMPAT_FIELDS = new Set(["supportsDeveloperRole", "supportsMaxOutputTokens", "supportsStrictMode", "supportsLongCacheRetention"]);
+
+/** True when `model` names a Grok model (`grok-*`, `x-ai/grok-*`, or camelCase `grokCustom`/`GrOkCustomPreview`), rejecting non-Grok substrings like `vendor/grokking`. */
+export function isGrokModelId(model: unknown): boolean {
+  const trimmed = String(model ?? "").trim();
+  const terminal = trimmed.slice(trimmed.lastIndexOf("/") + 1);
+  return (
+    /^grok(?:$|[-._0-9])/iu.test(terminal) ||
+    /^grok[A-Z]/u.test(terminal) ||
+    /^[gG][rR][oO][kK][A-Z][a-z]/u.test(terminal)
+  );
+}
+function copyResponsesCompat(target: ResponsesCompat, source: unknown, allowedFields: ReadonlySet<string> = RESPONSES_COMPAT_FIELDS): void {
   if (!isRecord(source)) return;
-  for (const field of RESPONSES_COMPAT_FIELDS) {
+  for (const field of allowedFields) {
     const value = source[field];
     if (field === "sessionAffinityFormat") {
       if (value === "openai" || value === "openai-nosession" || value === "openrouter") target.sessionAffinityFormat = value;
+    } else if (field === "promptCacheKeyMode") {
+      if (value === "auto" || value === "disabled" || value === "enabled") target.promptCacheKeyMode = value;
     } else if (typeof value === "boolean") Object.assign(target, { [field]: value });
   }
 }
@@ -225,7 +294,7 @@ export async function warmHostRecognizedModels(ctx: RouteContext | null | undefi
       continue;
     }
     for (const model of models) {
-      if (!/^(?:gpt-|grok)/iu.test(model.id)) continue;
+      if (!/^gpt-/iu.test(model.id) && !isGrokModelId(model.id)) continue;
       if (resolveCatalogModel(entry.provider, model.id).source === "catalog-model") continue;
       if (markHostRecognizedModel(ctx, entry.provider, model.id)) changed = true;
     }
@@ -290,8 +359,8 @@ function configuredModelProfile(
 
 function configuredResponsesCompat(profile: ProviderProfile | null | undefined, modelId: unknown): ResponsesCompat | undefined {
   const compat: ResponsesCompat = {};
-  copyResponsesCompat(compat, profile?.compat);
-  copyResponsesCompat(compat, configuredModelProfile(profile, modelId)?.compat);
+  copyResponsesCompat(compat, profile?.compat, RESPONSES_PROFILE_COMPAT_FIELDS);
+  copyResponsesCompat(compat, configuredModelProfile(profile, modelId)?.compat, RESPONSES_PROFILE_COMPAT_FIELDS);
   return Object.keys(compat).length ? compat : undefined;
 }
 
@@ -385,6 +454,9 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   if (typeof baseURL !== "string" || !normalizeBaseURL(baseURL) || typeof apiKeyEnv !== "string" || !apiKeyEnv.trim()) return undefined;
   const responsesCompat: ResponsesCompat = {};
   copyResponsesCompat(responsesCompat, builtin?.compat); copyResponsesCompat(responsesCompat, lcxCapabilityRoute ? policy.responsesCompat : undefined); copyResponsesCompat(responsesCompat, configuredResponsesCompat(configured, model));
+  if (policy.promptCacheKeyMode === "disabled" || policy.promptCacheKeyMode === "enabled") {
+    responsesCompat.promptCacheKeyMode = policy.promptCacheKeyMode;
+  }
   const promptCacheModel = lcxCapabilityRoute && policy.supportsExplicitPromptCacheMode === true ? resolveCatalogModel("openai", model).descriptor : undefined;
   const promptCacheRaw: unknown = promptCacheModel;
   const promptCacheCompat = isRecord(promptCacheRaw)
@@ -397,18 +469,32 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
   )
     responsesCompat.supportsExplicitPromptCacheMode = true;
   const resolvedCompat = Object.keys(responsesCompat).length ? responsesCompat : undefined;
-  const supportsLongCacheRetention = resolvedCompat?.supportsLongCacheRetention ?? (lcxCapabilityRoute && policy.supportsLongCacheRetention === true);
+  // Pi defaults missing `supportsLongCacheRetention` to true (`model.compat?.supportsLongCacheRetention ?? true`)
+  // while leaving missing `cacheRetention` on `"short"` (`resolveCacheRetention`). Only explicit `lcx/gpt-5.6-*`
+  // capability routes retain LCX's legacy `supportsLongCacheRetention` -> `"long"` default when unconfigured.
+  const supportsLongCacheRetention =
+    resolvedCompat?.supportsLongCacheRetention ??
+    (lcxCapabilityRoute ? policy.supportsLongCacheRetention === true : true);
   responsesCompat.supportsLongCacheRetention = supportsLongCacheRetention;
   const configuredRetention = configured.cacheRetention;
   const fallbackRetention = lcxCapabilityRoute ? policy.cacheRetention : undefined;
-  const requestedRetention: CacheRetention | undefined = configuredRetention === "none" || configuredRetention === "short" || configuredRetention === "long" ? configuredRetention : fallbackRetention === "none" || fallbackRetention === "short" || fallbackRetention === "long" ? fallbackRetention : undefined;
-  const cacheRetention: CacheRetention = requestedRetention === "long" && !supportsLongCacheRetention ? "short" : requestedRetention ?? (supportsLongCacheRetention ? "long" : "short");
+  const envRetention: CacheRetention | undefined = process.env.PI_CACHE_RETENTION === "long" ? "long" : undefined;
+  const requestedRetention: CacheRetention | undefined =
+    configuredRetention === "none" || configuredRetention === "short" || configuredRetention === "long"
+      ? configuredRetention
+      : fallbackRetention === "none" || fallbackRetention === "short" || fallbackRetention === "long"
+        ? fallbackRetention
+        : envRetention;
+  const defaultRetention: CacheRetention = lcxCapabilityRoute && supportsLongCacheRetention ? "long" : "short";
+  const cacheRetention: CacheRetention = requestedRetention === "long" && !supportsLongCacheRetention ? "short" : (requestedRetention ?? defaultRetention);
   const declaredControls = declaredReasoningControls(configured, model);
+  const configuredModel = configuredModelProfile(configured, model);
   return {
     provider,
     model,
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
+    rawBaseURL: baseURL,
     apiKeyEnv,
     ...(builtin?.headers === undefined ? {} : { catalogHeaders: { ...builtin.headers } }),
     headers: { ...(configured.headers ?? {}) },
@@ -418,6 +504,10 @@ export function resolveResponsesRouteConfig(ctx: RouteContext | null | undefined
     // Only a declared `reasoningEfforts` is projected here; an undeclared model follows the catalog
     // and what DSH resolved for it (see `routeModelOverride`).
     ...(declaredControls === undefined ? {} : { modelControls: declaredControls }),
+    profileReasoning: profileReasoning(configured.reasoning),
+    ...(isPositiveSafeInteger(catalog.maxTokens) ? { catalogMaxTokens: catalog.maxTokens } : {}),
+    ...(isPositiveSafeInteger(configuredModel?.maxTokens) ? { profileModelMaxTokens: configuredModel.maxTokens } : {}),
+    ...(isPositiveSafeInteger(configured.defaultMaxTokens) ? { profileDefaultMaxTokens: configured.defaultMaxTokens } : {}),
     // These are explicitly LCX-owned transport and request-capability policies.
     timeoutMs: isPositiveSafeInteger(configured.timeoutMs) ? configured.timeoutMs : policy.timeoutMs,
     maxAttempts: retryAttempts(configured.retryPolicy, policy.maxAttempts),
@@ -447,7 +537,7 @@ export function diagnoseResponsesRoute(ctx: RouteContext | null | undefined, opt
   return api === "openai-responses" ? "incomplete" : "api-not-responses";
 }
 
-/** Resolve a Grok-prefixed model through its selected DSH Responses profile. */
+/** Resolve a Grok model through its selected DSH Responses profile. */
 export function resolveGrokResponsesRouteConfig(
   ctx: RouteContext | null | undefined,
   options: RouteOptions,
@@ -455,7 +545,7 @@ export function resolveGrokResponsesRouteConfig(
 ): ResolvedResponsesRoute | undefined {
   const provider = String(options?.provider ?? "");
   const model = String(options?.model ?? "");
-  if (!provider.trim() || !/^grok/iu.test(model)) return undefined;
+  if (!provider.trim() || !isGrokModelId(model)) return undefined;
   const configured = configuredProviderProfile(ctx, provider);
   if (!isRecord(configured)) return undefined;
   if (profileExcludesModel(configured, model) || usesHostProviderAuth(provider)) return undefined;
@@ -475,21 +565,31 @@ export function resolveGrokResponsesRouteConfig(
   const responsesCompat: ResponsesCompat = {};
   copyResponsesCompat(responsesCompat, selectedBuiltin?.compat);
   copyResponsesCompat(responsesCompat, configuredResponsesCompat(configured, model));
+  if (policy.promptCacheKeyMode === "disabled" || policy.promptCacheKeyMode === "enabled") {
+    responsesCompat.promptCacheKeyMode = policy.promptCacheKeyMode;
+  }
   const supportsLongCacheRetention =
-    responsesCompat.supportsLongCacheRetention === true;
+    responsesCompat.supportsLongCacheRetention !== false;
   responsesCompat.supportsLongCacheRetention = supportsLongCacheRetention;
-  const requestedRetention = configured.cacheRetention;
+  const configuredRetention = configured.cacheRetention;
+  const envRetention: CacheRetention | undefined = process.env.PI_CACHE_RETENTION === "long" ? "long" : undefined;
+  const requestedRetention: CacheRetention | undefined =
+    configuredRetention === "none" || configuredRetention === "short" || configuredRetention === "long"
+      ? configuredRetention
+      : envRetention;
   const cacheRetention: CacheRetention =
     requestedRetention === "none"
       ? "none"
       : requestedRetention === "long" && supportsLongCacheRetention
         ? "long"
         : "short";
+  const configuredModel = configuredModelProfile(configured, model);
   return {
     provider,
     model,
     api: "openai-responses",
     baseURL: normalizeBaseURL(baseURL),
+    rawBaseURL: baseURL,
     apiKeyEnv,
     ...(selectedBuiltin?.headers === undefined ? {} : { catalogHeaders: { ...selectedBuiltin.headers } }),
     headers: effectiveGrokProfileHeaders(configured.headers),
@@ -502,6 +602,9 @@ export function resolveGrokResponsesRouteConfig(
       includeEncryptedReasoning: true,
     },
     profileReasoning: profileReasoning(configured.reasoning),
+    ...(isPositiveSafeInteger(catalog.maxTokens) ? { catalogMaxTokens: catalog.maxTokens } : {}),
+    ...(isPositiveSafeInteger(configuredModel?.maxTokens) ? { profileModelMaxTokens: configuredModel.maxTokens } : {}),
+    ...(isPositiveSafeInteger(configured.defaultMaxTokens) ? { profileDefaultMaxTokens: configured.defaultMaxTokens } : {}),
     // Pi applies only an explicitly configured request deadline; stream liveness
     // is owned separately by the provider idle watchdog.
     timeoutMs: isPositiveSafeInteger(configured.timeoutMs)
@@ -523,6 +626,133 @@ export function resolveGrokResponsesRouteConfig(
       ? configured.requestImageMaxBytes
       : policy.requestImageMaxBytes,
   };
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function isGrokBudgetRoute(route: { provider?: unknown; model?: unknown } | null | undefined): boolean {
+  const provider = String(route?.provider ?? "").trim();
+  return provider.length > 0 && isGrokModelId(route?.model);
+}
+
+export function grokBudgetInputSignature(
+  ctx: RouteContext | null | undefined,
+  route: { provider?: unknown; model?: unknown },
+  requestMaxTokens?: unknown,
+): string {
+  const provider = String(route?.provider ?? "").trim();
+  const model = String(route?.model ?? "").trim();
+  const profile = provider ? configuredProviderProfile(ctx, provider) : undefined;
+  const modelProfile = isRecord(profile) && model ? configuredModelProfile(profile, model) : undefined;
+  return JSON.stringify([
+    requestMaxTokens ?? null,
+    isRecord(profile) ? profile.defaultContextWindow ?? null : null,
+    modelProfile?.contextWindow ?? null,
+    modelProfile?.maxTokens ?? null,
+    Array.isArray(profile?.models) ? profile.models.map((entry) => String(entry?.id ?? "")) : null,
+  ]);
+}
+
+export type GrokBudgetDiagnosticOptions = {
+  requestMaxTokens?: unknown;
+  resolvedModelInfo?: {
+    contextWindow?: unknown;
+    defaultMaxTokens?: unknown;
+  };
+};
+
+/**
+ * Pure pre-flight diagnostic for Grok profiles whose resolved `maxTokens >= contextWindow`.
+ *
+ * In DSH 0.2.2 (`dsh-llm-pi-ai` + `dsh-compaction-basic`), an explicit `maxTokens` on `models[]` or
+ * `modelOverrides` becomes `ModelInfo.defaultMaxTokens` (reserved completion tokens). When `requestMaxTokens`
+ * or `defaultMaxTokens >= contextWindow`, `contextWindow - reservedCompletionTokens <= 0`, blocking model
+ * switches to Grok with `MODEL_SWITCH_COMPACTION_FAILED`.
+ */
+export function diagnoseGrokProfileBudget(
+  profile: ProviderProfile | null | undefined,
+  route: { provider: string; model: string },
+  options?: GrokBudgetDiagnosticOptions,
+): string | undefined {
+  const provider = String(route?.provider ?? "").trim();
+  const model = String(route?.model ?? "").trim();
+  if (!provider || !isGrokBudgetRoute({ provider, model })) return undefined;
+  if (isRecord(profile) && profileExcludesModel(profile, model)) return undefined;
+  if (!isRecord(profile) && !options?.resolvedModelInfo) return undefined;
+  const modelProfile = isRecord(profile) && model ? configuredModelProfile(profile, model) : undefined;
+  const catalogModel = model ? getCatalogModels(provider).find((entry) => entry.id === model) : undefined;
+  const contextWindow =
+    positiveFiniteNumber(options?.resolvedModelInfo?.contextWindow) ??
+    positiveFiniteNumber(modelProfile?.contextWindow) ??
+    positiveFiniteNumber(catalogModel?.contextWindow) ??
+    (isRecord(profile) ? positiveFiniteNumber(profile.defaultContextWindow) : undefined);
+  const maxTokens =
+    positiveFiniteNumber(options?.requestMaxTokens) ??
+    positiveFiniteNumber(options?.resolvedModelInfo?.defaultMaxTokens) ??
+    positiveFiniteNumber(modelProfile?.maxTokens);
+  if (contextWindow === undefined || maxTokens === undefined || maxTokens < contextWindow) return undefined;
+  const target = model ? `${provider}/${model}` : provider;
+  return `[lcx-codex] Grok route "${target}" resolves maxTokens (${maxTokens}) >= contextWindow (${contextWindow}); DSH 0.2.2 blocks switching to Grok with MODEL_SWITCH_COMPACTION_FAILED (leaving zero message budget). Set maxTokens clearly below contextWindow (for example, 64000 or 128000 for a 500000 context window) in the llm-pi-ai provider profile ("models[].maxTokens" or "modelOverrides[\\"${model}\\"].maxTokens") or pass a lower request maxTokens.`;
+}
+
+export function diagnoseGrokContextBudget(
+  ctx: RouteContext | null | undefined,
+  route: { provider: string; model: string },
+  options?: GrokBudgetDiagnosticOptions,
+): string | undefined {
+  if (!isGrokBudgetRoute(route)) return undefined;
+  const provider = String(route?.provider ?? "").trim();
+  const profile = configuredProviderProfile(ctx, provider);
+  return diagnoseGrokProfileBudget(profile, route, options);
+}
+
+export function grokRouteMayNeedHostBudgetLookup(
+  ctx: RouteContext | null | undefined,
+  route: { provider?: unknown; model?: unknown },
+  requestMaxTokens?: unknown,
+): boolean {
+  const provider = String(route?.provider ?? "").trim();
+  const model = String(route?.model ?? "").trim();
+  if (!provider || !isGrokBudgetRoute({ provider, model })) return false;
+  const profile = configuredProviderProfile(ctx, provider);
+  if (!isRecord(profile) || profileExcludesModel(profile, model)) return false;
+  const modelProfile = configuredModelProfile(profile, model);
+  return (
+    positiveFiniteNumber(requestMaxTokens) !== undefined ||
+    positiveFiniteNumber(modelProfile?.maxTokens) !== undefined
+  );
+}
+
+export async function diagnoseGrokContextBudgetAsync(
+  ctx: RouteContext | null | undefined,
+  route: { provider: string; model: string },
+  options?: { requestMaxTokens?: unknown; signal?: AbortSignal },
+): Promise<string | undefined> {
+  const provider = String(route?.provider ?? "").trim();
+  const model = String(route?.model ?? "").trim();
+  if (!provider || !isGrokBudgetRoute({ provider, model })) return undefined;
+  const profile = configuredProviderProfile(ctx, provider);
+  if (!isRecord(profile) || profileExcludesModel(profile, model)) return undefined;
+  let resolvedModelInfo: GrokBudgetDiagnosticOptions["resolvedModelInfo"];
+  if (typeof ctx?.llm?.resolveModelInfo === "function") {
+    try {
+      const info = await ctx.llm.resolveModelInfo(provider, model, options?.signal);
+      if (isRecord(info)) {
+        resolvedModelInfo = {
+          contextWindow: isRecord(info.context) ? info.context.contextWindow : undefined,
+          defaultMaxTokens: info.defaultMaxTokens,
+        };
+      }
+    } catch {
+      // Fall back to configured profile + catalog metadata if host model resolution fails.
+    }
+  }
+  return diagnoseGrokProfileBudget(profile, route, {
+    requestMaxTokens: options?.requestMaxTokens,
+    resolvedModelInfo,
+  });
 }
 
 export async function resolveApiKey(ctx: RouteContext | null | undefined, config: Pick<ResolvedResponsesRoute, "apiKeyEnv">): Promise<string> {
@@ -582,12 +812,17 @@ function sessionAffinityFormat(config: Partial<ResolvedResponsesRoute> | null | 
 
 type HeaderRequest = { sessionId?: string; purpose?: string };
 /** Headers whose owners (credentials, session affinity, correlation) layer them after the contributors. */
-const OWNER_PROTECTED_HEADERS = new Set(["authorization", "session_id", "session-id", "x-session-id", "x-client-request-id", "x-opencode-session"]);
+const OWNER_PROTECTED_HEADERS = new Set(["authorization", "cf-aig-authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "session_id", "session-id", "x-session-id", "x-client-request-id", "x-opencode-session"]);
 /** The host exposes profile headers only. Credential and routing headers are layered by their owners later. */
 export function prepareRequestHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, options: HeaderRequest = {}): HeaderMap {
   try {
-    const initial = new Headers(config.headers);
-    const request = Object.freeze({ provider: config.provider, model: config.model, baseURL: config.baseURL,
+    const initial = new Headers();
+    // Contributors must never observe explicit profile credentials or routing/session affinity headers;
+    // owners re-apply protected profile headers after contributors run.
+    for (const [name, value] of Object.entries(config.headers ?? {})) {
+      if (!OWNER_PROTECTED_HEADERS.has(name.toLowerCase())) initial.set(name, value);
+    }
+    const request = Object.freeze({ provider: config.provider, model: config.model, baseURL: config.rawBaseURL ?? config.baseURL,
       ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
       ...(options.purpose === undefined ? {} : { purpose: options.purpose }) });
     const waterfall = (ctx as { waterfall?: (name: string, ...args: unknown[]) => unknown } | undefined)?.waterfall;
@@ -602,28 +837,48 @@ export function prepareRequestHeaders(ctx: RouteContext | null | undefined, conf
   }
 }
 
+function computeReplayAuthorityHeaders(contributorHeaders: HeaderMap, protectedProfile: HeaderMap): HeaderMap {
+  const attributionKeys = new Set(Object.keys(attributionHeaders()).map((name) => name.toLowerCase()));
+  const authorityContributors = Object.fromEntries(
+    Object.entries(contributorHeaders).filter(([name]) => !attributionKeys.has(name.toLowerCase())),
+  );
+  return layerHeaders(authorityContributors, protectedProfile);
+}
+
 /**
  * The headers of one GPT request. `sessionId` is the prompt-cache / affinity session (the root session for a
  * subagent, absent without cache retention); `providerSessionId` is the CURRENT DSH session, which is what Pi's
  * client sends in provider routing headers (`x-opencode-session`) whatever the cache policy is.
  */
-export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string, request?: HeaderRequest): Promise<HeaderMap> {
+export async function authenticatedRequestHeaders(
+  ctx: RouteContext | null | undefined,
+  config: ResolvedResponsesRoute,
+  sessionId: unknown,
+  requestId: string | null | undefined,
+  dynamicHeaders: HeaderMap = {},
+  providerSessionId?: string,
+  request?: HeaderRequest,
+  resolvedApiKey?: string,
+): Promise<{ headers: HeaderMap; replayAuthorityHeaders: HeaderMap; headerAuthorityFingerprint: string }> {
   const explicit = { ...(config.headers ?? {}) };
   const currentSessionId = providerSessionId ?? (sessionId ? String(sessionId) : undefined);
   // As on the host, the credential is resolved before contributors run: a missing one never reaches them.
-  const apiKey = await resolveApiKey(ctx, config);
+  const apiKey = resolvedApiKey ?? (await resolveApiKey(ctx, config));
   const prepared = prepareRequestHeaders(ctx, config, request ?? (currentSessionId === undefined ? {} : { sessionId: currentSessionId }));
+  const contributorHeaders = Object.fromEntries(
+    Object.entries(prepared).filter(([name]) => !OWNER_PROTECTED_HEADERS.has(name.toLowerCase())),
+  );
   const sid = sessionId ? String(sessionId) : undefined; const format = sessionAffinityFormat(config);
   // Model/provider defaults precede the contributed profile layer. Credentials and session routing
   // are owned by their later layers; attribution is re-applied last.
   const headers: HeaderMap = layerHeaders(
     config.catalogHeaders,
     dynamicHeaders,
-    prepared,
+    contributorHeaders,
     { authorization: `Bearer ${apiKey}` },
     providerSessionHeaders(config.provider, providerSessionId ?? sid),
   );
-  if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers.session_id = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
+  if (sid && !hasExplicitSessionAffinity(explicit)) { if (format === "openai") headers["session-id"] = sid; else if (format === "openrouter") headers["x-session-id"] = sid; }
   if (requestId !== null && !hasHeader(explicit, "x-client-request-id")) { const correlation = requestId ?? (sid && (format === "openai" || format === "openai-nosession") ? sid : !sid ? randomUUID() : undefined); if (correlation) headers["x-client-request-id"] = correlation; }
   // Ordinary profile headers keep whatever the contributors made of them. The owner-protected ones (credential,
   // session affinity, correlation) are the profile's to set over every default and never a contributor's.
@@ -631,39 +886,115 @@ export async function authenticatedHeaders(ctx: RouteContext | null | undefined,
   const protectedProfile = Object.fromEntries(
     Object.entries(explicit).filter(([name]) => OWNER_PROTECTED_HEADERS.has(name.toLowerCase())),
   );
-  return layerHeaders(headers, protectedProfile, attributionHeaders());
+  const finalHeaders = layerHeaders(headers, protectedProfile, attributionHeaders());
+  const replayAuthorityHeaders = computeReplayAuthorityHeaders(contributorHeaders, protectedProfile);
+  const headerAuthorityFingerprint = requestHeaderAuthorityFingerprint(replayAuthorityHeaders, {
+    apiKeyEnv: config.apiKeyEnv,
+    effectiveAuthorization: findHeaderCaseInsensitive(finalHeaders, "authorization"),
+  });
+  return {
+    headers: finalHeaders,
+    replayAuthorityHeaders,
+    headerAuthorityFingerprint,
+  };
 }
 
-/** Grok mirrors Pi createClient ordering without changing accepted GPT headers. */
+export async function authenticatedHeaders(ctx: RouteContext | null | undefined, config: ResolvedResponsesRoute, sessionId: unknown, requestId: string | null | undefined, dynamicHeaders: HeaderMap = {}, providerSessionId?: string, request?: HeaderRequest, resolvedApiKey?: string): Promise<HeaderMap> {
+  return (await authenticatedRequestHeaders(
+    ctx,
+    config,
+    sessionId,
+    requestId,
+    dynamicHeaders,
+    providerSessionId,
+    request,
+    resolvedApiKey,
+  )).headers;
+}
+
+/** Grok mirrors Pi createClient ordering and request-header contributor hook without changing accepted GPT precedence. */
+export async function authenticatedGrokRequestHeaders(
+  ctx: RouteContext | null | undefined,
+  config: ResolvedResponsesRoute,
+  sessionId: unknown,
+  dynamicHeaders: HeaderMap = {},
+  providerSessionId?: string,
+  request?: HeaderRequest,
+  resolvedApiKey?: string,
+): Promise<{ headers: HeaderMap; replayAuthorityHeaders: HeaderMap; headerAuthorityFingerprint: string }> {
+  const explicit = effectiveGrokProfileHeaders(config.headers);
+  const sid = sessionId ? String(sessionId) : undefined;
+  const currentSessionId = providerSessionId ?? sid;
+  // Resolve credentials before contributors run, matching authenticatedHeaders and DSH PiAiAdapter.
+  const apiKey = resolvedApiKey ?? (await resolveApiKey(ctx, config));
+  const prepared = prepareRequestHeaders(
+    ctx,
+    { ...config, headers: explicit },
+    request ?? (currentSessionId === undefined ? {} : { sessionId: currentSessionId }),
+  );
+  const contributorHeaders = Object.fromEntries(
+    Object.entries(prepared).filter(([name]) => !OWNER_PROTECTED_HEADERS.has(name.toLowerCase())),
+  );
+  // The catalog model's headers precede contributed/dynamic layers; credentials, session affinity,
+  // protected profile headers, and final DSH attribution follow in owner order.
+  const headers: HeaderMap = layerHeaders(
+    config.catalogHeaders,
+    dynamicHeaders,
+    contributorHeaders,
+    { authorization: `Bearer ${apiKey}` },
+    providerSessionHeaders(config.provider, currentSessionId),
+  );
+  const format = sessionAffinityFormat(config);
+  if (sid) {
+    if (format === "openai") headers["session-id"] = sid;
+    else if (format === "openrouter") headers["x-session-id"] = sid;
+    if (format === "openai" || format === "openai-nosession")
+      headers["x-client-request-id"] = sid;
+  }
+  const protectedProfile = Object.fromEntries(
+    Object.entries(explicit).filter(([name]) => OWNER_PROTECTED_HEADERS.has(name.toLowerCase())),
+  );
+  const finalHeaders = layerHeaders(headers, protectedProfile, attributionHeaders());
+  const replayAuthorityHeaders = computeReplayAuthorityHeaders(contributorHeaders, protectedProfile);
+  const headerAuthorityFingerprint = requestHeaderAuthorityFingerprint(replayAuthorityHeaders, {
+    apiKeyEnv: config.apiKeyEnv,
+    effectiveAuthorization: findHeaderCaseInsensitive(finalHeaders, "authorization"),
+  });
+  return {
+    headers: finalHeaders,
+    replayAuthorityHeaders,
+    headerAuthorityFingerprint,
+  };
+}
+
 export async function authenticatedGrokHeaders(
   ctx: RouteContext | null | undefined,
   config: ResolvedResponsesRoute,
   sessionId: unknown,
   dynamicHeaders: HeaderMap = {},
   providerSessionId?: string,
+  request?: HeaderRequest,
+  resolvedApiKey?: string,
 ): Promise<HeaderMap> {
-  const explicit = effectiveGrokProfileHeaders(config.headers);
-  const sid = sessionId ? String(sessionId) : undefined;
-  // The catalog model's headers come first, so DSH attribution (applied last, as the host does) replaces them.
-  const headers: HeaderMap = layerHeaders(config.catalogHeaders, {
-    authorization: `Bearer ${await resolveApiKey(ctx, config)}`,
-  }, dynamicHeaders, providerSessionHeaders(config.provider, providerSessionId ?? sid));
-  const format = sessionAffinityFormat(config);
-  if (sid) {
-    if (format === "openai") headers.session_id = sid;
-    else if (format === "openrouter") headers["x-session-id"] = sid;
-    if (format === "openai" || format === "openai-nosession")
-      headers["x-client-request-id"] = sid;
-  }
-  for (const [name, value] of Object.entries(explicit))
-    setHeaderCaseInsensitive(headers, name, value);
-  for (const [name, value] of Object.entries(attributionHeaders()))
-    setHeaderCaseInsensitive(headers, name, value);
-  return headers;
+  return (await authenticatedGrokRequestHeaders(
+    ctx,
+    config,
+    sessionId,
+    dynamicHeaders,
+    providerSessionId,
+    request,
+    resolvedApiKey,
+  )).headers;
 }
 
-export function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL">): RouteIdentity {
-  return { provider: String(options?.provider ?? config.provider ?? ""), model: String(options?.model ?? config.model ?? ""), baseURL: normalizeBaseURL(config.baseURL), sessionId: String(options?.sessionId ?? "") };
+export function currentRoute(options: RouteOptions | null | undefined, config: Pick<UnresolvedRouteConfig, "provider" | "model" | "baseURL" | "rawBaseURL">): RouteIdentity {
+  return {
+    provider: String(options?.provider ?? config.provider ?? ""),
+    model: String(options?.model ?? config.model ?? ""),
+    baseURL: normalizeBaseURL(config.baseURL),
+    ...(config.rawBaseURL === undefined ? {} : { rawBaseURL: config.rawBaseURL }),
+    sessionId: String(options?.sessionId ?? ""),
+  };
 }
 
 export function generationControlsFromHeader(header: RequestHeader | null | undefined, route: Partial<RouteIdentity> | null | undefined): GenerationControls {
@@ -676,7 +1007,84 @@ export function generationControlsFromSession(session: RouteSession | null | und
   try { return generationControlsFromHeader(session?.requestHeader?.(), route); } catch { return {}; }
 }
 
+export async function resolveRouteHeaderAuthorityFingerprint(
+  ctx: RouteContext | null | undefined,
+  route: Partial<RouteIdentity> | null | undefined,
+  routeConfig?: Partial<ResolvedResponsesRoute>,
+  request?: HeaderRequest,
+): Promise<string> {
+  const provider = String(route?.provider ?? routeConfig?.provider ?? "");
+  const model = String(route?.model ?? routeConfig?.model ?? "");
+  const baseURL = String(route?.baseURL ?? routeConfig?.baseURL ?? "");
+  const sessionId = String(route?.sessionId ?? "");
+  const resolvedFromCtx =
+    provider && model
+      ? resolveResponsesRouteConfig(ctx, { provider, model }, {})
+      : undefined;
+  const rawApiKeyEnv =
+    typeof routeConfig?.apiKeyEnv === "string" && routeConfig.apiKeyEnv.length > 0
+      ? routeConfig.apiKeyEnv
+      : resolvedFromCtx?.apiKeyEnv;
+  const effectiveApiKeyEnv = rawApiKeyEnv ?? "";
+  const effectiveHeaders = routeConfig?.headers ?? resolvedFromCtx?.headers;
+  if (typeof ctx?.credentials?.resolve === "function") {
+    const effectiveConfig: ResolvedResponsesRoute = {
+      ...(resolvedFromCtx ?? {}),
+      ...(routeConfig ?? {}),
+      provider,
+      model,
+      api: "openai-responses",
+      baseURL,
+      apiKeyEnv: effectiveApiKeyEnv,
+      cacheRetention: (routeConfig?.cacheRetention ?? resolvedFromCtx?.cacheRetention ?? "short") as CacheRetention,
+      supportsLongCacheRetention: Boolean(
+        routeConfig?.supportsLongCacheRetention ?? resolvedFromCtx?.supportsLongCacheRetention,
+      ),
+      ...(effectiveHeaders === undefined ? {} : { headers: effectiveHeaders }),
+    };
+    try {
+      const apiKey = await resolveApiKey(ctx, { apiKeyEnv: rawApiKeyEnv as string });
+      const cacheSessionId = promptCacheSessionId(
+        { provider, model, baseURL, sessionId },
+        effectiveConfig,
+        ctx,
+      );
+      return (
+        await authenticatedRequestHeaders(
+          ctx,
+          effectiveConfig,
+          cacheSessionId,
+          cacheSessionId === undefined ? null : sessionId,
+          {},
+          sessionId || undefined,
+          request,
+          apiKey,
+        )
+      ).headerAuthorityFingerprint;
+    } catch {
+      return requestHeaderAuthorityFingerprint(effectiveHeaders, {
+        apiKeyEnv: effectiveApiKeyEnv,
+      });
+    }
+  }
+  return requestHeaderAuthorityFingerprint(effectiveHeaders, {
+    apiKeyEnv: effectiveApiKeyEnv,
+  });
+}
+
 export function routeCompatible(record: CheckpointRouteRecord | null | undefined, route: RouteIdentity, ctx: unknown): boolean {
   void ctx;
-  return !!record && record.version === 5 && record.provider === route.provider && record.model === route.model && record.baseURLFingerprint === baseURLFingerprint(route.baseURL) && record.sourceSessionId === route.sessionId;
+  return (
+    !!record &&
+    record.version === 5 &&
+    record.provider === route.provider &&
+    record.model === route.model &&
+    record.baseURLFingerprint === baseURLFingerprint(route.baseURL) &&
+    record.sourceSessionId === route.sessionId &&
+    typeof record.headerAuthorityFingerprint === "string" &&
+    record.headerAuthorityFingerprint.length > 0 &&
+    typeof route.headerAuthorityFingerprint === "string" &&
+    route.headerAuthorityFingerprint.length > 0 &&
+    record.headerAuthorityFingerprint === route.headerAuthorityFingerprint
+  );
 }

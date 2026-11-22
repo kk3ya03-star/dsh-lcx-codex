@@ -8,6 +8,8 @@ export declare const inject: string[];
 type ConfigInput = {
     supportsLongCacheRetention?: unknown;
     supportsExplicitPromptCacheMode?: unknown;
+    promptCacheKeyMode?: unknown;
+    gatewayCompatibilityFallback?: unknown;
     alphaCapabilityPath?: unknown;
     alphaRefPath?: unknown;
     alphaProfile?: unknown;
@@ -36,6 +38,8 @@ type LiveSettingsConfig = {
     searchMediaPreview: Volatile<boolean>;
     /** Defaults to true: addition-only tool updates on routes that support them. */
     incrementalToolUpdates: Volatile<boolean>;
+    /** Defaults to false: opt-in gateway fallback to standard top-level tools and reasoning.effort. */
+    gatewayCompatibilityFallback: Volatile<boolean>;
 };
 type HostContext = Context;
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
@@ -47,8 +51,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     grokNativeXSearch: z<boolean, boolean, "volatile-defined">;
     searchMediaPreview: z<boolean, boolean, "volatile-defined">;
     incrementalToolUpdates: z<boolean, boolean, "volatile-defined">;
+    gatewayCompatibilityFallback: z<boolean, boolean, "volatile-defined">;
     supportsLongCacheRetention: z<boolean, boolean, "defined">;
     supportsExplicitPromptCacheMode: z<boolean, boolean, "defined">;
+    promptCacheKeyMode: z<"auto" | "disabled" | "enabled", "auto" | "disabled" | "enabled", "defined">;
     alphaCapabilityPath: z<string, string, "defined">;
     alphaRefPath: z<string, string, "defined">;
     alphaProfile: z<string, string, "defined">;
@@ -75,8 +81,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     grokNativeXSearch: z<boolean, boolean, "volatile-defined">;
     searchMediaPreview: z<boolean, boolean, "volatile-defined">;
     incrementalToolUpdates: z<boolean, boolean, "volatile-defined">;
+    gatewayCompatibilityFallback: z<boolean, boolean, "volatile-defined">;
     supportsLongCacheRetention: z<boolean, boolean, "defined">;
     supportsExplicitPromptCacheMode: z<boolean, boolean, "defined">;
+    promptCacheKeyMode: z<"auto" | "disabled" | "enabled", "auto" | "disabled" | "enabled", "defined">;
     alphaCapabilityPath: z<string, string, "defined">;
     alphaRefPath: z<string, string, "defined">;
     alphaProfile: z<string, string, "defined">;

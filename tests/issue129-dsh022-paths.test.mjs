@@ -81,6 +81,6 @@ test('installed 0.2.2 DOM retains the inline-media anchors and slot contract (st
  const chat=readFileSync(new URL('../node_modules/@deepseek-ai/dsh-client-ui-chat/lib/client.js',import.meta.url),'utf8')
  const renderer=readFileSync(new URL('../node_modules/@deepseek-ai/dsh-client-ui-renderer/lib/client.js',import.meta.url),'utf8')
  for(const anchor of ['data-chat-flow','data-chat-group-part','data-chat-flow-kind','data-chat-turn','data-chat-group-key','data-step-process']) assert.ok(chat.includes(`"${anchor}"`),anchor)
- assert.ok(chat.includes('renderSlot("conversation.chat.flow"'))
- assert.ok(renderer.includes('"data-slot": slotKey'))
+ assert.match(chat,/renderSlot\((["'`])conversation\.chat\.flow\1/u)
+ assert.match(renderer,/"data-slot":\s*slotKey/u)
 })

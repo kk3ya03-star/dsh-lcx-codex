@@ -12,6 +12,7 @@ type RouteIdentity = {
     model: string;
     baseURL: string;
     sessionId: string;
+    headerAuthorityFingerprint?: string;
 };
 type CompactionSummaryEvent = SessionEvent<"compaction/summary">;
 type RetentionOptions = {
@@ -33,6 +34,7 @@ type NativeCheckpointBase = {
     model: string;
     baseURLFingerprint: string;
     sourceSessionId: string;
+    headerAuthorityFingerprint?: string;
     nativeOutput: NativeOutputItem[];
     nativeCompaction?: CompactionItem;
     retainedInputCount?: number;
@@ -62,6 +64,7 @@ type CheckpointRouteRecord = {
     model: unknown;
     baseURLFingerprint: unknown;
     sourceSessionId: unknown;
+    headerAuthorityFingerprint?: unknown;
 };
 type CreateCheckpointOptions = {
     ctx: SessionQueryContext;
@@ -100,6 +103,7 @@ export declare function stateFromSummaryEvent(event: CompactionSummaryEvent | nu
     model: string;
     baseURLFingerprint: string;
     sourceSessionId: string;
+    headerAuthorityFingerprint?: string | undefined;
     nativeOutput: NativeOutputItem[];
     nativeCompaction: CompactionItem;
     retainedInputCount?: number | undefined;
@@ -114,6 +118,7 @@ export declare function checkpointStateForMessage(ctx: SessionQueryContext, sess
     model: string;
     baseURLFingerprint: string;
     sourceSessionId: string;
+    headerAuthorityFingerprint?: string | undefined;
     nativeOutput: NativeOutputItem[];
     nativeCompaction: CompactionItem;
     retainedInputCount?: number | undefined;
